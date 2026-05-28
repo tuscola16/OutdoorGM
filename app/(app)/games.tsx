@@ -68,12 +68,20 @@ export default function GamesScreen() {
     <SafeAreaView style={styles.safe}>
       <View style={styles.header}>
         <Text style={styles.title}>My Games</Text>
-        <TouchableOpacity onPress={() => Alert.alert('Sign out?', '', [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Sign Out', onPress: signOut, style: 'destructive' },
-        ])}>
-          <Ionicons name="log-out-outline" size={24} color={Colors.textSecondary} />
-        </TouchableOpacity>
+        <View style={styles.headerRight}>
+          <TouchableOpacity onPress={() => router.push('/(app)/profile')} style={styles.headerIconBtn}>
+            <Ionicons name="person-circle-outline" size={26} color={Colors.textSecondary} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => Alert.alert('Sign out?', '', [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Sign Out', onPress: signOut, style: 'destructive' },
+            ])}
+            style={styles.headerIconBtn}
+          >
+            <Ionicons name="log-out-outline" size={24} color={Colors.textSecondary} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <FlatList
@@ -165,6 +173,8 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 24,
   },
+  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  headerIconBtn: { padding: 4 },
   footer: {
     paddingHorizontal: 24,
     paddingBottom: 24,

@@ -1,16 +1,26 @@
 import { useEffect } from 'react';
+import { Platform } from 'react-native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
+import * as Notifications from 'expo-notifications';
 import { AuthProvider } from '@/context/AuthContext';
 import { GameProvider } from '@/context/GameContext';
-// Import background task registration at app root (side-effect only)
 import '@/services/locationTask';
 
 SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
   useEffect(() => {
+    if (Platform.OS === 'android') {
+      Notifications.setNotificationChannelAsync('arrivals', {
+        name: 'Checkpoint Arrivals',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#E8402A',
+        sound: 'default',
+      });
+    }
     SplashScreen.hideAsync();
   }, []);
 

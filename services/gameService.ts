@@ -157,6 +157,38 @@ export async function deleteCheckpoint(gameId: string, checkpointId: string): Pr
     .delete();
 }
 
+export async function updateMemberRole(
+  gameId: string,
+  userId: string,
+  role: 'player' | 'gm'
+): Promise<void> {
+  await firestore()
+    .collection(Collections.GAMES)
+    .doc(gameId)
+    .collection(Collections.MEMBERS)
+    .doc(userId)
+    .update({ role });
+}
+
+export async function removePlayer(gameId: string, userId: string): Promise<void> {
+  const batch = firestore().batch();
+  batch.delete(
+    firestore()
+      .collection(Collections.GAMES)
+      .doc(gameId)
+      .collection(Collections.MEMBERS)
+      .doc(userId)
+  );
+  batch.delete(
+    firestore()
+      .collection(Collections.GAMES)
+      .doc(gameId)
+      .collection(Collections.LOCATIONS)
+      .doc(userId)
+  );
+  await batch.commit();
+}
+
 export async function updatePlayerLocation(
   gameId: string,
   userId: string,

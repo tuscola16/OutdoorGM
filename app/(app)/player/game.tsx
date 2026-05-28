@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, SafeAreaView, Alert, TouchableOpacity, AppState
+  View, Text, StyleSheet, SafeAreaView, Alert, TouchableOpacity
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -12,17 +12,31 @@ import { startLocationTracking, stopLocationTracking } from '@/services/location
 import { onForegroundMessage } from '@/services/notificationService';
 import firestore from '@react-native-firebase/firestore';
 import { Collections } from '@/services/firebase';
-import type { GameMember } from '@/types';
+import type { GameStatus } from '@/types';
 
 export default function PlayerGameScreen() {
   const { gameId } = useLocalSearchParams<{ gameId: string }>();
   const { user } = useAuth();
   const router = useRouter();
   const [gameName, setGameName] = useState('');
+  const [gameStatus, setGameStatus] = useState<GameStatus>('active');
   const [myLocation, setMyLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [tracking, setTracking] = useState(false);
   const [displayName, setDisplayName] = useState('Player');
   const [error, setError] = useState('');
+  const endedRef = useRef(false);
+
+  // Handle game-ended state
+  useEffect(() => {
+    if (gameStatus !== 'ended' || endedRef.current) return;
+    endedRef.current = true;
+    stopLocationTracking().catch(console.error);
+    Alert.alert(
+      'Game Over',
+      'The game has ended. Thanks for playing!',
+      [{ text: 'OK', onPress: () => router.replace('/(app)/games') }]
+    );
+  }, [gameStatus]);
 
   // Load game name and member info
   useEffect(() => {
@@ -31,7 +45,10 @@ export default function PlayerGameScreen() {
       .collection(Collections.GAMES)
       .doc(gameId)
       .onSnapshot((snap) => {
-        if (snap.exists) setGameName(snap.data()?.name ?? '');
+        if (snap.exists) {
+          setGameName(snap.data()?.name ?? '');
+          if (snap.data()?.status === 'ended') setGameStatus('ended');
+        }
       });
 
     const unsubMember = firestore()

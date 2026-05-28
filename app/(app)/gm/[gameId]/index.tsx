@@ -1,10 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, SafeAreaView, TouchableOpacity, Modal,
   Dimensions, Alert
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
+import * as Clipboard from 'expo-clipboard';
 import { useAuth } from '@/context/AuthContext';
 import { useGame } from '@/context/GameContext';
 import { GameMap } from '@/components/GameMap';
@@ -27,29 +29,41 @@ export default function GMGameScreen() {
   const [showCodes, setShowCodes] = useState(false);
   const [newAlertCount, setNewAlertCount] = useState(0);
   const [lastSeenArrivals, setLastSeenArrivals] = useState(0);
+  const [copiedCode, setCopiedCode] = useState<'player' | 'gm' | null>(null);
+  const prevArrivalsRef = useRef(0);
 
   useEffect(() => {
     if (gameId) loadGame(gameId, 'gm');
     return () => clearGame();
   }, [gameId]);
 
-  // Track unseen alerts
+  // Haptic feedback + unseen badge on new arrivals
   useEffect(() => {
+    if (arrivals.length > prevArrivalsRef.current) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    }
+    prevArrivalsRef.current = arrivals.length;
+
     if (tab === 'alerts') {
       setLastSeenArrivals(arrivals.length);
       setNewAlertCount(0);
     } else {
-      const newCount = arrivals.length - lastSeenArrivals;
-      setNewAlertCount(Math.max(0, newCount));
+      setNewAlertCount(Math.max(0, arrivals.length - lastSeenArrivals));
     }
   }, [arrivals.length, tab]);
 
   // Handle foreground FCM alerts
   useEffect(() => {
-    return onForegroundMessage((title, body) => {
-      // Will show as local notification via notificationService
+    return onForegroundMessage((_title, _body) => {
+      // Local notification already scheduled by notificationService
     });
   }, []);
+
+  async function handleCopyCode(code: string, type: 'player' | 'gm') {
+    await Clipboard.setStringAsync(code);
+    setCopiedCode(type);
+    setTimeout(() => setCopiedCode(null), 2000);
+  }
 
   function handleCheckpointPress(checkpoint: Checkpoint) {
     Alert.alert(
@@ -93,6 +107,9 @@ export default function GMGameScreen() {
         <View style={styles.headerActions}>
           <TouchableOpacity onPress={() => setShowCodes(true)} style={styles.headerBtn}>
             <Ionicons name="qr-code-outline" size={22} color={Colors.text} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => router.push(`/(app)/gm/${gameId}/players`)} style={styles.headerBtn}>
+            <Ionicons name="people-outline" size={22} color={Colors.text} />
           </TouchableOpacity>
           <TouchableOpacity onPress={() => router.push(`/(app)/gm/${gameId}/checkpoints`)} style={styles.headerBtn}>
             <Ionicons name="map-outline" size={22} color={Colors.text} />
@@ -172,13 +189,31 @@ export default function GMGameScreen() {
 
             <View style={styles.codeBlock}>
               <Text style={styles.codeLabel}>PLAYER CODE</Text>
-              <Text style={styles.codeValue}>{game?.playerCode ?? '…'}</Text>
+              <View style={styles.codeRow}>
+                <Text style={styles.codeValue}>{game?.playerCode ?? '…'}</Text>
+                <TouchableOpacity onPress={() => handleCopyCode(game?.playerCode ?? '', 'player')} style={styles.copyBtn}>
+                  <Ionicons
+                    name={copiedCode === 'player' ? 'checkmark' : 'copy-outline'}
+                    size={20}
+                    color={copiedCode === 'player' ? Colors.success : Colors.textSecondary}
+                  />
+                </TouchableOpacity>
+              </View>
               <Text style={styles.codeDesc}>Players join — they cannot see others or checkpoints</Text>
             </View>
 
             <View style={[styles.codeBlock, styles.gmCodeBlock]}>
               <Text style={styles.codeLabel}>GM CODE</Text>
-              <Text style={styles.codeValue}>{game?.gmCode ?? '…'}</Text>
+              <View style={styles.codeRow}>
+                <Text style={styles.codeValue}>{game?.gmCode ?? '…'}</Text>
+                <TouchableOpacity onPress={() => handleCopyCode(game?.gmCode ?? '', 'gm')} style={styles.copyBtn}>
+                  <Ionicons
+                    name={copiedCode === 'gm' ? 'checkmark' : 'copy-outline'}
+                    size={20}
+                    color={copiedCode === 'gm' ? Colors.success : Colors.textSecondary}
+                  />
+                </TouchableOpacity>
+              </View>
               <Text style={styles.codeDesc}>Co-GMs join — they see everything</Text>
             </View>
 
@@ -292,7 +327,9 @@ const styles = StyleSheet.create({
   },
   gmCodeBlock: { borderColor: Colors.secondary + '66' },
   codeLabel: { fontSize: 11, color: Colors.textSecondary, fontWeight: '700', letterSpacing: 1, marginBottom: 4 },
-  codeValue: { fontSize: 32, fontWeight: '800', color: Colors.text, letterSpacing: 8, marginBottom: 4 },
+  codeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
+  codeValue: { fontSize: 32, fontWeight: '800', color: Colors.text, letterSpacing: 8 },
+  copyBtn: { padding: 8 },
   codeDesc: { fontSize: 12, color: Colors.textSecondary },
   closeBtn: {
     marginTop: 8,

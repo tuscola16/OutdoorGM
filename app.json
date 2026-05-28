@@ -16,6 +16,9 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.yourorg.hungergameslocator",
       "googleServicesFile": "./GoogleService-Info.plist",
+      "config": {
+        "googleMapsApiKey": "YOUR_GOOGLE_MAPS_IOS_API_KEY"
+      },
       "infoPlist": {
         "NSLocationAlwaysAndWhenInUseUsageDescription": "This app tracks your location to notify game masters when you reach checkpoints.",
         "NSLocationAlwaysUsageDescription": "This app tracks your location in the background during active games.",
@@ -30,6 +33,11 @@
       },
       "package": "com.yourorg.hungergameslocator",
       "googleServicesFile": "./google-services.json",
+      "config": {
+        "googleMaps": {
+          "apiKey": "YOUR_GOOGLE_MAPS_ANDROID_API_KEY"
+        }
+      },
       "permissions": [
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION",
@@ -64,7 +72,8 @@
       ],
       "@react-native-firebase/app",
       "@react-native-firebase/auth",
-      "@react-native-firebase/messaging"
+      "@react-native-firebase/messaging",
+      "expo-clipboard"
     ],
     "experiments": {
       "typedRoutes": true
