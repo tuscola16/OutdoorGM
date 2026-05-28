@@ -239,20 +239,14 @@ Items marked **[CODE]** can be done by Claude. Items marked **[MANUAL]** require
 
 ---
 
-## A. Trademark & App Name  ⚠️ Do this first
+## A. Trademark & App Name  ✅ DONE
 
-**[MANUAL]** "Hunger Games" is a registered trademark of Lionsgate Entertainment Corp.
-Using it in an app name will likely cause App Store rejection or a cease-and-desist.
-Rename the app before submission. Options:
-- "Arena Tracker" / "The Arena" / "HunterTracker" / "GameMaster Live"
-- Anything that doesn't reference the IP
-
-**[CODE]** Once a new name is decided:
-- Update `"name"` in `app.json` (currently "HunterGamesLocator" — note it's already misspelled)
-- Update `"slug"` in `app.json` (affects EAS project URL)
-- Update `package.json` `"name"` field
-- Update the app scheme (`"scheme"`) in `app.json`
-- Do a global find/replace across all files for display-facing strings
+App renamed to **Outdoor GM** across all files:
+- `app.json`: name, slug (`outdoor-gm`), scheme (`outdoorgm`), bundleIdentifier/package (`com.yourorg.outdoorgm`), all permission strings
+- `package.json`: name field
+- `app/(auth)/phone.tsx`: title and logo emoji
+- `services/locationTask.ts`: foreground service notification
+- `README.md`, `SETUP.md`: all references updated
 
 ---
 
@@ -413,53 +407,37 @@ eas submit --platform android
 
 These are changes to the codebase that both stores effectively require.
 
-### G1. Account deletion / data erasure
-Both Apple (required since 2023) and Google Play require that apps with accounts provide a way to delete the account and all associated data.
+### G1. Account deletion / data erasure  ✅ DONE
+- `deleteAccount(userId)` added to `services/gameService.ts` — removes user from all game members + location subcollections via batched delete, then deletes the Firestore user profile and calls `auth().currentUser?.delete()`
+- "Delete My Account" danger-zone button added to `app/(app)/profile.tsx` with confirmation alert
+- **[MANUAL]** Still needed: create a publicly-accessible data deletion request URL (a Google Form works) and add it to both store listings
 
-Add a "Delete Account" button to `app/(app)/profile.tsx` that:
-1. Shows a confirmation alert
-2. Calls a new `deleteAccount(userId)` function in `services/gameService.ts` that:
-   - Deletes `users/{userId}` from Firestore
-   - Deletes all `games/*/members/{userId}` documents (collectionGroup delete)
-   - Deletes all `games/*/locations/{userId}` documents
-   - Calls `auth().currentUser.delete()`
-3. Navigates to `/(auth)/phone` on completion
+### G2. Privacy Policy link in-app  ✅ DONE
+- `constants/index.ts` created with `PRIVACY_POLICY_URL`, `TERMS_URL`, `SUPPORT_URL` placeholder constants
+- Privacy Policy link added to bottom of `app/(auth)/phone.tsx` — opens URL via `Linking.openURL`
+- **[MANUAL]** Still needed: replace the placeholder URL in `constants/index.ts` with the real hosted URL
 
-Also create a publicly-accessible data deletion request URL (can be a simple Google Form) and add it to both store listings.
+### G3. Graceful permission-denied handling  ✅ DONE
+- `startLocationTracking` in `services/locationTask.ts` now throws errors prefixed with `PERMISSION_DENIED:`
+- `app/(app)/player/game.tsx` detects this prefix, sets `permissionDenied` state, and renders an "Open Settings" button that calls `Linking.openSettings()`
 
-### G2. Privacy Policy link in-app
-Add a "Privacy Policy" `TouchableOpacity` link at the bottom of `app/(auth)/phone.tsx` that opens the hosted URL using `Linking.openURL(PRIVACY_POLICY_URL)`. Store the URL in `constants/index.ts`.
+### G4. Graceful network error handling  ✅ DONE
+- `services/errorUtils.ts` created with `friendlyError(err)` — maps Firebase error codes (`unavailable`, `permission-denied`, `not-found`, `too-many-requests`) to human-readable strings
+- Used in `app/(auth)/phone.tsx` and `app/(app)/profile.tsx`; import and use in any other screen that surfaces errors to users
 
-### G3. Graceful permission-denied handling
-Currently if the user denies location permission, the player screen shows a generic error string. Improve it:
-- Detect `Location.PermissionStatus.DENIED` specifically
-- Show a message: *"Location access is required to play. Please enable it in Settings."*
-- Add a button that calls `Linking.openSettings()` to take the user directly to the iOS/Android settings page for the app
-
-### G4. Graceful network error handling
-Wrap all Firestore calls in `gameService.ts` in try/catch that distinguishes network errors (no connection) from permission errors. Surface a "No internet connection" message in the UI instead of a silent failure.
-
-### G5. Real artwork
+### G5. Real artwork  **[MANUAL — requires a designer]**
 Replace the placeholder PNGs in `/assets/` with real designed assets:
-- `icon.png` — 1024×1024, no alpha channel (Apple rejects icons with transparency), no rounded corners (the OS applies them)
+- `icon.png` — 1024×1024, **no alpha channel** (Apple rejects icons with transparency), no rounded corners (the OS applies them)
 - `splash.png` — centered logo on `#0D0D0D` background, safe zone: keep main content within the center 1080×1920 area
-- `adaptive-icon.png` — foreground layer only (will be composited over `backgroundColor: "#0D0D0D"`)
+- `adaptive-icon.png` — foreground layer only (composited over `backgroundColor: "#0D0D0D"`)
 - `notification-icon.png` — white silhouette on transparent background (Android requirement)
 
-### G6. Firebase Crashlytics
-Add crash reporting before shipping so you can diagnose issues post-launch:
-```bash
-# Add to package.json dependencies
-"@react-native-firebase/crashlytics": "^20.3.0"
-```
-In `app/_layout.tsx`, import and initialize Crashlytics. It works automatically after that.
-Enable Crashlytics in Firebase Console → Release & Monitor → Crashlytics.
+### G6. Firebase Crashlytics  ✅ DONE
+- `@react-native-firebase/crashlytics` added to `package.json` dependencies
+- Initialized in `app/_layout.tsx` — collection enabled in production, disabled in dev (`!__DEV__`)
+- **[MANUAL]** Still needed: enable Crashlytics in Firebase Console → Release & Monitor → Crashlytics
 
-### G7. Update `EXPO_PUBLIC_USE_EMULATOR` in `.env.example`
-Add the missing line:
-```
-EXPO_PUBLIC_USE_EMULATOR=false
-```
+### G7. `EXPO_PUBLIC_USE_EMULATOR` in `.env.example`  ✅ DONE
 
 ---
 

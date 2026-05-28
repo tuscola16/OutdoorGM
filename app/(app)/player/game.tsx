@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, SafeAreaView, Alert, TouchableOpacity
+  View, Text, StyleSheet, SafeAreaView, Alert, TouchableOpacity, Linking
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -24,6 +24,7 @@ export default function PlayerGameScreen() {
   const [tracking, setTracking] = useState(false);
   const [displayName, setDisplayName] = useState('Player');
   const [error, setError] = useState('');
+  const [permissionDenied, setPermissionDenied] = useState(false);
   const endedRef = useRef(false);
 
   // Handle game-ended state
@@ -69,7 +70,14 @@ export default function PlayerGameScreen() {
     let started = false;
     startLocationTracking(gameId, displayName)
       .then(() => { setTracking(true); started = true; })
-      .catch((err) => setError(err.message));
+      .catch((err: Error) => {
+        if (err.message.startsWith('PERMISSION_DENIED:')) {
+          setPermissionDenied(true);
+          setError(err.message.replace('PERMISSION_DENIED:', ''));
+        } else {
+          setError(err.message);
+        }
+      });
 
     return () => {
       if (started) stopLocationTracking().catch(console.error);
@@ -173,6 +181,11 @@ export default function PlayerGameScreen() {
       {error ? (
         <View style={styles.errorBanner}>
           <Text style={styles.errorText}>{error}</Text>
+          {permissionDenied && (
+            <TouchableOpacity onPress={() => Linking.openSettings()} style={styles.settingsBtn}>
+              <Text style={styles.settingsBtnText}>Open Settings</Text>
+            </TouchableOpacity>
+          )}
         </View>
       ) : null}
 
@@ -253,7 +266,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.danger,
   },
-  errorText: { color: Colors.danger, fontSize: 13 },
+  errorText: { color: Colors.danger, fontSize: 13, marginBottom: 8 },
+  settingsBtn: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: Colors.danger,
+  },
+  settingsBtnText: { color: Colors.danger, fontSize: 13, fontWeight: '600' },
   playerNote: {
     flexDirection: 'row',
     alignItems: 'center',

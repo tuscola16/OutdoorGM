@@ -1,5 +1,5 @@
 {
-  "name": "hunger-games-locator",
+  "name": "outdoor-gm",
   "version": "1.0.0",
   "main": "expo-router/entry",
   "scripts": {
@@ -14,6 +14,7 @@
     "@react-native-firebase/app": "^20.3.0",
     "@react-native-firebase/auth": "^20.3.0",
     "@react-native-firebase/firestore": "^20.3.0",
+    "@react-native-firebase/crashlytics": "^20.3.0",
     "@react-native-firebase/messaging": "^20.3.0",
     "expo": "~51.0.28",
     "expo-dev-client": "~4.0.21",

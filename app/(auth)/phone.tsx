@@ -1,13 +1,15 @@
 import { useState } from 'react';
 import {
   View, Text, StyleSheet, KeyboardAvoidingView,
-  Platform, ScrollView, Alert
+  Platform, ScrollView, TouchableOpacity, Linking
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import auth from '@react-native-firebase/auth';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { Colors } from '@/constants/colors';
+import { PRIVACY_POLICY_URL } from '@/constants';
+import { friendlyError } from '@/services/errorUtils';
 
 export default function PhoneScreen() {
   const router = useRouter();
@@ -26,8 +28,8 @@ export default function PhoneScreen() {
     try {
       const confirmation = await auth().signInWithPhoneNumber(cleaned);
       router.push({ pathname: '/(auth)/verify', params: { phone: cleaned, verificationId: confirmation.verificationId } });
-    } catch (err: any) {
-      setError(err.message ?? 'Failed to send verification code');
+    } catch (err) {
+      setError(friendlyError(err));
     } finally {
       setLoading(false);
     }
@@ -40,8 +42,8 @@ export default function PhoneScreen() {
     >
       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
         <View style={styles.header}>
-          <Text style={styles.flame}>🔥</Text>
-          <Text style={styles.title}>HungerGames{'\n'}Locator</Text>
+          <Text style={styles.logo}>🎯</Text>
+          <Text style={styles.title}>Outdoor GM</Text>
           <Text style={styles.subtitle}>Real-time location game</Text>
         </View>
 
@@ -61,6 +63,13 @@ export default function PhoneScreen() {
           </View>
           <Button title="Send Code" onPress={handleSendCode} loading={loading} />
         </View>
+
+        <TouchableOpacity
+          onPress={() => Linking.openURL(PRIVACY_POLICY_URL)}
+          style={styles.privacyLink}
+        >
+          <Text style={styles.privacyText}>Privacy Policy</Text>
+        </TouchableOpacity>
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -78,7 +87,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 56,
   },
-  flame: {
+  logo: {
     fontSize: 56,
     marginBottom: 12,
   },
@@ -88,7 +97,6 @@ const styles = StyleSheet.create({
     color: Colors.text,
     textAlign: 'center',
     letterSpacing: -0.5,
-    lineHeight: 40,
   },
   subtitle: {
     fontSize: 16,
@@ -113,5 +121,14 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontSize: 13,
     textAlign: 'center',
+  },
+  privacyLink: {
+    marginTop: 32,
+    alignItems: 'center',
+  },
+  privacyText: {
+    color: Colors.textMuted,
+    fontSize: 13,
+    textDecorationLine: 'underline',
   },
 });

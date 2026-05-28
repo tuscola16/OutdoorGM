@@ -4,6 +4,7 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import * as Notifications from 'expo-notifications';
+import crashlytics from '@react-native-firebase/crashlytics';
 import { AuthProvider } from '@/context/AuthContext';
 import { GameProvider } from '@/context/GameContext';
 import '@/services/locationTask';
@@ -12,6 +13,8 @@ SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
   useEffect(() => {
+    crashlytics().setCrashlyticsCollectionEnabled(!__DEV__);
+
     if (Platform.OS === 'android') {
       Notifications.setNotificationChannelAsync('arrivals', {
         name: 'Checkpoint Arrivals',

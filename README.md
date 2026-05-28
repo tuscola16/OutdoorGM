@@ -1,4 +1,4 @@
-# 🔥 HungerGamesLocator
+# 🎯 Outdoor GM
 
 A real-time GPS location-sharing game for iOS and Android. Game Masters watch all players on a live map and get instant alerts when players reach checkpoints. Players share their location but can't see anyone else.
 
@@ -47,7 +47,7 @@ When a player's GPS enters a checkpoint's radius, a Firebase Cloud Function fire
 ### 1. Clone & install
 ```bash
 git clone <repo-url>
-cd HungerGamesLocator
+cd Outdoor GM
 npm install
 cd functions && npm install && cd ..
 ```

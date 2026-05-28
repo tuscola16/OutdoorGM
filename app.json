@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "HunterGamesLocator",
-    "slug": "hunger-games-locator",
+    "name": "Outdoor GM",
+    "slug": "outdoor-gm",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -14,15 +14,15 @@
     "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.yourorg.hungergameslocator",
+      "bundleIdentifier": "com.yourorg.outdoorgm",
       "googleServicesFile": "./GoogleService-Info.plist",
       "config": {
         "googleMapsApiKey": "YOUR_GOOGLE_MAPS_IOS_API_KEY"
       },
       "infoPlist": {
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "This app tracks your location to notify game masters when you reach checkpoints.",
-        "NSLocationAlwaysUsageDescription": "This app tracks your location in the background during active games.",
-        "NSLocationWhenInUseUsageDescription": "This app uses your location to detect when you reach game checkpoints.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Outdoor GM tracks your location in the background so your Game Master can see your position and get alerts when you reach checkpoints.",
+        "NSLocationAlwaysUsageDescription": "Outdoor GM needs background location so tracking continues while you play, even with the app closed.",
+        "NSLocationWhenInUseUsageDescription": "Outdoor GM uses your location to detect when you reach game checkpoints.",
         "UIBackgroundModes": ["location", "fetch", "remote-notification"]
       }
     },
@@ -31,7 +31,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0D0D0D"
       },
-      "package": "com.yourorg.hungergameslocator",
+      "package": "com.yourorg.outdoorgm",
       "googleServicesFile": "./google-services.json",
       "config": {
         "googleMaps": {
@@ -57,7 +57,7 @@
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Allow HungerGamesLocator to use your location.",
+          "locationAlwaysAndWhenInUsePermission": "Allow Outdoor GM to use your location.",
           "isAndroidBackgroundLocationEnabled": true,
           "isAndroidForegroundServiceEnabled": true
         }
@@ -78,6 +78,6 @@
     "experiments": {
       "typedRoutes": true
     },
-    "scheme": "hungergameslocator"
+    "scheme": "outdoorgm"
   }
 }

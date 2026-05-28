@@ -1,4 +1,5 @@
 import firestore from '@react-native-firebase/firestore';
+import auth from '@react-native-firebase/auth';
 import { Collections } from './firebase';
 import type { Game, Checkpoint, GameMember } from '@/types';
 
@@ -155,6 +156,34 @@ export async function deleteCheckpoint(gameId: string, checkpointId: string): Pr
     .collection(Collections.CHECKPOINTS)
     .doc(checkpointId)
     .delete();
+}
+
+export async function deleteAccount(userId: string): Promise<void> {
+  // Remove user from all game member + location subcollections
+  const memberSnap = await firestore()
+    .collectionGroup(Collections.MEMBERS)
+    .where(firestore.FieldPath.documentId(), '==', userId)
+    .get();
+
+  const batch = firestore().batch();
+  for (const memberDoc of memberSnap.docs) {
+    const gameId = memberDoc.ref.parent.parent?.id;
+    batch.delete(memberDoc.ref);
+    if (gameId) {
+      batch.delete(
+        firestore()
+          .collection(Collections.GAMES)
+          .doc(gameId)
+          .collection(Collections.LOCATIONS)
+          .doc(userId)
+      );
+    }
+  }
+  batch.delete(firestore().collection(Collections.USERS).doc(userId));
+  await batch.commit();
+
+  // Delete the Firebase Auth account last — once deleted we lose write access
+  await auth().currentUser?.delete();
 }
 
 export async function updateMemberRole(

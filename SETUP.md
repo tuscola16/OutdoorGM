@@ -1,4 +1,4 @@
-# HungerGamesLocator — Setup Guide
+# Outdoor GM — Setup Guide
 
 A real-time location-sharing game app for iOS and Android.
 
@@ -33,8 +33,8 @@ A real-time location-sharing game app for iOS and Android.
    - **Cloud Functions** (requires Blaze billing plan)
 
 3. Add two apps to your Firebase project:
-   - **iOS app** — bundle ID: `com.yourorg.hungergameslocator`
-   - **Android app** — package name: `com.yourorg.hungergameslocator`
+   - **iOS app** — bundle ID: `com.yourorg.outdoorgm`
+   - **Android app** — package name: `com.yourorg.outdoorgm`
 
 4. Download the config files:
    - `GoogleService-Info.plist` → place in `/` (project root)
@@ -58,7 +58,7 @@ A real-time location-sharing game app for iOS and Android.
 ## Step 3 — App Installation
 
 ```bash
-cd HungerGamesLocator
+cd Outdoor GM
 npm install
 ```
 

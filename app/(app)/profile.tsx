@@ -7,12 +7,16 @@ import { useAuth } from '@/context/AuthContext';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { Colors } from '@/constants/colors';
+import { deleteAccount } from '@/services/gameService';
+import { stopLocationTracking } from '@/services/locationTask';
+import { friendlyError } from '@/services/errorUtils';
 
 export default function ProfileScreen() {
   const router = useRouter();
   const { user, profile, updateProfile } = useAuth();
   const [displayName, setDisplayName] = useState(profile?.displayName ?? '');
   const [loading, setLoading] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [saved, setSaved] = useState(false);
 
   async function handleSave() {
@@ -28,6 +32,31 @@ export default function ProfileScreen() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleDeleteAccount() {
+    Alert.alert(
+      'Delete Account?',
+      'This permanently deletes your account and removes you from all games. It cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete Account',
+          style: 'destructive',
+          onPress: async () => {
+            setDeleting(true);
+            try {
+              await stopLocationTracking();
+              await deleteAccount(user!.uid);
+              // AuthContext listener handles redirect to /(auth)/phone
+            } catch (err) {
+              Alert.alert('Error', friendlyError(err));
+              setDeleting(false);
+            }
+          },
+        },
+      ]
+    );
   }
 
   return (
@@ -48,7 +77,7 @@ export default function ProfileScreen() {
           label="Display Name"
           value={displayName}
           onChangeText={(t) => { setDisplayName(t); setSaved(false); }}
-          placeholder="e.g. Katniss Everdeen"
+          placeholder="e.g. Ranger"
           maxLength={32}
           autoFocus
         />
@@ -62,6 +91,21 @@ export default function ProfileScreen() {
           loading={loading}
           disabled={saved}
         />
+
+        <View style={styles.divider} />
+
+        <View style={styles.dangerZone}>
+          <Text style={styles.dangerLabel}>DANGER ZONE</Text>
+          <Button
+            title="Delete My Account"
+            onPress={handleDeleteAccount}
+            variant="danger"
+            loading={deleting}
+          />
+          <Text style={styles.dangerHint}>
+            Permanently deletes your account and all associated data. You will be removed from every game.
+          </Text>
+        </View>
       </View>
     </SafeAreaView>
   );
@@ -89,4 +133,21 @@ const styles = StyleSheet.create({
   },
   phoneValue: { fontSize: 18, fontWeight: '600', color: Colors.text },
   hint: { fontSize: 13, color: Colors.textSecondary, lineHeight: 18, marginTop: -8 },
+  divider: {
+    height: 1,
+    backgroundColor: Colors.border,
+    marginVertical: 8,
+  },
+  dangerZone: { gap: 10 },
+  dangerLabel: {
+    fontSize: 11,
+    color: Colors.danger,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  dangerHint: {
+    fontSize: 12,
+    color: Colors.textMuted,
+    lineHeight: 18,
+  },
 });

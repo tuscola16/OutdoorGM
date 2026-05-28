@@ -40,10 +40,14 @@ export async function startLocationTracking(gameId: string, displayName: string)
   await AsyncStorage.setItem(DISPLAY_NAME_KEY, displayName);
 
   const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
-  if (fgStatus !== 'granted') throw new Error('Foreground location permission denied');
+  if (fgStatus !== 'granted') {
+    throw new Error('PERMISSION_DENIED:Location access is required to play. Please enable it in Settings.');
+  }
 
   const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
-  if (bgStatus !== 'granted') throw new Error('Background location permission denied');
+  if (bgStatus !== 'granted') {
+    throw new Error('PERMISSION_DENIED:Background location is required so tracking works when the app is in the background. In Settings, set location to "Always".');
+  }
 
   const isRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME).catch(() => false);
   if (!isRunning) {
@@ -52,8 +56,8 @@ export async function startLocationTracking(gameId: string, displayName: string)
       timeInterval: 10000,      // update every 10 seconds
       distanceInterval: 20,     // or every 20 meters
       foregroundService: {
-        notificationTitle: 'HungerGamesLocator',
-        notificationBody: 'Your location is being tracked during the game.',
+        notificationTitle: 'Outdoor GM',
+        notificationBody: 'Your location is being shared with your Game Master.',
         notificationColor: '#E8402A',
       },
       showsBackgroundLocationIndicator: true,
