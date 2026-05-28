@@ -1,0 +1,56 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Users can read/write their own profile
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Games
+    match /games/{gameId} {
+      // Anyone authenticated can read game metadata (to join by code)
+      allow read: if request.auth != null;
+      // Only authenticated users can create games
+      allow create: if request.auth != null;
+      // Only game members can update
+      allow update: if request.auth != null && isGameMember(gameId);
+
+      // Checkpoints — all members can read, only GMs can write
+      match /checkpoints/{checkpointId} {
+        allow read: if request.auth != null && isGameMember(gameId);
+        allow write: if request.auth != null && isGameGM(gameId);
+      }
+
+      // Members — all members can read, GMs can write
+      match /members/{memberId} {
+        allow read: if request.auth != null && isGameMember(gameId);
+        allow write: if request.auth != null && isGameGM(gameId);
+        // Allow users to write their own member doc when joining
+        allow create: if request.auth != null && request.auth.uid == memberId;
+      }
+
+      // Locations — players write their own, GMs can read all
+      match /locations/{userId} {
+        allow read: if request.auth != null && isGameGM(gameId);
+        allow write: if request.auth != null && request.auth.uid == userId;
+        // Allow players to read their own location
+        allow read: if request.auth != null && request.auth.uid == userId;
+      }
+
+      // Arrivals — GMs can read all, Cloud Functions write (admin SDK bypasses rules)
+      match /arrivals/{arrivalId} {
+        allow read: if request.auth != null && isGameMember(gameId);
+        allow write: if false; // only Cloud Functions via admin SDK
+      }
+    }
+
+    function isGameMember(gameId) {
+      return exists(/databases/$(database)/documents/games/$(gameId)/members/$(request.auth.uid));
+    }
+
+    function isGameGM(gameId) {
+      return get(/databases/$(database)/documents/games/$(gameId)/members/$(request.auth.uid)).data.role == 'gm';
+    }
+  }
+}
