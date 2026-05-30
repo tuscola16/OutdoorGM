@@ -13,7 +13,7 @@ export default function Index() {
     if (user) {
       router.replace('/(app)/games');
     } else {
-      router.replace('/(auth)/phone');
+      router.replace('/(auth)/login');
     }
   }, [user, loading]);
 

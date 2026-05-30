@@ -126,7 +126,7 @@ export const onLocationUpdate = functions.firestore
     for (const gmDoc of gmsSnap.docs) {
       const gm = gmDoc.data();
       if (gm.fcmToken) gmTokens.push(gm.fcmToken as string);
-      if (gm.phoneNumber) gmPhones.push(gm.phoneNumber as string);
+      if (gm.phone) gmPhones.push(gm.phone as string);
     }
 
     // Fire notifications for each new arrival

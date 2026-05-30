@@ -48,7 +48,7 @@ export default function ProfileScreen() {
             try {
               await stopLocationTracking();
               await deleteAccount(user!.uid);
-              // AuthContext listener handles redirect to /(auth)/phone
+              // AuthContext listener handles redirect to /(auth)/login
             } catch (err) {
               Alert.alert('Error', friendlyError(err));
               setDeleting(false);
@@ -68,9 +68,9 @@ export default function ProfileScreen() {
       <View style={styles.container}>
         <Text style={styles.title}>Profile</Text>
 
-        <View style={styles.phoneRow}>
-          <Text style={styles.phoneLabel}>PHONE NUMBER</Text>
-          <Text style={styles.phoneValue}>{user?.phoneNumber ?? '—'}</Text>
+        <View style={styles.emailRow}>
+          <Text style={styles.emailLabel}>EMAIL</Text>
+          <Text style={styles.emailValue}>{user?.email ?? '—'}</Text>
         </View>
 
         <Input
@@ -117,21 +117,21 @@ const styles = StyleSheet.create({
   backText: { color: Colors.primary, fontSize: 16 },
   container: { flex: 1, paddingHorizontal: 24, paddingTop: 16, gap: 16 },
   title: { fontSize: 28, fontWeight: '800', color: Colors.text, marginBottom: 8 },
-  phoneRow: {
+  emailRow: {
     backgroundColor: Colors.surface,
     borderRadius: 12,
     padding: 16,
     borderWidth: 1,
     borderColor: Colors.border,
   },
-  phoneLabel: {
+  emailLabel: {
     fontSize: 11,
     color: Colors.textSecondary,
     fontWeight: '700',
     letterSpacing: 0.5,
     marginBottom: 4,
   },
-  phoneValue: { fontSize: 18, fontWeight: '600', color: Colors.text },
+  emailValue: { fontSize: 16, fontWeight: '600', color: Colors.text },
   hint: { fontSize: 13, color: Colors.textSecondary, lineHeight: 18, marginTop: -8 },
   divider: {
     height: 1,

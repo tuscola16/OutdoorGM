@@ -19,7 +19,7 @@
       "bundleIdentifier": "com.bagelrun.outdoorgm",
       "googleServicesFile": "./GoogleService-Info.plist",
       "config": {
-        "googleMapsApiKey": "YOUR_GOOGLE_MAPS_IOS_API_KEY"
+        "googleMapsApiKey": "AIzaSyAeGFyRZRl1CqVDOb1P7C0gal4ZjEjD5T0"
       },
       "infoPlist": {
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Outdoor GM tracks your location in the background so your Game Master can see your position and get alerts when you reach checkpoints.",
@@ -41,7 +41,7 @@
       "googleServicesFile": "./google-services.json",
       "config": {
         "googleMaps": {
-          "apiKey": "YOUR_GOOGLE_MAPS_ANDROID_API_KEY"
+          "apiKey": "AIzaSyBOP2qeEIa0hs59ZomsS_1DCq02EkLEmvE"
         }
       },
       "permissions": [

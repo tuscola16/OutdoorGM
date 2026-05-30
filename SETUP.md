@@ -132,7 +132,7 @@ firebase functions:config:set \
 
 ```
 users/{userId}
-  phoneNumber, displayName, fcmToken, createdAt
+  email, displayName, fcmToken, createdAt
 
 games/{gameId}
   name, playerCode, gmCode, creatorId, status, createdAt
@@ -141,7 +141,7 @@ games/{gameId}/checkpoints/{checkpointId}
   name, latitude, longitude, radius (meters)
 
 games/{gameId}/members/{userId}
-  role (player|gm), displayName, phoneNumber, fcmToken, joinedAt
+  role (player|gm), displayName, email, fcmToken, joinedAt
 
 games/{gameId}/locations/{userId}          ← players write here every ~10s
   userId, displayName, latitude, longitude, accuracy, heading, updatedAt

@@ -28,7 +28,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const snap = await profileRef.get();
         if (!snap.exists) {
           const newProfile: Omit<UserProfile, 'id'> = {
-            phoneNumber: firebaseUser.phoneNumber ?? '',
+            email: firebaseUser.email ?? '',
             displayName: '',
             createdAt: firestore.FieldValue.serverTimestamp() as any,
           };

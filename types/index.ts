@@ -5,7 +5,7 @@ export type GameStatus = 'active' | 'ended';
 
 export interface UserProfile {
   id: string;
-  phoneNumber: string;
+  email: string;
   displayName: string;
   fcmToken?: string;
   createdAt: FirebaseFirestoreTypes.Timestamp;
@@ -35,7 +35,7 @@ export interface GameMember {
   userId: string;
   role: UserRole;
   displayName: string;
-  phoneNumber: string;
+  email: string;
   fcmToken?: string;
   joinedAt: FirebaseFirestoreTypes.Timestamp;
 }

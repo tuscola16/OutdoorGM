@@ -3,7 +3,6 @@ import {
   View, Text, StyleSheet, KeyboardAvoidingView,
   Platform, ScrollView, TouchableOpacity, Linking
 } from 'react-native';
-import { useRouter } from 'expo-router';
 import auth from '@react-native-firebase/auth';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
@@ -11,27 +10,48 @@ import { Colors } from '@/constants/colors';
 import { PRIVACY_POLICY_URL, TERMS_URL } from '@/constants';
 import { friendlyError } from '@/services/errorUtils';
 
-export default function PhoneScreen() {
-  const router = useRouter();
-  const [phone, setPhone] = useState('');
+export default function LoginScreen() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isSignUp, setIsSignUp] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  async function handleSendCode() {
+  async function handleSubmit() {
     setError('');
-    const cleaned = phone.replace(/\s/g, '');
-    if (!cleaned.startsWith('+') || cleaned.length < 8) {
-      setError('Enter your number with country code, e.g. +1 555 123 4567');
+    if (!email.trim() || !password) {
+      setError('Enter your email and password');
+      return;
+    }
+    if (isSignUp && password.length < 6) {
+      setError('Password must be at least 6 characters');
       return;
     }
     setLoading(true);
     try {
-      const confirmation = await auth().signInWithPhoneNumber(cleaned);
-      router.push({ pathname: '/(auth)/verify', params: { phone: cleaned, verificationId: confirmation.verificationId } });
+      if (isSignUp) {
+        await auth().createUserWithEmailAndPassword(email.trim(), password);
+      } else {
+        await auth().signInWithEmailAndPassword(email.trim(), password);
+      }
     } catch (err) {
       setError(friendlyError(err));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleForgotPassword() {
+    if (!email.trim()) {
+      setError('Enter your email first, then tap "Forgot password?"');
+      return;
+    }
+    try {
+      await auth().sendPasswordResetEmail(email.trim());
+      setError('');
+      setError('Password reset email sent. Check your inbox.');
+    } catch (err) {
+      setError(friendlyError(err));
     }
   }
 
@@ -48,21 +68,43 @@ export default function PhoneScreen() {
         </View>
 
         <View style={styles.form}>
-          <Text style={styles.sectionLabel}>Enter your phone number to get started</Text>
+          <Text style={styles.sectionLabel}>
+            {isSignUp ? 'Create an account to get started' : 'Sign in to your account'}
+          </Text>
           <Input
-            label="Phone Number"
-            value={phone}
-            onChangeText={setPhone}
-            keyboardType="phone-pad"
-            placeholder="+1 555 123 4567"
-            error={error}
+            label="Email"
+            value={email}
+            onChangeText={(t) => { setEmail(t); setError(''); }}
+            keyboardType="email-address"
+            placeholder="you@example.com"
+            autoCapitalize="none"
             autoFocus
           />
-          <View style={styles.hint}>
-            <Text style={styles.hintText}>We'll send a one-time verification code via SMS.</Text>
-          </View>
-          <Button title="Send Code" onPress={handleSendCode} loading={loading} />
+          <Input
+            label="Password"
+            value={password}
+            onChangeText={(t) => { setPassword(t); setError(''); }}
+            placeholder={isSignUp ? 'At least 6 characters' : 'Your password'}
+            secureTextEntry
+          />
+          {error ? <Text style={styles.error}>{error}</Text> : null}
+          <Button
+            title={isSignUp ? 'Create Account' : 'Sign In'}
+            onPress={handleSubmit}
+            loading={loading}
+          />
+          {!isSignUp && (
+            <TouchableOpacity onPress={handleForgotPassword} style={styles.forgot}>
+              <Text style={styles.forgotText}>Forgot password?</Text>
+            </TouchableOpacity>
+          )}
         </View>
+
+        <TouchableOpacity onPress={() => { setIsSignUp(!isSignUp); setError(''); }} style={styles.toggle}>
+          <Text style={styles.toggleText}>
+            {isSignUp ? 'Already have an account? Sign in' : "Don't have an account? Sign up"}
+          </Text>
+        </TouchableOpacity>
 
         <View style={styles.legalLinks}>
           <TouchableOpacity onPress={() => Linking.openURL(PRIVACY_POLICY_URL)}>
@@ -115,15 +157,26 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 4,
   },
-  hint: {
-    backgroundColor: Colors.surface,
-    borderRadius: 8,
-    padding: 12,
-  },
-  hintText: {
-    color: Colors.textSecondary,
+  error: {
+    color: Colors.danger,
     fontSize: 13,
     textAlign: 'center',
+  },
+  forgot: {
+    alignItems: 'center',
+  },
+  forgotText: {
+    color: Colors.textSecondary,
+    fontSize: 14,
+  },
+  toggle: {
+    marginTop: 24,
+    alignItems: 'center',
+  },
+  toggleText: {
+    color: Colors.primary,
+    fontSize: 15,
+    fontWeight: '600',
   },
   legalLinks: {
     marginTop: 32,

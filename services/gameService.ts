@@ -66,13 +66,13 @@ export async function joinGame(
   userId: string,
   role: 'player' | 'gm',
   displayName: string,
-  phoneNumber: string,
+  email: string,
   fcmToken?: string
 ): Promise<void> {
   const memberData: Omit<GameMember, 'userId'> = {
     role,
     displayName,
-    phoneNumber,
+    email,
     fcmToken,
     joinedAt: firestore.FieldValue.serverTimestamp() as any,
   };

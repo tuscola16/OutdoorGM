@@ -27,7 +27,7 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
   const displayName = await AsyncStorage.getItem(DISPLAY_NAME_KEY);
   if (!gameId) return;
 
-  await updatePlayerLocation(gameId, user.uid, displayName ?? user.phoneNumber ?? 'Player', {
+  await updatePlayerLocation(gameId, user.uid, displayName ?? user.email ?? 'Player', {
     latitude: location.coords.latitude,
     longitude: location.coords.longitude,
     accuracy: location.coords.accuracy ?? undefined,

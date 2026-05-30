@@ -54,7 +54,7 @@ cd functions && npm install && cd ..
 
 ### 2. Firebase setup
 1. Create a project at [console.firebase.google.com](https://console.firebase.google.com)
-2. Enable **Phone Auth**, **Firestore**, **Cloud Messaging**, and **Cloud Functions** (Blaze plan)
+2. Enable **Email/Password Auth**, **Firestore**, **Cloud Messaging**, and **Cloud Functions** (Blaze plan)
 3. Add iOS + Android apps, download `GoogleService-Info.plist` and `google-services.json` to the project root
 4. Update `.firebaserc` with your project ID
 

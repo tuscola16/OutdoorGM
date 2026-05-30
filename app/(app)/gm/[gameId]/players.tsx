@@ -67,7 +67,7 @@ export default function PlayersScreen() {
 
         <View style={styles.info}>
           <Text style={styles.name}>{item.displayName}</Text>
-          <Text style={styles.phone}>{item.phoneNumber}</Text>
+          <Text style={styles.email}>{item.email}</Text>
         </View>
 
         <View style={[styles.badge, isGM ? styles.gmBadge : styles.playerBadge]}>
@@ -164,7 +164,7 @@ const styles = StyleSheet.create({
   avatarText: { fontSize: 16, fontWeight: '800', color: Colors.text },
   info: { flex: 1 },
   name: { fontSize: 15, fontWeight: '700', color: Colors.text },
-  phone: { fontSize: 12, color: Colors.textSecondary, marginTop: 1 },
+  email: { fontSize: 12, color: Colors.textSecondary, marginTop: 1 },
   badge: {
     borderRadius: 6,
     paddingHorizontal: 7,

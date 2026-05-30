@@ -44,7 +44,7 @@ export default function JoinScreen() {
         user.uid,
         result.role,
         displayName.trim(),
-        user.phoneNumber ?? '',
+        user.email ?? '',
         fcmToken ?? undefined
       );
 

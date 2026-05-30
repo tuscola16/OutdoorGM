@@ -28,7 +28,7 @@ export default function CreateGameScreen() {
     try {
       const game = await createGame(gameName, user.uid);
       const fcmToken = await getFcmToken();
-      await joinGame(game.id, user.uid, 'gm', displayName.trim(), user.phoneNumber ?? '', fcmToken ?? undefined);
+      await joinGame(game.id, user.uid, 'gm', displayName.trim(), user.email ?? '', fcmToken ?? undefined);
       router.replace(`/(app)/gm/${game.id}`);
     } catch (err: any) {
       setError(err.message ?? 'Failed to create game');
