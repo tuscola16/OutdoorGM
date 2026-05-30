@@ -8,7 +8,7 @@ import auth from '@react-native-firebase/auth';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { Colors } from '@/constants/colors';
-import { PRIVACY_POLICY_URL } from '@/constants';
+import { PRIVACY_POLICY_URL, TERMS_URL } from '@/constants';
 import { friendlyError } from '@/services/errorUtils';
 
 export default function PhoneScreen() {
@@ -64,12 +64,15 @@ export default function PhoneScreen() {
           <Button title="Send Code" onPress={handleSendCode} loading={loading} />
         </View>
 
-        <TouchableOpacity
-          onPress={() => Linking.openURL(PRIVACY_POLICY_URL)}
-          style={styles.privacyLink}
-        >
-          <Text style={styles.privacyText}>Privacy Policy</Text>
-        </TouchableOpacity>
+        <View style={styles.legalLinks}>
+          <TouchableOpacity onPress={() => Linking.openURL(PRIVACY_POLICY_URL)}>
+            <Text style={styles.privacyText}>Privacy Policy</Text>
+          </TouchableOpacity>
+          <Text style={styles.privacyText}> · </Text>
+          <TouchableOpacity onPress={() => Linking.openURL(TERMS_URL)}>
+            <Text style={styles.privacyText}>Terms</Text>
+          </TouchableOpacity>
+        </View>
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -122,8 +125,10 @@ const styles = StyleSheet.create({
     fontSize: 13,
     textAlign: 'center',
   },
-  privacyLink: {
+  legalLinks: {
     marginTop: 32,
+    flexDirection: 'row',
+    justifyContent: 'center',
     alignItems: 'center',
   },
   privacyText: {

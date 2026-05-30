@@ -11,10 +11,12 @@
       "resizeMode": "contain",
       "backgroundColor": "#0D0D0D"
     },
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.yourorg.outdoorgm",
+      "bundleIdentifier": "com.bagelrun.outdoorgm",
       "googleServicesFile": "./GoogleService-Info.plist",
       "config": {
         "googleMapsApiKey": "YOUR_GOOGLE_MAPS_IOS_API_KEY"
@@ -23,7 +25,11 @@
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Outdoor GM tracks your location in the background so your Game Master can see your position and get alerts when you reach checkpoints.",
         "NSLocationAlwaysUsageDescription": "Outdoor GM needs background location so tracking continues while you play, even with the app closed.",
         "NSLocationWhenInUseUsageDescription": "Outdoor GM uses your location to detect when you reach game checkpoints.",
-        "UIBackgroundModes": ["location", "fetch", "remote-notification"]
+        "UIBackgroundModes": [
+          "location",
+          "fetch",
+          "remote-notification"
+        ]
       }
     },
     "android": {
@@ -31,7 +37,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0D0D0D"
       },
-      "package": "com.yourorg.outdoorgm",
+      "package": "com.bagelrun.outdoorgm",
       "googleServicesFile": "./google-services.json",
       "config": {
         "googleMaps": {
@@ -72,12 +78,25 @@
       ],
       "@react-native-firebase/app",
       "@react-native-firebase/auth",
-      "@react-native-firebase/messaging",
-      "expo-clipboard"
+      "@react-native-firebase/messaging"
     ],
     "experiments": {
       "typedRoutes": true
     },
-    "scheme": "outdoorgm"
+    "scheme": "outdoorgm",
+    "extra": {
+      "router": {
+        "origin": false
+      },
+      "eas": {
+        "projectId": "ac670593-883f-4ab4-974f-57992e269c6b"
+      }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/ac670593-883f-4ab4-974f-57992e269c6b"
+    }
   }
 }

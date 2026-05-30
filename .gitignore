@@ -11,8 +11,6 @@ npm-debug.*
 web-build/
 .env
 .env.local
-GoogleService-Info.plist
-google-services.json
 functions/node_modules/
 functions/lib/
 *.log
