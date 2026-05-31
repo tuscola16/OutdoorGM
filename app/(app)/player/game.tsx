@@ -45,21 +45,27 @@ export default function PlayerGameScreen() {
     const unsubGame = firestore()
       .collection(Collections.GAMES)
       .doc(gameId)
-      .onSnapshot((snap) => {
-        if (snap.exists) {
-          setGameName(snap.data()?.name ?? '');
-          if (snap.data()?.status === 'ended') setGameStatus('ended');
-        }
-      });
+      .onSnapshot(
+        (snap) => {
+          if (snap.exists) {
+            setGameName(snap.data()?.name ?? '');
+            if (snap.data()?.status === 'ended') setGameStatus('ended');
+          }
+        },
+        (err) => console.error('[PlayerGame] game listener error', err)
+      );
 
     const unsubMember = firestore()
       .collection(Collections.GAMES)
       .doc(gameId)
       .collection(Collections.MEMBERS)
       .doc(user.uid)
-      .onSnapshot((snap) => {
-        if (snap.exists) setDisplayName(snap.data()?.displayName ?? 'Player');
-      });
+      .onSnapshot(
+        (snap) => {
+          if (snap.exists) setDisplayName(snap.data()?.displayName ?? 'Player');
+        },
+        (err) => console.error('[PlayerGame] member listener error', err)
+      );
 
     return () => { unsubGame(); unsubMember(); };
   }, [gameId, user]);
@@ -90,7 +96,9 @@ export default function PlayerGameScreen() {
     Location.watchPositionAsync(
       { accuracy: Location.Accuracy.Balanced, timeInterval: 5000, distanceInterval: 10 },
       (loc) => setMyLocation({ latitude: loc.coords.latitude, longitude: loc.coords.longitude })
-    ).then((s) => { sub = s; });
+    )
+      .then((s) => { sub = s; })
+      .catch((err) => console.error('watchPositionAsync failed', err));
     return () => { sub?.remove(); };
   }, []);
 
@@ -111,8 +119,15 @@ export default function PlayerGameScreen() {
           text: 'Leave',
           style: 'destructive',
           onPress: async () => {
-            await stopLocationTracking();
-            router.replace('/(app)/games');
+            // Navigate regardless — the unmount cleanup also stops tracking, so a
+            // failure here shouldn't strand the player on the game screen.
+            try {
+              await stopLocationTracking();
+            } catch (err) {
+              console.error('stopLocationTracking failed', err);
+            } finally {
+              router.replace('/(app)/games');
+            }
           },
         },
       ]

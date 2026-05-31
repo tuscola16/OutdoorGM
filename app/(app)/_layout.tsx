@@ -10,7 +10,7 @@ export default function AppLayout() {
 
   useEffect(() => {
     if (!loading && !user) {
-      router.replace('/(auth)/phone');
+      router.replace('/(auth)/login');
     }
   }, [user, loading]);
 
@@ -18,10 +18,14 @@ export default function AppLayout() {
   useEffect(() => {
     if (!user) return;
     (async () => {
-      const granted = await requestNotificationPermissions();
-      if (granted) {
-        const token = await getFcmToken();
-        if (token) await updateProfile({ fcmToken: token });
+      try {
+        const granted = await requestNotificationPermissions();
+        if (granted) {
+          const token = await getFcmToken();
+          if (token) await updateProfile({ fcmToken: token });
+        }
+      } catch (err) {
+        console.warn('FCM token setup failed (non-fatal):', err);
       }
     })();
   }, [user]);

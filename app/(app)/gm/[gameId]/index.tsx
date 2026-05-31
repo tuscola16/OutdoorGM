@@ -14,6 +14,7 @@ import { AlertFeed } from '@/components/AlertFeed';
 import { Colors } from '@/constants/colors';
 import { onForegroundMessage } from '@/services/notificationService';
 import { endGame } from '@/services/gameService';
+import { friendlyError } from '@/services/errorUtils';
 import type { Checkpoint } from '@/types';
 
 const { width } = Dimensions.get('window');
@@ -60,9 +61,13 @@ export default function GMGameScreen() {
   }, []);
 
   async function handleCopyCode(code: string, type: 'player' | 'gm') {
-    await Clipboard.setStringAsync(code);
-    setCopiedCode(type);
-    setTimeout(() => setCopiedCode(null), 2000);
+    try {
+      await Clipboard.setStringAsync(code);
+      setCopiedCode(type);
+      setTimeout(() => setCopiedCode(null), 2000);
+    } catch {
+      Alert.alert('Could not copy', 'Please copy the code manually.');
+    }
   }
 
   function handleCheckpointPress(checkpoint: Checkpoint) {
@@ -83,8 +88,12 @@ export default function GMGameScreen() {
           text: 'End Game',
           style: 'destructive',
           onPress: async () => {
-            if (gameId) await endGame(gameId);
-            router.replace('/(app)/games');
+            try {
+              if (gameId) await endGame(gameId);
+              router.replace('/(app)/games');
+            } catch (err) {
+              Alert.alert('Error', friendlyError(err));
+            }
           },
         },
       ]

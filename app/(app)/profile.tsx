@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  View, Text, StyleSheet, SafeAreaView, TouchableOpacity, Alert
+  View, Text, StyleSheet, SafeAreaView, TouchableOpacity, Alert, Modal
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/context/AuthContext';
@@ -18,6 +18,9 @@ export default function ProfileScreen() {
   const [loading, setLoading] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleteError, setDeleteError] = useState('');
 
   async function handleSave() {
     if (!displayName.trim()) {
@@ -29,34 +32,34 @@ export default function ProfileScreen() {
       await updateProfile({ displayName: displayName.trim() });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      Alert.alert('Error', friendlyError(err));
     } finally {
       setLoading(false);
     }
   }
 
   function handleDeleteAccount() {
-    Alert.alert(
-      'Delete Account?',
-      'This permanently deletes your account and removes you from all games. It cannot be undone.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete Account',
-          style: 'destructive',
-          onPress: async () => {
-            setDeleting(true);
-            try {
-              await stopLocationTracking();
-              await deleteAccount(user!.uid);
-              // AuthContext listener handles redirect to /(auth)/login
-            } catch (err) {
-              Alert.alert('Error', friendlyError(err));
-              setDeleting(false);
-            }
-          },
-        },
-      ]
-    );
+    setDeletePassword('');
+    setDeleteError('');
+    setShowDeleteModal(true);
+  }
+
+  async function confirmDelete() {
+    if (!deletePassword) {
+      setDeleteError('Enter your password to confirm.');
+      return;
+    }
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      await stopLocationTracking();
+      await deleteAccount(user!.uid, deletePassword);
+      // AuthContext listener handles redirect to /(auth)/login
+    } catch (err) {
+      setDeleteError(friendlyError(err));
+      setDeleting(false);
+    }
   }
 
   return (
@@ -107,6 +110,51 @@ export default function ProfileScreen() {
           </Text>
         </View>
       </View>
+
+      {/* Delete confirmation — requires password to re-authenticate */}
+      <Modal
+        visible={showDeleteModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => !deleting && setShowDeleteModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Delete Account</Text>
+            <Text style={styles.modalSub}>
+              This permanently deletes your account and removes you from all games. It cannot be undone.
+              Enter your password to confirm.
+            </Text>
+            <Input
+              label="Password"
+              value={deletePassword}
+              onChangeText={(t) => { setDeletePassword(t); setDeleteError(''); }}
+              placeholder="Your password"
+              secureTextEntry
+              autoFocus
+            />
+            {deleteError ? <Text style={styles.modalError}>{deleteError}</Text> : null}
+            <View style={styles.modalActions}>
+              <Button
+                title="Cancel"
+                onPress={() => setShowDeleteModal(false)}
+                variant="ghost"
+                disabled={deleting}
+                fullWidth={false}
+                style={{ flex: 1 }}
+              />
+              <Button
+                title="Delete"
+                onPress={confirmDelete}
+                variant="danger"
+                loading={deleting}
+                fullWidth={false}
+                style={{ flex: 1 }}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -150,4 +198,21 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
     lineHeight: 18,
   },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: Colors.surface,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 24,
+    paddingBottom: 40,
+    gap: 12,
+  },
+  modalTitle: { fontSize: 22, fontWeight: '800', color: Colors.text },
+  modalSub: { fontSize: 14, color: Colors.textSecondary, lineHeight: 20 },
+  modalError: { color: Colors.danger, fontSize: 13 },
+  modalActions: { flexDirection: 'row', gap: 12, marginTop: 4 },
 });

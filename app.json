@@ -72,13 +72,14 @@
         "expo-notifications",
         {
           "icon": "./assets/notification-icon.png",
-          "color": "#E8402A",
           "sounds": []
         }
       ],
       "@react-native-firebase/app",
       "@react-native-firebase/auth",
-      "@react-native-firebase/messaging"
+      "@react-native-firebase/crashlytics",
+      "@react-native-firebase/messaging",
+      "./plugins/withGradleVersion"
     ],
     "experiments": {
       "typedRoutes": true

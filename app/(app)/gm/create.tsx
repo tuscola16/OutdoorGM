@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/Button';
 import { Colors } from '@/constants/colors';
 import { createGame, joinGame } from '@/services/gameService';
 import { getFcmToken } from '@/services/notificationService';
+import { friendlyError } from '@/services/errorUtils';
 
 export default function CreateGameScreen() {
   const router = useRouter();
@@ -30,8 +31,8 @@ export default function CreateGameScreen() {
       const fcmToken = await getFcmToken();
       await joinGame(game.id, user.uid, 'gm', displayName.trim(), user.email ?? '', fcmToken ?? undefined);
       router.replace(`/(app)/gm/${game.id}`);
-    } catch (err: any) {
-      setError(err.message ?? 'Failed to create game');
+    } catch (err) {
+      setError(friendlyError(err));
     } finally {
       setLoading(false);
     }

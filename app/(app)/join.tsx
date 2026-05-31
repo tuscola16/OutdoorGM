@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/Button';
 import { Colors } from '@/constants/colors';
 import { findGameByCode, joinGame, updateFcmToken } from '@/services/gameService';
 import { getFcmToken } from '@/services/notificationService';
+import { friendlyError } from '@/services/errorUtils';
 
 export default function JoinScreen() {
   const router = useRouter();
@@ -49,8 +50,8 @@ export default function JoinScreen() {
       );
 
       router.replace('/(app)/games');
-    } catch (err: any) {
-      setError(err.message ?? 'Failed to join game');
+    } catch (err) {
+      setError(friendlyError(err));
     } finally {
       setLoading(false);
     }

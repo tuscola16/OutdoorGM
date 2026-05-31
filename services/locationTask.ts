@@ -27,18 +27,23 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
   const displayName = await AsyncStorage.getItem(DISPLAY_NAME_KEY);
   if (!gameId) return;
 
-  await updatePlayerLocation(gameId, user.uid, displayName ?? user.email ?? 'Player', {
-    latitude: location.coords.latitude,
-    longitude: location.coords.longitude,
-    accuracy: location.coords.accuracy ?? undefined,
-    heading: location.coords.heading ?? undefined,
-  });
+  try {
+    await updatePlayerLocation(gameId, user.uid, displayName ?? user.email ?? 'Player', {
+      latitude: location.coords.latitude,
+      longitude: location.coords.longitude,
+      accuracy: location.coords.accuracy ?? undefined,
+      heading: location.coords.heading ?? undefined,
+    });
+  } catch (err) {
+    // A single failed upload (transient network/permission) shouldn't crash the
+    // background task — the next location update will retry.
+    console.error('[LocationTask] location upload failed:', err);
+  }
 });
 
 export async function startLocationTracking(gameId: string, displayName: string): Promise<void> {
-  await AsyncStorage.setItem(ACTIVE_GAME_KEY, gameId);
-  await AsyncStorage.setItem(DISPLAY_NAME_KEY, displayName);
-
+  // Confirm permissions *before* persisting the active game, so a denial doesn't
+  // leave stale keys that a later background event could act on.
   const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
   if (fgStatus !== 'granted') {
     throw new Error('PERMISSION_DENIED:Location access is required to play. Please enable it in Settings.');
@@ -49,6 +54,9 @@ export async function startLocationTracking(gameId: string, displayName: string)
     throw new Error('PERMISSION_DENIED:Background location is required so tracking works when the app is in the background. In Settings, set location to "Always".');
   }
 
+  await AsyncStorage.setItem(ACTIVE_GAME_KEY, gameId);
+  await AsyncStorage.setItem(DISPLAY_NAME_KEY, displayName);
+
   const isRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME).catch(() => false);
   if (!isRunning) {
     await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
@@ -58,7 +66,7 @@ export async function startLocationTracking(gameId: string, displayName: string)
       foregroundService: {
         notificationTitle: 'Outdoor GM',
         notificationBody: 'Your location is being shared with your Game Master.',
-        notificationColor: '#E8402A',
+        notificationColor: '#D4893F',
       },
       showsBackgroundLocationIndicator: true,
       pausesUpdatesAutomatically: false,
@@ -67,7 +75,7 @@ export async function startLocationTracking(gameId: string, displayName: string)
 }
 
 export async function stopLocationTracking(): Promise<void> {
-  await AsyncStorage.removeItem(ACTIVE_GAME_KEY);
+  await AsyncStorage.multiRemove([ACTIVE_GAME_KEY, DISPLAY_NAME_KEY]);
   const isRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME).catch(() => false);
   if (isRunning) {
     await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);

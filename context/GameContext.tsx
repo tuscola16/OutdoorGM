@@ -46,9 +46,12 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     return firestore()
       .collection(Collections.GAMES)
       .doc(gameId)
-      .onSnapshot((snap) => {
-        if (snap.exists) setGame({ id: snap.id, ...snap.data() } as Game);
-      });
+      .onSnapshot(
+        (snap) => {
+          if (snap.exists) setGame({ id: snap.id, ...snap.data() } as Game);
+        },
+        (err) => console.error('[GameContext] game listener error', err)
+      );
   }, [gameId]);
 
   // Subscribe to checkpoints
@@ -58,9 +61,12 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
       .collection(Collections.GAMES)
       .doc(gameId)
       .collection(Collections.CHECKPOINTS)
-      .onSnapshot((snap) => {
-        setCheckpoints(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Checkpoint)));
-      });
+      .onSnapshot(
+        (snap) => {
+          setCheckpoints(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Checkpoint)));
+        },
+        (err) => console.error('[GameContext] checkpoints listener error', err)
+      );
   }, [gameId]);
 
   // Subscribe to members
@@ -70,9 +76,12 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
       .collection(Collections.GAMES)
       .doc(gameId)
       .collection(Collections.MEMBERS)
-      .onSnapshot((snap) => {
-        setMembers(snap.docs.map((d) => ({ userId: d.id, ...d.data() } as GameMember)));
-      });
+      .onSnapshot(
+        (snap) => {
+          setMembers(snap.docs.map((d) => ({ userId: d.id, ...d.data() } as GameMember)));
+        },
+        (err) => console.error('[GameContext] members listener error', err)
+      );
   }, [gameId, myRole]);
 
   // Subscribe to player locations (GMs only)
@@ -82,9 +91,12 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
       .collection(Collections.GAMES)
       .doc(gameId)
       .collection(Collections.LOCATIONS)
-      .onSnapshot((snap) => {
-        setPlayerLocations(snap.docs.map((d) => ({ ...d.data() } as PlayerLocation)));
-      });
+      .onSnapshot(
+        (snap) => {
+          setPlayerLocations(snap.docs.map((d) => ({ ...d.data() } as PlayerLocation)));
+        },
+        (err) => console.error('[GameContext] locations listener error', err)
+      );
   }, [gameId, myRole]);
 
   // Subscribe to arrivals
@@ -96,9 +108,12 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
       .collection(Collections.ARRIVALS)
       .orderBy('timestamp', 'desc')
       .limit(50)
-      .onSnapshot((snap) => {
-        setArrivals(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Arrival)));
-      });
+      .onSnapshot(
+        (snap) => {
+          setArrivals(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Arrival)));
+        },
+        (err) => console.error('[GameContext] arrivals listener error', err)
+      );
   }, [gameId]);
 
   return (

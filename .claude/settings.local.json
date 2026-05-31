@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(adb version *)",
+      "Bash(where adb *)",
+      "Bash(grep -E \"^\\\\-.*\\\\.\\(md|txt|json\\)$\")",
+      "Skill(update-config)"
+    ]
+  }
+}

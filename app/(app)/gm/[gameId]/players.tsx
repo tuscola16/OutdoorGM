@@ -8,6 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useGame } from '@/context/GameContext';
 import { Colors } from '@/constants/colors';
 import { updateMemberRole, removePlayer } from '@/services/gameService';
+import { friendlyError } from '@/services/errorUtils';
 import type { GameMember } from '@/types';
 
 export default function PlayersScreen() {
@@ -31,7 +32,12 @@ export default function PlayersScreen() {
         {
           text: label,
           onPress: async () => {
-            if (gameId) await updateMemberRole(gameId, member.userId, newRole);
+            if (!gameId) return;
+            try {
+              await updateMemberRole(gameId, member.userId, newRole);
+            } catch (err) {
+              Alert.alert('Error', friendlyError(err));
+            }
           },
         },
       ]
@@ -48,7 +54,12 @@ export default function PlayersScreen() {
           text: 'Remove',
           style: 'destructive',
           onPress: async () => {
-            if (gameId) await removePlayer(gameId, member.userId);
+            if (!gameId) return;
+            try {
+              await removePlayer(gameId, member.userId);
+            } catch (err) {
+              Alert.alert('Error', friendlyError(err));
+            }
           },
         },
       ]

@@ -22,25 +22,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const unsubscribeAuth = auth().onAuthStateChanged(async (firebaseUser) => {
       setUser(firebaseUser);
-      if (firebaseUser) {
-        // Ensure user profile document exists
-        const profileRef = firestore().collection(Collections.USERS).doc(firebaseUser.uid);
-        const snap = await profileRef.get();
-        if (!snap.exists) {
-          const newProfile: Omit<UserProfile, 'id'> = {
+      try {
+        if (firebaseUser) {
+          // Ensure user profile document exists
+          const profileRef = firestore().collection(Collections.USERS).doc(firebaseUser.uid);
+          const snap = await profileRef.get();
+          if (!snap.exists) {
+            const newProfile: Omit<UserProfile, 'id'> = {
+              email: firebaseUser.email ?? '',
+              displayName: '',
+              createdAt: firestore.FieldValue.serverTimestamp() as any,
+            };
+            await profileRef.set(newProfile);
+            setProfile({ id: firebaseUser.uid, ...newProfile } as UserProfile);
+          } else {
+            setProfile({ id: snap.id, ...snap.data() } as UserProfile);
+          }
+        } else {
+          setProfile(null);
+        }
+      } catch (err) {
+        // Don't block the app on a profile read failure (e.g. offline at launch).
+        // Fall back to a minimal profile so authenticated screens stay usable.
+        console.error('Auth profile load failed', err);
+        if (firebaseUser) {
+          setProfile({
+            id: firebaseUser.uid,
             email: firebaseUser.email ?? '',
             displayName: '',
-            createdAt: firestore.FieldValue.serverTimestamp() as any,
-          };
-          await profileRef.set(newProfile);
-          setProfile({ id: firebaseUser.uid, ...newProfile } as UserProfile);
+          } as UserProfile);
         } else {
-          setProfile({ id: snap.id, ...snap.data() } as UserProfile);
+          setProfile(null);
         }
-      } else {
-        setProfile(null);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     });
     return unsubscribeAuth;
   }, []);

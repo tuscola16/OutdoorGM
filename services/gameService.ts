@@ -69,7 +69,8 @@ export async function joinGame(
   email: string,
   fcmToken?: string
 ): Promise<void> {
-  const memberData: Omit<GameMember, 'userId'> = {
+  const memberData: Omit<GameMember, 'userId'> & { userId: string } = {
+    userId,
     role,
     displayName,
     email,
@@ -94,12 +95,10 @@ export async function updateFcmToken(gameId: string, userId: string, fcmToken: s
 }
 
 export async function getMyGames(userId: string): Promise<{ game: Game; role: 'player' | 'gm' }[]> {
-  // Query all games where the user is a member across the subcollection
-  // Firestore doesn't support cross-collection-group queries with doc ID matching,
-  // so we use collectionGroup query
+  // Query all member subcollections where the userId field matches
   const snap = await firestore()
     .collectionGroup(Collections.MEMBERS)
-    .where(firestore.FieldPath.documentId(), '==', userId)
+    .where('userId', '==', userId)
     .get();
 
   const results: { game: Game; role: 'player' | 'gm' }[] = [];
@@ -158,11 +157,24 @@ export async function deleteCheckpoint(gameId: string, checkpointId: string): Pr
     .delete();
 }
 
-export async function deleteAccount(userId: string): Promise<void> {
+export async function deleteAccount(userId: string, password: string): Promise<void> {
+  const current = auth().currentUser;
+  if (!current || !current.email) {
+    throw new Error('You must be signed in to delete your account.');
+  }
+
+  // Re-authenticate first. Firestore rules require an authenticated user, so the
+  // data cleanup below must run *before* the auth account is deleted. If we let
+  // currentUser.delete() fail with `auth/requires-recent-login` at the end, the
+  // user's data would already be gone but their account would remain — a broken,
+  // unrecoverable state. Reauthenticating up front guarantees delete() will succeed.
+  const credential = auth.EmailAuthProvider.credential(current.email, password);
+  await current.reauthenticateWithCredential(credential);
+
   // Remove user from all game member + location subcollections
   const memberSnap = await firestore()
     .collectionGroup(Collections.MEMBERS)
-    .where(firestore.FieldPath.documentId(), '==', userId)
+    .where('userId', '==', userId)
     .get();
 
   const batch = firestore().batch();
@@ -182,8 +194,9 @@ export async function deleteAccount(userId: string): Promise<void> {
   batch.delete(firestore().collection(Collections.USERS).doc(userId));
   await batch.commit();
 
-  // Delete the Firebase Auth account last — once deleted we lose write access
-  await auth().currentUser?.delete();
+  // Delete the Firebase Auth account last — once deleted we lose Firestore write
+  // access. Reauthentication above ensures this cannot fail with requires-recent-login.
+  await current.delete();
 }
 
 export async function updateMemberRole(

@@ -20,7 +20,7 @@ export default function RootLayout() {
         name: 'Checkpoint Arrivals',
         importance: Notifications.AndroidImportance.MAX,
         vibrationPattern: [0, 250, 250, 250],
-        lightColor: '#E8402A',
+        lightColor: '#D4893F',
         sound: 'default',
       });
     }

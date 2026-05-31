@@ -14,6 +14,12 @@ export function friendlyError(err: unknown): string {
   if (code.includes('too-many-requests')) {
     return 'Too many attempts. Please wait a moment and try again.';
   }
+  if (code.includes('requires-recent-login')) {
+    return 'For security, please sign out and sign back in, then try again.';
+  }
+  if (code.includes('wrong-password') || code.includes('invalid-credential')) {
+    return 'Incorrect password. Please try again.';
+  }
   if (code.includes('app/no-app') || code.includes('auth/')) {
     return 'Authentication error. Please sign out and sign back in.';
   }

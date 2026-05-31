@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Colors } from '@/constants/colors';
 import { addCheckpoint, updateCheckpoint, deleteCheckpoint } from '@/services/gameService';
+import { friendlyError } from '@/services/errorUtils';
 import type { Checkpoint } from '@/types';
 
 type Mode = 'list' | 'map';
@@ -70,6 +71,8 @@ export default function CheckpointsScreen() {
         });
       }
       setShowAddModal(false);
+    } catch (err) {
+      Alert.alert('Error', friendlyError(err));
     } finally {
       setSaving(false);
     }
@@ -82,7 +85,12 @@ export default function CheckpointsScreen() {
         text: 'Delete',
         style: 'destructive',
         onPress: async () => {
-          if (gameId) await deleteCheckpoint(gameId, cp.id);
+          if (!gameId) return;
+          try {
+            await deleteCheckpoint(gameId, cp.id);
+          } catch (err) {
+            Alert.alert('Error', friendlyError(err));
+          }
         },
       },
     ]);
