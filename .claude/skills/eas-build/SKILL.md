@@ -63,10 +63,12 @@ once to establish credentials.
 
 ### 3. Return the dashboard URL
 
-The command prints a line like:
+On success the command prints a line ending in the build page URL — the label has
+varied across CLI versions (`See logs:` or `Build details:`), so match on the URL
+shape, not the label:
 
 ```
-Build details: https://expo.dev/accounts/<account>/projects/outdoor-gm/builds/<build-id>
+See logs: https://expo.dev/accounts/<account>/projects/outdoor-gm/builds/<build-id>
 ```
 
 Extract that `https://expo.dev/...builds/<id>` URL from the output and give it to
@@ -86,18 +88,21 @@ to recover the dashboard URL. It reads the most recent build as JSON:
 eas build:list --platform android --limit 1 --non-interactive --json
 ```
 
-From the JSON of that one build:
-- **Direct download (installable artifact):** `.[0].artifacts.applicationArchiveUrl`
-- **Dashboard page:** `.[0].artifacts.buildUrl`
-- **Status:** `.[0].status` — only `FINISHED` builds have a usable download URL;
-  `IN_QUEUE` / `IN_PROGRESS` mean it isn't ready yet, `ERRORED` means it failed.
+Key fields on each build object (verified against the JSON output):
+- **Status:** `.status` — `IN_QUEUE` / `IN_PROGRESS` (not ready), `FINISHED` (ready),
+  `ERRORED` (failed).
+- **Direct download (installable artifact):** `.artifacts.applicationArchiveUrl`.
+  Note: `.artifacts` is an **empty object `{}`** until the build is `FINISHED`, so
+  this is only present on finished builds.
+- **Dashboard page:** there is *no* URL field in the JSON — construct it from
+  `https://expo.dev/accounts/<.project.ownerAccount.name>/projects/<.project.slug>/builds/<.id>`.
 
-Example to pull just the download link (drop `--platform` to get the latest of any
-platform):
+Parse with **node** (this is a Node project; `python` may not be installed on
+Windows). Drop `--platform` to get the latest build of any platform:
 
 ```bash
 eas build:list --platform android --limit 1 --non-interactive --json \
-  | python -c "import json,sys; b=json.load(sys.stdin)[0]; print(b.get('status'), b.get('artifacts',{}).get('applicationArchiveUrl') or b.get('artifacts',{}).get('buildUrl'))"
+  | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const b=JSON.parse(s)[0];const p=b.project;const dash=\`https://expo.dev/accounts/\${p.ownerAccount.name}/projects/\${p.slug}/builds/\${b.id}\`;const dl=(b.artifacts||{}).applicationArchiveUrl;console.log('status:',b.status);console.log('dashboard:',dash);console.log('download:',dl||'(not ready — build not FINISHED)');})"
 ```
 
 If the status isn't `FINISHED`, report the status and the dashboard URL instead of
