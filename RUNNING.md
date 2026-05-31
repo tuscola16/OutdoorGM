@@ -236,3 +236,47 @@ npx expo start --dev-client
 | Metro shows "port 8081 in use" | A Metro server is already running — connect to it directly. |
 | `autoFocus` crash on Create Game navigation | Transient RN view-hierarchy error — press Reload in the error screen and navigate again. |
 | Profile icon tap opens dev menu | See known limitation in Section 7. |
+| Blank/grey Google Map | API-key authorization failure — see below. |
+
+### Blank Google Map (Authorization failure)
+
+A blank/grey map means `react-native-maps` mounted fine but Google rejected the
+Android Maps API key (`android.config.googleMaps.apiKey` in `app.json`). The
+emulator already has Google Play services, so that is **not** the cause. Confirm
+the real cause in logcat while opening the map:
+
+```powershell
+$adb = "$env:ANDROID_HOME\platform-tools\adb.exe"
+& $adb logcat -d | Select-String "Google Android Maps SDK|Error requesting API token"
+```
+
+An `Authorization failure` / `Error requesting API token. StatusCode=INVALID_ARGUMENT`
+line confirms it's the key. Two sub-causes:
+
+**1. The key's Android app restriction doesn't match this build.** The key is
+restricted by *package name + signing-certificate SHA‑1*. Register the build's
+identity in [Cloud Console → APIs & Services → Credentials](https://console.cloud.google.com/apis/credentials):
+
+- **Local debug build** (`gradlew assembleDebug`, Section 4) — signed by the Android
+  debug keystore:
+  - Package: `com.bagelrun.outdoorgm`
+  - SHA‑1: `5E:8F:16:06:2E:A3:CD:2C:4A:0D:54:78:76:BA:A6:F3:8C:AB:F6:25`
+    > Regenerate anytime with:
+    > `& "$env:JAVA_HOME\bin\keytool.exe" -list -v -keystore "$env:USERPROFILE\.android\debug.keystore" -alias androiddebugkey -storepass android -keypass android`
+    > Or read it straight off the installed app: `adb pull $(adb shell pm path com.bagelrun.outdoorgm) base.apk` then `keytool -printcert -jarfile base.apk`.
+- **EAS-built APK** — signed by a *different* (EAS) keystore, so it needs its own
+  SHA‑1 added. Get it with `eas credentials` → Android → the keystore (e.g.
+  `jE7VDI3PFh (default)`).
+
+Quick isolation test: temporarily set the key's **Application restrictions → None**,
+save, wait ~1–2 min, reload. Map appears → it was the restriction (add the SHA‑1
+above). Still blank → it's #2.
+
+**2. Maps SDK / billing not set up on the key's project.** On the project that owns
+the key, enable [**Maps SDK for Android**](https://console.cloud.google.com/apis/library/maps-android-backend.googleapis.com)
+and attach a **billing account** — without either, the key returns the same
+authorization failure. The key need not live in the `outdoor-gm` Firebase project,
+but Maps must be enabled wherever it does.
+
+Changes propagate in 1–5 minutes; fully restart the app (not just a JS reload) to
+re-request the API token.
