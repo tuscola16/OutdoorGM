@@ -22,3 +22,8 @@ functions/node_modules/
 functions/lib/
 *.log
 .DS_Store
+
+# Build artifacts and IDE files
+*.apk
+*.aab
+.idea/
