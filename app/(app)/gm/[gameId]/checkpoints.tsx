@@ -20,7 +20,7 @@ const DEFAULT_RADIUS = 100;
 
 export default function CheckpointsScreen() {
   const { gameId } = useLocalSearchParams<{ gameId: string }>();
-  const { checkpoints, loadGame, clearGame } = useGame();
+  const { game, checkpoints, loadGame, clearGame } = useGame();
   const router = useRouter();
   const [mode, setMode] = useState<Mode>('list');
   const [showAddModal, setShowAddModal] = useState(false);
@@ -160,6 +160,7 @@ export default function CheckpointsScreen() {
           <GameMap
             checkpoints={checkpoints}
             playerLocations={[]}
+            boundary={game?.boundary}
             onMapLongPress={openAddFromMap}
             onCheckpointPress={openEdit}
             editMode

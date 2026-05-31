@@ -95,13 +95,15 @@ users/{userId}
   email, displayName, fcmToken, createdAt
 
 games/{gameId}
-  name, playerCode, gmCode, creatorId, status ('active'|'ended'), createdAt
+  name, playerCode, gmCode, creatorId, status ('active'|'ended'),
+  phase ('setup'|'lobby'|'play'|'results'), rules?, boundary? ({minLat,maxLat,minLng,maxLng}),
+  startedAt?, endedAt?, createdAt
 
 games/{gameId}/checkpoints/{checkpointId}
   name, latitude, longitude, radius (meters), order (optional)
 
 games/{gameId}/members/{userId}
-  userId, role ('player'|'gm'), displayName, email, fcmToken, joinedAt
+  userId, role ('player'|'gm'), displayName, email, fcmToken, out?, outAt?, joinedAt
 
 games/{gameId}/locations/{userId}
   userId, displayName, latitude, longitude, accuracy, heading, updatedAt
@@ -126,10 +128,36 @@ games/{gameId}/arrivals/{arrivalId}
 - Deduplication: prevents duplicate arrivals for the same player-checkpoint pair within a time window
 - GMs only: non-players (GMs) don't trigger checkpoint arrivals even if their location is updated
 
+### Game Phases
+
+A game's lifecycle is driven by the `phase` field on the game doc, advanced by the GM:
+
+1. **`setup`** — GM defines the play boundary (`gm/[gameId]/boundary.tsx`, a rectangle
+   captured from the current map view), checkpoints, and free-text rules. The game is
+   not yet open to players. GM action: **Open to Players** → `lobby`.
+2. **`lobby`** — Players join with the player code, name themselves, and see a one-time
+   swipeable tutorial (`components/Tutorial.tsx`, which also shows the GM's rules). Players
+   wait on a "waiting for the GM" screen; location tracking does **not** start yet.
+   GM action: **Start Game** (`startGame()` stamps `startedAt`) → `play`.
+3. **`play`** — Tracking starts; players see a live timer (`hooks/useElapsed.ts`) of how
+   long they've been playing and an **I'm Out** button (`markPlayerOut()` sets
+   `member.out`/`outAt` and stops their tracking). GM sees the live map, alerts, and an
+   elapsed timer. GM action: **End Game** (`endGame()` stamps `endedAt`, sets
+   `status: 'ended'`) → `results`.
+4. **`results`** — Players see how long they played (start → their `outAt` or the game's
+   `endedAt`). GM sees per-player times.
+
+Phase transition helpers live in `services/gameService.ts`
+(`openLobby`, `reopenSetup`, `startGame`, `endGame`, `updateGameConfig`, `markPlayerOut`).
+`gamePhase(game)` resolves the phase, defaulting legacy games (no `phase` field) to
+`play` while active and `results` once ended, so older games keep working. `endGame()`
+still sets `status: 'ended'` for backward compatibility with `findGameByCode` (which only
+matches active games, so a finished game can't be joined).
+
 ### Game Codes & Joining
 
 - **Player Code** & **GM Code**: 6-character alphanumeric codes (no 0/O/I/L to avoid confusion) generated on game creation
-- **Join flow**: User enters code → `findGameByCode()` determines role → `joinGame()` adds user to `games/{gameId}/members/{userId}` and starts location tracking (if player)
+- **Join flow**: User enters code → `findGameByCode()` determines role → `joinGame()` adds user to `games/{gameId}/members/{userId}`. Players then wait in the lobby; location tracking starts only once the GM moves the game to the `play` phase (see Game Phases).
 
 ### Notifications
 

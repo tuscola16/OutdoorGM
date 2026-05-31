@@ -25,9 +25,20 @@ service cloud.firestore {
       // Members — all members can read, GMs can write
       match /members/{memberId} {
         allow read: if request.auth != null && isGameMember(gameId);
+        // Allow a user to query their *own* membership across all games. getMyGames()
+        // and deleteAccount() use a collectionGroup query filtered on the userId field;
+        // Firestore can only permit a group query when a rule matches its constraints
+        // (it can't run the per-game exists() in isGameMember across the group), so this
+        // field-based rule mirrors `where('userId','==',uid)`.
+        allow read: if request.auth != null && resource.data.userId == request.auth.uid;
         allow write: if request.auth != null && isGameGM(gameId);
         // Allow users to write their own member doc when joining
         allow create: if request.auth != null && request.auth.uid == memberId;
+        // Allow users to update their own member doc (e.g. mark themselves "out",
+        // change display name, refresh fcmToken) — but never to escalate their role.
+        allow update: if request.auth != null
+          && request.auth.uid == memberId
+          && request.resource.data.role == resource.data.role;
       }
 
       // Locations — players write their own, GMs can read all

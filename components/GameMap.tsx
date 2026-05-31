@@ -1,16 +1,27 @@
 import React, { useRef, useEffect } from 'react';
 import { View, StyleSheet, Text } from 'react-native';
-import MapView, { Marker, Circle, PROVIDER_GOOGLE, Region } from 'react-native-maps';
+import MapView, { Marker, Circle, Polygon, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import { Colors } from '@/constants/colors';
-import type { Checkpoint, PlayerLocation } from '@/types';
+import type { Checkpoint, PlayerLocation, MapBoundary } from '@/types';
 
 interface GameMapProps {
   checkpoints: Checkpoint[];
   playerLocations: PlayerLocation[];
+  boundary?: MapBoundary | null;
   onMapLongPress?: (coord: { latitude: number; longitude: number }) => void;
   onCheckpointPress?: (checkpoint: Checkpoint) => void;
   editMode?: boolean;
   initialRegion?: Region;
+}
+
+/** The four corners of a rectangular boundary, for a map Polygon. */
+function boundaryCorners(b: MapBoundary) {
+  return [
+    { latitude: b.maxLat, longitude: b.minLng },
+    { latitude: b.maxLat, longitude: b.maxLng },
+    { latitude: b.minLat, longitude: b.maxLng },
+    { latitude: b.minLat, longitude: b.minLng },
+  ];
 }
 
 function PlayerMarker({ player }: { player: PlayerLocation }) {
@@ -66,6 +77,7 @@ function CheckpointMarker({
 export function GameMap({
   checkpoints,
   playerLocations,
+  boundary,
   onMapLongPress,
   onCheckpointPress,
   editMode = false,
@@ -73,10 +85,11 @@ export function GameMap({
 }: GameMapProps) {
   const mapRef = useRef<MapView>(null);
 
-  // Auto-fit map to show all markers when data loads
+  // Auto-fit map to show all markers (and the boundary) when data loads
   useEffect(() => {
     if (!mapRef.current) return;
     const coords = [
+      ...(boundary ? boundaryCorners(boundary) : []),
       ...checkpoints.map((c) => ({ latitude: c.latitude, longitude: c.longitude })),
       ...playerLocations.map((p) => ({ latitude: p.latitude, longitude: p.longitude })),
     ];
@@ -86,7 +99,7 @@ export function GameMap({
         animated: true,
       });
     }
-  }, [checkpoints.length, playerLocations.length]);
+  }, [checkpoints.length, playerLocations.length, boundary?.minLat, boundary?.maxLat, boundary?.minLng, boundary?.maxLng]);
 
   return (
     <MapView
@@ -108,6 +121,14 @@ export function GameMap({
       showsUserLocation={false}
       showsMyLocationButton={false}
     >
+      {boundary && (
+        <Polygon
+          coordinates={boundaryCorners(boundary)}
+          strokeColor={Colors.secondary}
+          strokeWidth={2}
+          fillColor="rgba(212, 137, 63, 0.08)"
+        />
+      )}
       {checkpoints.map((cp) => (
         <CheckpointMarker
           key={cp.id}

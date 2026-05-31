@@ -1,7 +1,15 @@
 import firestore from '@react-native-firebase/firestore';
 import auth from '@react-native-firebase/auth';
 import { Collections } from './firebase';
-import type { Game, Checkpoint, GameMember } from '@/types';
+import type { Game, Checkpoint, GameMember, GamePhase, GameStatus, MapBoundary } from '@/types';
+
+/** Resolve a game's phase, defaulting legacy games (created before the `phase`
+ * field existed) to `play` while active and `results` once ended. */
+export function gamePhase(game: { phase?: GamePhase; status?: GameStatus } | null | undefined): GamePhase {
+  if (!game) return 'setup';
+  if (game.phase) return game.phase;
+  return game.status === 'ended' ? 'results' : 'play';
+}
 
 function generateCode(length = 6): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -23,10 +31,51 @@ export async function createGame(name: string, creatorId: string): Promise<Game>
     gmCode,
     creatorId,
     status: 'active',
+    phase: 'setup',
+    startedAt: null,
+    endedAt: null,
     createdAt: firestore.FieldValue.serverTimestamp() as any,
   };
   await gameRef.set(game);
   return { id: gameRef.id, ...game } as Game;
+}
+
+// --- Phase transitions ---
+
+/** Open a game to players (phase: setup → lobby). */
+export async function openLobby(gameId: string): Promise<void> {
+  await firestore().collection(Collections.GAMES).doc(gameId).update({ phase: 'lobby' });
+}
+
+/** Send a game back to setup (phase: lobby → setup). */
+export async function reopenSetup(gameId: string): Promise<void> {
+  await firestore().collection(Collections.GAMES).doc(gameId).update({ phase: 'setup' });
+}
+
+/** Start play and stamp the start time (phase: lobby → play). */
+export async function startGame(gameId: string): Promise<void> {
+  await firestore().collection(Collections.GAMES).doc(gameId).update({
+    phase: 'play',
+    startedAt: firestore.FieldValue.serverTimestamp(),
+  });
+}
+
+/** Update the play-area boundary and/or rules text during setup. */
+export async function updateGameConfig(
+  gameId: string,
+  config: { boundary?: MapBoundary; rules?: string }
+): Promise<void> {
+  await firestore().collection(Collections.GAMES).doc(gameId).update(config);
+}
+
+/** Mark a player as out of the game (they tap "I'm Out"). */
+export async function markPlayerOut(gameId: string, userId: string): Promise<void> {
+  await firestore()
+    .collection(Collections.GAMES)
+    .doc(gameId)
+    .collection(Collections.MEMBERS)
+    .doc(userId)
+    .update({ out: true, outAt: firestore.FieldValue.serverTimestamp() });
 }
 
 export async function findGameByCode(code: string): Promise<{ game: Game; role: 'player' | 'gm' } | null> {
@@ -117,8 +166,14 @@ export async function getMyGames(userId: string): Promise<{ game: Game; role: 'p
   return results;
 }
 
+/** Stop play and move to results (phase: play → results). Keeps `status: 'ended'`
+ * so existing "is this game over?" checks (and old clients) keep working. */
 export async function endGame(gameId: string): Promise<void> {
-  await firestore().collection(Collections.GAMES).doc(gameId).update({ status: 'ended' });
+  await firestore().collection(Collections.GAMES).doc(gameId).update({
+    status: 'ended',
+    phase: 'results',
+    endedAt: firestore.FieldValue.serverTimestamp(),
+  });
 }
 
 // Checkpoints

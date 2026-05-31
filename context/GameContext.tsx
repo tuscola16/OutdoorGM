@@ -1,10 +1,12 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import firestore from '@react-native-firebase/firestore';
 import { Collections } from '@/services/firebase';
-import type { Game, Checkpoint, GameMember, PlayerLocation, Arrival } from '@/types';
+import { gamePhase } from '@/services/gameService';
+import type { Game, Checkpoint, GameMember, PlayerLocation, Arrival, GamePhase } from '@/types';
 
 interface GameContextValue {
   game: Game | null;
+  phase: GamePhase;
   myRole: 'player' | 'gm' | null;
   checkpoints: Checkpoint[];
   members: GameMember[];
@@ -118,7 +120,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <GameContext.Provider
-      value={{ game, myRole, checkpoints, members, playerLocations, arrivals, loadGame, clearGame }}
+      value={{ game, phase: gamePhase(game), myRole, checkpoints, members, playerLocations, arrivals, loadGame, clearGame }}
     >
       {children}
     </GameContext.Provider>

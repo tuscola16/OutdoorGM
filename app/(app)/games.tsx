@@ -8,8 +8,15 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/context/AuthContext';
 import { Button } from '@/components/ui/Button';
 import { Colors } from '@/constants/colors';
-import { getMyGames } from '@/services/gameService';
+import { getMyGames, gamePhase } from '@/services/gameService';
 import type { Game } from '@/types';
+
+const PHASE_TEXT: Record<string, string> = {
+  setup: '● Setting up',
+  lobby: '● Lobby open',
+  play: '● In play',
+  results: '○ Finished',
+};
 
 interface GameEntry {
   game: Game;
@@ -56,7 +63,7 @@ export default function GamesScreen() {
         <View style={styles.gameInfo}>
           <Text style={styles.gameName}>{item.game.name}</Text>
           <Text style={styles.gameStatus}>
-            {item.game.status === 'active' ? '● Active' : '○ Ended'}
+            {PHASE_TEXT[gamePhase(item.game)]}
           </Text>
         </View>
         <Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
