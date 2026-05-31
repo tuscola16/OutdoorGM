@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import {
-  View, Text, StyleSheet, SafeAreaView, TouchableOpacity, Alert
+  View, Text, StyleSheet, TouchableOpacity, Alert
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/context/AuthContext';
 import { Input } from '@/components/ui/Input';
@@ -58,7 +59,7 @@ export default function JoinScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       <TouchableOpacity onPress={() => router.back()} style={styles.back}>
         <Text style={styles.backText}>← Back</Text>
       </TouchableOpacity>

@@ -1,7 +1,8 @@
 import React, { useRef, useEffect } from 'react';
 import { View, StyleSheet, Text } from 'react-native';
-import MapView, { Marker, Circle, Polygon, PROVIDER_GOOGLE, Region } from 'react-native-maps';
+import MapView, { Marker, Circle, Polygon, UrlTile, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import { Colors } from '@/constants/colors';
+import { TOPO_TILE_URL, TOPO_MAX_ZOOM } from '@/constants/map';
 import type { Checkpoint, PlayerLocation, MapBoundary } from '@/types';
 
 interface GameMapProps {
@@ -106,7 +107,7 @@ export function GameMap({
       ref={mapRef}
       style={styles.map}
       provider={PROVIDER_GOOGLE}
-      mapType="hybrid"
+      mapType="none"
       initialRegion={
         initialRegion ?? {
           latitude: 37.0902,
@@ -121,6 +122,8 @@ export function GameMap({
       showsUserLocation={false}
       showsMyLocationButton={false}
     >
+      {/* Topographic basemap (contours + trails) in place of satellite imagery */}
+      <UrlTile urlTemplate={TOPO_TILE_URL} maximumZ={TOPO_MAX_ZOOM} zIndex={-1} />
       {boundary && (
         <Polygon
           coordinates={boundaryCorners(boundary)}

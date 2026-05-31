@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import {
-  View, Text, StyleSheet, SafeAreaView, TouchableOpacity, Modal,
+  View, Text, StyleSheet, TouchableOpacity, Modal,
   Alert, ScrollView, TextInput, FlatList,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -136,7 +137,7 @@ export default function GMGameScreen() {
   const players = members.filter((m) => m.role === 'player');
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.replace('/(app)/games')}>

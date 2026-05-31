@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, SafeAreaView, TouchableOpacity, FlatList,
+  View, Text, StyleSheet, TouchableOpacity, FlatList,
   Modal, Alert, TextInput
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useGame } from '@/context/GameContext';
@@ -97,7 +98,7 @@ export default function CheckpointsScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={24} color={Colors.text} />

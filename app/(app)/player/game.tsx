@@ -1,15 +1,15 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
-  View, Text, StyleSheet, SafeAreaView, Alert, TouchableOpacity, Linking,
+  View, Text, StyleSheet, Alert, TouchableOpacity, Linking,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
-import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '@/context/AuthContext';
 import { Colors } from '@/constants/colors';
 import { Button } from '@/components/ui/Button';
+import { GameMap } from '@/components/GameMap';
 import { Tutorial } from '@/components/Tutorial';
 import { startLocationTracking, stopLocationTracking } from '@/services/locationTask';
 import { onForegroundMessage } from '@/services/notificationService';
@@ -18,7 +18,7 @@ import { friendlyError } from '@/services/errorUtils';
 import { useElapsed, formatDuration } from '@/hooks/useElapsed';
 import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
 import { Collections } from '@/services/firebase';
-import type { GamePhase } from '@/types';
+import type { GamePhase, MapBoundary } from '@/types';
 
 type Ts = FirebaseFirestoreTypes.Timestamp | null;
 
@@ -30,6 +30,7 @@ export default function PlayerGameScreen() {
   const [gameName, setGameName] = useState('');
   const [phase, setPhase] = useState<GamePhase>('setup');
   const [rules, setRules] = useState<string>('');
+  const [boundary, setBoundary] = useState<MapBoundary | null>(null);
   const [startedAt, setStartedAt] = useState<Ts>(null);
   const [endedAt, setEndedAt] = useState<Ts>(null);
 
@@ -37,7 +38,6 @@ export default function PlayerGameScreen() {
   const [out, setOut] = useState(false);
   const [outAt, setOutAt] = useState<Ts>(null);
 
-  const [myLocation, setMyLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [tracking, setTracking] = useState(false);
   const [error, setError] = useState('');
   const [permissionDenied, setPermissionDenied] = useState(false);
@@ -60,6 +60,7 @@ export default function PlayerGameScreen() {
           setGameName(d.name ?? '');
           setPhase(gamePhase(d as any));
           setRules(d.rules ?? '');
+          setBoundary(d.boundary ?? null);
           setStartedAt(d.startedAt ?? null);
           setEndedAt(d.endedAt ?? null);
         },
@@ -121,19 +122,6 @@ export default function PlayerGameScreen() {
       });
     return () => { if (started) stopLocationTracking().catch(console.error); };
   }, [gameId, displayName, phase, out]);
-
-  // Watch own location for the mini-map (only meaningful during play).
-  useEffect(() => {
-    if (phase !== 'play') return;
-    let sub: Location.LocationSubscription | null = null;
-    Location.watchPositionAsync(
-      { accuracy: Location.Accuracy.Balanced, timeInterval: 5000, distanceInterval: 10 },
-      (loc) => setMyLocation({ latitude: loc.coords.latitude, longitude: loc.coords.longitude })
-    )
-      .then((s) => { sub = s; })
-      .catch((err) => console.error('watchPositionAsync failed', err));
-    return () => { sub?.remove(); };
-  }, [phase]);
 
   useEffect(() => {
     return onForegroundMessage((title, body) => Alert.alert(title, body));
@@ -210,24 +198,13 @@ export default function PlayerGameScreen() {
         </View>
 
         <View style={styles.mapContainer}>
-          {myLocation ? (
-            <MapView
-              style={styles.map}
-              provider={PROVIDER_GOOGLE}
-              region={{ latitude: myLocation.latitude, longitude: myLocation.longitude, latitudeDelta: 0.005, longitudeDelta: 0.005 }}
-              showsUserLocation={false}
-              scrollEnabled={false}
-              zoomEnabled={false}
-              rotateEnabled={false}
-            >
-              <Marker coordinate={myLocation} anchor={{ x: 0.5, y: 0.5 }}>
-                <View style={styles.myDot} />
-              </Marker>
-            </MapView>
+          {boundary ? (
+            // Players see the play area and trails, but never their own position.
+            <GameMap checkpoints={[]} playerLocations={[]} boundary={boundary} />
           ) : (
             <View style={[styles.map, styles.mapPlaceholder]}>
-              <Ionicons name="locate-outline" size={40} color={Colors.textMuted} />
-              <Text style={styles.locatingText}>Getting location…</Text>
+              <Ionicons name="map-outline" size={40} color={Colors.textMuted} />
+              <Text style={styles.locatingText}>Your Game Master hasn't set a play area.</Text>
             </View>
           )}
         </View>
@@ -290,7 +267,7 @@ export default function PlayerGameScreen() {
   const isWaiting = phase === 'setup' || phase === 'lobby';
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       <View style={styles.header}>
         <View style={{ flex: 1 }}>
           <Text style={styles.gameName} numberOfLines={1}>{gameName || 'Game'}</Text>
@@ -353,8 +330,7 @@ const styles = StyleSheet.create({
   mapContainer: { flex: 1, margin: 16, borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: Colors.border },
   map: { flex: 1 },
   mapPlaceholder: { backgroundColor: Colors.surface, alignItems: 'center', justifyContent: 'center', gap: 8 },
-  locatingText: { color: Colors.textMuted, fontSize: 14 },
-  myDot: { width: 20, height: 20, borderRadius: 10, backgroundColor: Colors.playerDot, borderWidth: 3, borderColor: Colors.white },
+  locatingText: { color: Colors.textMuted, fontSize: 14, textAlign: 'center', paddingHorizontal: 16 },
 
   statusCard: {
     flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: 16, marginBottom: 12,

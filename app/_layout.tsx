@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { Platform } from 'react-native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import * as Notifications from 'expo-notifications';
 import crashlytics from '@react-native-firebase/crashlytics';
@@ -28,11 +29,13 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <AuthProvider>
-      <GameProvider>
-        <StatusBar style="light" />
-        <Stack screenOptions={{ headerShown: false, animation: 'fade' }} />
-      </GameProvider>
-    </AuthProvider>
+    <SafeAreaProvider>
+      <AuthProvider>
+        <GameProvider>
+          <StatusBar style="light" />
+          <Stack screenOptions={{ headerShown: false, animation: 'fade' }} />
+        </GameProvider>
+      </AuthProvider>
+    </SafeAreaProvider>
   );
 }

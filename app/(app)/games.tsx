@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, FlatList, TouchableOpacity,
-  SafeAreaView, Alert
+  View, Text, StyleSheet, FlatList, TouchableOpacity, Alert
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/context/AuthContext';
@@ -72,7 +72,7 @@ export default function GamesScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       <View style={styles.header}>
         <Text style={styles.title}>My Games</Text>
         <View style={styles.headerRight}>

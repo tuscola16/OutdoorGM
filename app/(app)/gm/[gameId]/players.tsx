@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import {
-  View, Text, StyleSheet, SafeAreaView, TouchableOpacity,
+  View, Text, StyleSheet, TouchableOpacity,
   FlatList, Alert
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useGame } from '@/context/GameContext';
@@ -104,7 +105,7 @@ export default function PlayersScreen() {
   const gms = members.filter((m) => m.role === 'gm');
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={24} color={Colors.text} />

@@ -1,21 +1,30 @@
 import { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, SafeAreaView, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import MapView, { Polygon, PROVIDER_GOOGLE, Region } from 'react-native-maps';
+import MapView, { Polygon, UrlTile, PROVIDER_GOOGLE, Region } from 'react-native-maps';
+import * as Location from 'expo-location';
 import { useGame } from '@/context/GameContext';
 import { Button } from '@/components/ui/Button';
 import { Colors } from '@/constants/colors';
+import { TOPO_TILE_URL, TOPO_MAX_ZOOM } from '@/constants/map';
 import { updateGameConfig } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
 import type { MapBoundary } from '@/types';
 
+// Fractions of the screen the framing reticle insets from each edge. The saved
+// boundary is the area *inside* the reticle, so it matches what the GM frames.
+const RETICLE = { vertical: 0.15, horizontal: 0.08 };
+
 function regionToBoundary(r: Region): MapBoundary {
+  const latSpan = r.latitudeDelta * (1 - RETICLE.vertical * 2);
+  const lngSpan = r.longitudeDelta * (1 - RETICLE.horizontal * 2);
   return {
-    minLat: r.latitude - r.latitudeDelta / 2,
-    maxLat: r.latitude + r.latitudeDelta / 2,
-    minLng: r.longitude - r.longitudeDelta / 2,
-    maxLng: r.longitude + r.longitudeDelta / 2,
+    minLat: r.latitude - latSpan / 2,
+    maxLat: r.latitude + latSpan / 2,
+    minLng: r.longitude - lngSpan / 2,
+    maxLng: r.longitude + lngSpan / 2,
   };
 }
 
@@ -45,6 +54,32 @@ export default function BoundaryScreen() {
     return () => clearGame();
   }, [gameId]);
 
+  // On first open (no boundary yet), center the map on the GM's current location so
+  // they start framing where they actually are instead of the middle of the country.
+  useEffect(() => {
+    if (boundary) return; // editing an existing boundary — handled below
+    let cancelled = false;
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted' || cancelled) return;
+        const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        if (cancelled) return;
+        const region: Region = {
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          latitudeDelta: 0.02,
+          longitudeDelta: 0.02,
+        };
+        regionRef.current = region;
+        mapRef.current?.animateToRegion(region, 600);
+      } catch {
+        // Location unavailable — leave the default region in place.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   // When editing an existing boundary, recenter the map on it once it loads.
   useEffect(() => {
     if (!boundary || !mapRef.current) return;
@@ -73,7 +108,7 @@ export default function BoundaryScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={24} color={Colors.text} />
@@ -87,10 +122,11 @@ export default function BoundaryScreen() {
           ref={mapRef}
           style={StyleSheet.absoluteFill}
           provider={PROVIDER_GOOGLE}
-          mapType="hybrid"
+          mapType="none"
           initialRegion={initialRegion}
           onRegionChangeComplete={(r) => { regionRef.current = r; }}
         >
+          <UrlTile urlTemplate={TOPO_TILE_URL} maximumZ={TOPO_MAX_ZOOM} zIndex={-1} />
           {boundary && (
             <Polygon
               coordinates={corners(boundary)}
