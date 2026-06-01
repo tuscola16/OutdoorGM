@@ -54,7 +54,6 @@ export default function PlayAreaScreen() {
   // GM doesn't pan; onRegionChangeComplete keeps it current as they move.
   const regionRef = useRef<Region | null>(initialRegion);
   const [mode, setMode] = useState<'map' | 'list'>('map');
-  const [mapReady, setMapReady] = useState(false);
   const [locating, setLocating] = useState(false);
   const didAutoCenter = useRef(false);
   const [savingBoundary, setSavingBoundary] = useState(false);
@@ -108,38 +107,53 @@ export default function PlayAreaScreen() {
     }
   }, []);
 
-  // Auto-center once, after the map is ready, on a fresh (boundary-less) game.
-  // Gating on mapReady ensures animateToRegion isn't lost before the map lays out.
-  // This is a backstop; the primary auto-center is onUserLocationChange below,
-  // which fires the moment the OS has a fix (more reliable on Android cold start,
-  // where getCurrentPositionAsync can be slow or never resolve).
+  // Auto-center on the GM's location for a fresh (boundary-less) game.
+  //
+  // Earlier approaches were unreliable: gating on `onMapReady` (which is flaky
+  // with mapType="none") and a one-shot getCurrentPositionAsync (which often
+  // hangs on Android cold start), with an onUserLocationChange fallback that only
+  // fires when the device actually *moves* — so a stationary GM with a cached fix
+  // saw their pin but the map never recentered.
+  //
+  // watchPositionAsync is the reliable trigger: it delivers the current fix
+  // shortly after subscribing even when the device is still, and that ~1s delay
+  // means the map is already laid out, so animateToRegion isn't dropped. We jump
+  // on the first fix, then stop watching so we don't yank the map while the GM
+  // frames the play area. The manual "locate me" button still uses centerOnUser.
   useEffect(() => {
-    if (boundary || !mapReady || didAutoCenter.current) return;
-    didAutoCenter.current = true;
-    centerOnUser();
-  }, [boundary, mapReady, centerOnUser]);
-
-  // Center on the GM's first GPS fix from the map itself. `onUserLocationChange`
-  // is tied to the same location source that draws the blue dot, so the map
-  // recenters exactly when the user becomes visible — no waiting on a separate
-  // getCurrentPositionAsync call that may hang. Guarded so we only jump once.
-  const handleUserLocationChange = useCallback(
-    (e: { nativeEvent: { coordinate?: { latitude: number; longitude: number } } }) => {
-      if (boundary || didAutoCenter.current) return;
-      const coord = e.nativeEvent?.coordinate;
-      if (!coord) return;
-      didAutoCenter.current = true;
-      const region: Region = {
-        latitude: coord.latitude,
-        longitude: coord.longitude,
-        latitudeDelta: 0.02,
-        longitudeDelta: 0.02,
-      };
-      regionRef.current = region;
-      mapRef.current?.animateToRegion(region, 600);
-    },
-    [boundary]
-  );
+    if (boundary) return;
+    let cancelled = false;
+    let sub: Location.LocationSubscription | null = null;
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted' || cancelled) return;
+        sub = await Location.watchPositionAsync(
+          { accuracy: Location.Accuracy.Balanced, timeInterval: 1000, distanceInterval: 0 },
+          (pos) => {
+            if (cancelled || didAutoCenter.current) return;
+            didAutoCenter.current = true;
+            const region: Region = {
+              latitude: pos.coords.latitude,
+              longitude: pos.coords.longitude,
+              latitudeDelta: 0.02,
+              longitudeDelta: 0.02,
+            };
+            regionRef.current = region;
+            // Double-fire: on Android the first animateToRegion right after layout
+            // is occasionally dropped, so re-issue it a beat later.
+            mapRef.current?.animateToRegion(region, 600);
+            setTimeout(() => { mapRef.current?.animateToRegion(region, 600); }, 350);
+            sub?.remove();
+            sub = null;
+          }
+        );
+      } catch {
+        // Location unavailable — leave the default view in place.
+      }
+    })();
+    return () => { cancelled = true; sub?.remove(); };
+  }, [boundary]);
 
   // When a boundary already exists, recenter the map on it once it loads.
   useEffect(() => {
@@ -309,8 +323,6 @@ export default function PlayAreaScreen() {
           initialRegion={initialRegion}
           showsUserLocation
           showsMyLocationButton={false}
-          onMapReady={() => setMapReady(true)}
-          onUserLocationChange={handleUserLocationChange}
           onRegionChangeComplete={(r) => { regionRef.current = r; }}
           onLongPress={(e) => openAddCheckpoint(e.nativeEvent.coordinate)}
         >
