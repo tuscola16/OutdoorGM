@@ -1,7 +1,7 @@
 import firestore from '@react-native-firebase/firestore';
 import auth from '@react-native-firebase/auth';
-import { Collections } from './firebase';
-import type { Game, Checkpoint, GameMember, GamePhase, GameStatus, MapBoundary } from '@/types';
+import { Collections, functions } from './firebase';
+import type { Game, Checkpoint, GamePhase, GameStatus, MapBoundary } from '@/types';
 
 /** Resolve a game's phase, defaulting legacy games (created before the `phase`
  * field existed) to `play` while active and `results` once ended. */
@@ -11,33 +11,19 @@ export function gamePhase(game: { phase?: GamePhase; status?: GameStatus } | nul
   return game.status === 'ended' ? 'results' : 'play';
 }
 
-function generateCode(length = 6): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let result = '';
-  for (let i = 0; i < length; i++) {
-    result += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return result;
-}
-
-export async function createGame(name: string, creatorId: string): Promise<Game> {
-  const playerCode = generateCode(6);
-  const gmCode = generateCode(6);
-
-  const gameRef = firestore().collection(Collections.GAMES).doc();
-  const game: Omit<Game, 'id'> = {
-    name: name.trim(),
-    playerCode,
-    gmCode,
-    creatorId,
-    status: 'active',
-    phase: 'setup',
-    startedAt: null,
-    endedAt: null,
-    createdAt: firestore.FieldValue.serverTimestamp() as any,
-  };
-  await gameRef.set(game);
-  return { id: gameRef.id, ...game } as Game;
+/**
+ * Create a game via the createGame Cloud Function. Join codes are generated
+ * server-side (CSPRNG) and the creator's GM membership is created atomically —
+ * clients can no longer write game docs or self-assign the GM role.
+ */
+export async function createGame(
+  name: string,
+  displayName: string,
+  fcmToken?: string
+): Promise<{ id: string }> {
+  const callable = functions().httpsCallable('createGame');
+  const res = await callable({ name, displayName, fcmToken: fcmToken ?? null });
+  return { id: (res.data as { gameId: string }).gameId };
 }
 
 // --- Phase transitions ---
@@ -78,62 +64,20 @@ export async function markPlayerOut(gameId: string, userId: string): Promise<voi
     .update({ out: true, outAt: firestore.FieldValue.serverTimestamp() });
 }
 
-export async function findGameByCode(code: string): Promise<{ game: Game; role: 'player' | 'gm' } | null> {
-  const upperCode = code.trim().toUpperCase();
-
-  // Check player code
-  const playerSnap = await firestore()
-    .collection(Collections.GAMES)
-    .where('playerCode', '==', upperCode)
-    .where('status', '==', 'active')
-    .limit(1)
-    .get();
-
-  if (!playerSnap.empty) {
-    const doc = playerSnap.docs[0];
-    return { game: { id: doc.id, ...doc.data() } as Game, role: 'player' };
-  }
-
-  // Check GM code
-  const gmSnap = await firestore()
-    .collection(Collections.GAMES)
-    .where('gmCode', '==', upperCode)
-    .where('status', '==', 'active')
-    .limit(1)
-    .get();
-
-  if (!gmSnap.empty) {
-    const doc = gmSnap.docs[0];
-    return { game: { id: doc.id, ...doc.data() } as Game, role: 'gm' };
-  }
-
-  return null;
-}
-
-export async function joinGame(
-  gameId: string,
-  userId: string,
-  role: 'player' | 'gm',
+/**
+ * Join a game by code via the joinGameByCode Cloud Function. The code is matched
+ * server-side (game docs — and the codes they hold — are no longer client-readable),
+ * the role is derived from which code matched, and the member doc is written by the
+ * function so the role can't be forged. Returns the resolved game id + role.
+ */
+export async function joinGameByCode(
+  code: string,
   displayName: string,
-  email: string,
   fcmToken?: string
-): Promise<void> {
-  const memberData: Omit<GameMember, 'userId'> & { userId: string } = {
-    userId,
-    role,
-    displayName,
-    email,
-    joinedAt: firestore.FieldValue.serverTimestamp() as any,
-  };
-  // Only include fcmToken when we actually have one — never write `undefined`,
-  // which would abort the member-doc write and orphan the game.
-  if (fcmToken) memberData.fcmToken = fcmToken;
-  await firestore()
-    .collection(Collections.GAMES)
-    .doc(gameId)
-    .collection(Collections.MEMBERS)
-    .doc(userId)
-    .set(memberData);
+): Promise<{ gameId: string; role: 'player' | 'gm' }> {
+  const callable = functions().httpsCallable('joinGameByCode');
+  const res = await callable({ code, displayName, fcmToken: fcmToken ?? null });
+  return res.data as { gameId: string; role: 'player' | 'gm' };
 }
 
 export async function updateFcmToken(gameId: string, userId: string, fcmToken: string): Promise<void> {

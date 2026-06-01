@@ -151,13 +151,26 @@ Phase transition helpers live in `services/gameService.ts`
 (`openLobby`, `reopenSetup`, `startGame`, `endGame`, `updateGameConfig`, `markPlayerOut`).
 `gamePhase(game)` resolves the phase, defaulting legacy games (no `phase` field) to
 `play` while active and `results` once ended, so older games keep working. `endGame()`
-still sets `status: 'ended'` for backward compatibility with `findGameByCode` (which only
-matches active games, so a finished game can't be joined).
+still sets `status: 'ended'`; the `joinGameByCode` Cloud Function only matches active
+games, so a finished game can't be joined.
 
 ### Game Codes & Joining
 
-- **Player Code** & **GM Code**: 6-character alphanumeric codes (no 0/O/I/L to avoid confusion) generated on game creation
-- **Join flow**: User enters code → `findGameByCode()` determines role → `joinGame()` adds user to `games/{gameId}/members/{userId}`. Players then wait in the lobby; location tracking starts only once the GM moves the game to the `play` phase (see Game Phases).
+- **Player Code** & **GM Code**: 6-character codes (no 0/O/1/I/L to avoid confusion),
+  generated **server-side with a CSPRNG** by the `createGame` Cloud Function and checked
+  for uniqueness against active games.
+- **Codes are secret**: game docs (which hold the codes) are readable only by members —
+  see `firestore.rules`. Clients can no longer query games by code.
+- **Create flow**: `createGame(name, displayName, fcmToken?)` in `services/gameService.ts`
+  calls the `createGame` callable, which writes the game doc + the creator's GM member doc
+  atomically (the GM role is never self-assigned by a client).
+- **Join flow**: `joinGameByCode(code, displayName, fcmToken?)` calls the `joinGameByCode`
+  callable, which resolves the code → game + role server-side, takes `email` from the
+  verified auth token, and writes the member doc. Players then wait in the lobby; location
+  tracking starts only once the GM moves the game to the `play` phase (see Game Phases).
+- **App Check**: `services/appCheck.ts` attests the app to the Firebase backend. Enforcement
+  is off until registered in the console (see the `ENFORCE_APP_CHECK` flag in
+  `functions/src/games.ts` and the SECURITY notes).
 
 ### Notifications
 

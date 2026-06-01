@@ -8,7 +8,7 @@ import { useAuth } from '@/context/AuthContext';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { Colors } from '@/constants/colors';
-import { createGame, joinGame } from '@/services/gameService';
+import { createGame } from '@/services/gameService';
 import { getFcmToken } from '@/services/notificationService';
 import { friendlyError } from '@/services/errorUtils';
 
@@ -28,9 +28,8 @@ export default function CreateGameScreen() {
 
     setLoading(true);
     try {
-      const game = await createGame(gameName, user.uid);
       const fcmToken = await getFcmToken();
-      await joinGame(game.id, user.uid, 'gm', displayName.trim(), user.email ?? '', fcmToken ?? undefined);
+      const game = await createGame(gameName.trim(), displayName.trim(), fcmToken ?? undefined);
       router.replace(`/(app)/gm/${game.id}`);
     } catch (err) {
       setError(friendlyError(err));

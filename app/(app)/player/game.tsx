@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, Alert, TouchableOpacity, Linking,
 } from 'react-native';
@@ -43,6 +43,10 @@ export default function PlayerGameScreen() {
   const [permissionDenied, setPermissionDenied] = useState(false);
   const [showTutorial, setShowTutorial] = useState(false);
 
+  // Tracks whether we've ever observed our own membership doc, so we only treat a
+  // *disappearing* doc (GM removed us) as a removal — not a not-yet-loaded one.
+  const sawMemberRef = useRef(false);
+
   // Elapsed play time: ticks during play, freezes at outAt (if out) or endedAt.
   const frozenEnd = out ? outAt : phase === 'results' ? endedAt : null;
   const elapsed = useElapsed(startedAt, frozenEnd);
@@ -74,6 +78,18 @@ export default function PlayerGameScreen() {
       .doc(user.uid)
       .onSnapshot(
         (snap) => {
+          // The membership doc vanishing means the GM removed us from the game.
+          // Stop sharing location immediately and leave — without this, the
+          // background task keeps uploading our position even after removal.
+          if (!snap.exists) {
+            if (sawMemberRef.current) {
+              stopLocationTracking().catch(() => {});
+              Alert.alert('Removed from game', 'The Game Master has removed you from this game.');
+              router.replace('/(app)/games');
+            }
+            return;
+          }
+          sawMemberRef.current = true;
           const d = snap.data();
           if (!d) return;
           setDisplayName(d.displayName ?? 'Player');

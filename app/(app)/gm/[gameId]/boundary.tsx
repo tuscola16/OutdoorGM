@@ -110,11 +110,36 @@ export default function PlayAreaScreen() {
 
   // Auto-center once, after the map is ready, on a fresh (boundary-less) game.
   // Gating on mapReady ensures animateToRegion isn't lost before the map lays out.
+  // This is a backstop; the primary auto-center is onUserLocationChange below,
+  // which fires the moment the OS has a fix (more reliable on Android cold start,
+  // where getCurrentPositionAsync can be slow or never resolve).
   useEffect(() => {
     if (boundary || !mapReady || didAutoCenter.current) return;
     didAutoCenter.current = true;
     centerOnUser();
   }, [boundary, mapReady, centerOnUser]);
+
+  // Center on the GM's first GPS fix from the map itself. `onUserLocationChange`
+  // is tied to the same location source that draws the blue dot, so the map
+  // recenters exactly when the user becomes visible — no waiting on a separate
+  // getCurrentPositionAsync call that may hang. Guarded so we only jump once.
+  const handleUserLocationChange = useCallback(
+    (e: { nativeEvent: { coordinate?: { latitude: number; longitude: number } } }) => {
+      if (boundary || didAutoCenter.current) return;
+      const coord = e.nativeEvent?.coordinate;
+      if (!coord) return;
+      didAutoCenter.current = true;
+      const region: Region = {
+        latitude: coord.latitude,
+        longitude: coord.longitude,
+        latitudeDelta: 0.02,
+        longitudeDelta: 0.02,
+      };
+      regionRef.current = region;
+      mapRef.current?.animateToRegion(region, 600);
+    },
+    [boundary]
+  );
 
   // When a boundary already exists, recenter the map on it once it loads.
   useEffect(() => {
@@ -285,6 +310,7 @@ export default function PlayAreaScreen() {
           showsUserLocation
           showsMyLocationButton={false}
           onMapReady={() => setMapReady(true)}
+          onUserLocationChange={handleUserLocationChange}
           onRegionChangeComplete={(r) => { regionRef.current = r; }}
           onLongPress={(e) => openAddCheckpoint(e.nativeEvent.coordinate)}
         >

@@ -1,7 +1,14 @@
 import { Platform } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
+import functions from '@react-native-firebase/functions';
 import messaging from '@react-native-firebase/messaging';
+import { initAppCheck } from './appCheck';
+
+// Attest this app to the Firebase backend as early as possible (fire-and-forget;
+// initAppCheck never throws). Must happen before callable functions / Firestore
+// requests so a token is attached once App Check enforcement is enabled.
+initAppCheck();
 
 // Drop `undefined` fields instead of throwing on writes. Without this, calling
 // .set()/.update() with any undefined value (e.g. an absent fcmToken when FCM is
@@ -23,9 +30,10 @@ if (__DEV__ && process.env.EXPO_PUBLIC_USE_EMULATOR === 'true') {
     (Platform.OS === 'android' ? '10.0.2.2' : 'localhost');
   auth().useEmulator(`http://${host}:9099`);
   firestore().useEmulator(host, 8080);
+  functions().useEmulator(host, 5001);
 }
 
-export { auth, firestore, messaging };
+export { auth, firestore, functions, messaging };
 
 export const Collections = {
   USERS: 'users',

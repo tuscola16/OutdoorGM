@@ -8,7 +8,7 @@ import { useAuth } from '@/context/AuthContext';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { Colors } from '@/constants/colors';
-import { findGameByCode, joinGame, updateFcmToken } from '@/services/gameService';
+import { joinGameByCode } from '@/services/gameService';
 import { getFcmToken } from '@/services/notificationService';
 import { friendlyError } from '@/services/errorUtils';
 
@@ -34,22 +34,8 @@ export default function JoinScreen() {
 
     setLoading(true);
     try {
-      const result = await findGameByCode(code);
-      if (!result) {
-        setError('No active game found with that code');
-        return;
-      }
-
       const fcmToken = await getFcmToken();
-      await joinGame(
-        result.game.id,
-        user.uid,
-        result.role,
-        displayName.trim(),
-        user.email ?? '',
-        fcmToken ?? undefined
-      );
-
+      await joinGameByCode(code.trim(), displayName.trim(), fcmToken ?? undefined);
       router.replace('/(app)/games');
     } catch (err) {
       setError(friendlyError(err));

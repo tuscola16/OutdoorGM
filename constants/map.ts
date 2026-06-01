@@ -30,10 +30,16 @@ export const TOPO_MAX_ZOOM = 20;
 
 /**
  * Deepest zoom the server actually has tiles for. Past this, react-native-maps
- * upscales ("overzooms") the deepest tiles instead of drawing nothing — which is
- * what fixes the map going blank when zoomed in too far.
+ * upscales ("overzooms") the deepest native tiles instead of drawing nothing.
+ *
+ * This must be set per-source, because client-side overzooming creates a visible
+ * seam wherever upscaled tiles meet freshly-loaded ones (looks like a straight
+ * diagonal break in the terrain). Mapbox serves crisp tiles to z20+ (and overzooms
+ * server-side beyond that), so we let it render natively all the way to TOPO_MAX_ZOOM
+ * — no client-side upscaling, no seam. OSM's public tiles 404 past z19, so the
+ * fallback still needs the upscale to avoid going blank at our max zoom.
  */
-export const TOPO_MAX_NATIVE_ZOOM = 18;
+export const TOPO_MAX_NATIVE_ZOOM = MAPBOX_TOKEN ? 20 : 19;
 
 /** Whether a real outdoors basemap (Mapbox) is configured vs. the OSM fallback. */
 export const TOPO_USING_MAPBOX = !!MAPBOX_TOKEN;

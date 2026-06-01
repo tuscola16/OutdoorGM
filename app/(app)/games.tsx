@@ -1,9 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity, Alert
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/context/AuthContext';
 import { Button } from '@/components/ui/Button';
@@ -29,21 +29,29 @@ export default function GamesScreen() {
   const [games, setGames] = useState<GameEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState('');
 
-  async function loadGames() {
+  const loadGames = useCallback(async () => {
     if (!user) return;
     try {
       const result = await getMyGames(user.uid);
       setGames(result);
+      setError('');
     } catch (err) {
       console.error('loadGames error', err);
+      setError("Couldn't load your games. Pull down to retry.");
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }
+  }, [user]);
 
-  useEffect(() => { loadGames(); }, [user]);
+  // Reload every time the screen regains focus (e.g. returning from creating or
+  // joining a game), not just on first mount — the screen stays mounted in the
+  // navigation stack, so a plain mount effect would show a stale list.
+  useFocusEffect(
+    useCallback(() => { loadGames(); }, [loadGames])
+  );
 
   function openGame(entry: GameEntry) {
     if (entry.role === 'gm') {
@@ -101,7 +109,9 @@ export default function GamesScreen() {
         ListEmptyComponent={
           !loading ? (
             <View style={styles.empty}>
-              <Text style={styles.emptyText}>No games yet.{'\n'}Join or create one below.</Text>
+              <Text style={styles.emptyText}>
+                {error || 'No games yet.\nJoin or create one below.'}
+              </Text>
             </View>
           ) : null
         }
