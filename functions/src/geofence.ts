@@ -30,7 +30,14 @@ export const onLocationUpdate = functions.firestore
       latitude: number;
       longitude: number;
       displayName: string;
+      accuracy?: number;
     };
+
+    // GPS is only accurate to ~10–30m, so a strict "distance <= radius" test
+    // misses real arrivals at tight radii. Allow the reported accuracy as slack
+    // (capped so a wildly inaccurate fix can't trigger everything), i.e. count an
+    // arrival if the player *could* be inside the circle given GPS uncertainty.
+    const accuracySlack = Math.min(Math.max(location.accuracy ?? 0, 0), 30);
 
     // Skip if the player is a GM (GMs don't trigger checkpoint arrivals)
     const memberSnap = await admin.firestore()
@@ -85,7 +92,7 @@ export const onLocationUpdate = functions.firestore
         cp.longitude
       );
 
-      if (dist <= cp.radius) {
+      if (dist <= cp.radius + accuracySlack) {
         const arrivalRef = db
           .collection('games')
           .doc(gameId)

@@ -34,7 +34,9 @@ export default function PlayerGameScreen() {
   const [startedAt, setStartedAt] = useState<Ts>(null);
   const [endedAt, setEndedAt] = useState<Ts>(null);
 
-  const [displayName, setDisplayName] = useState('Player');
+  // Empty until the member doc loads, so location tracking starts with the real
+  // name rather than the "Player" placeholder. The tracking effect gates on it.
+  const [displayName, setDisplayName] = useState('');
   const [out, setOut] = useState(false);
   const [outAt, setOutAt] = useState<Ts>(null);
 
@@ -193,7 +195,7 @@ export default function PlayerGameScreen() {
         <View style={styles.waitIcon}>
           <Ionicons name="hourglass-outline" size={48} color={Colors.primary} />
         </View>
-        <Text style={styles.waitTitle}>You're in, {displayName}!</Text>
+        <Text style={styles.waitTitle}>You're in, {displayName || 'Player'}!</Text>
         <Text style={styles.waitSub}>
           Waiting for your Game Master to start the game. Keep this screen open.
         </Text>
@@ -273,7 +275,7 @@ export default function PlayerGameScreen() {
         </View>
         <Text style={styles.resultLabel}>{out ? 'YOU TAPPED OUT' : 'GAME OVER'}</Text>
         <Text style={styles.resultTime}>{elapsed != null ? formatDuration(elapsed) : '—'}</Text>
-        <Text style={styles.waitSub}>That's how long you played, {displayName}. Nice work!</Text>
+        <Text style={styles.waitSub}>That's how long you played, {displayName || 'Player'}. Nice work!</Text>
         <View style={{ height: 24 }} />
         <Button title="Back to My Games" onPress={() => router.replace('/(app)/games')} />
       </View>
@@ -287,7 +289,7 @@ export default function PlayerGameScreen() {
       <View style={styles.header}>
         <View style={{ flex: 1 }}>
           <Text style={styles.gameName} numberOfLines={1}>{gameName || 'Game'}</Text>
-          <Text style={styles.role}>Player · {displayName}</Text>
+          <Text style={styles.role}>Player · {displayName || 'Player'}</Text>
         </View>
         {phase !== 'results' && (
           <TouchableOpacity onPress={handleLeave} style={styles.leaveBtn}>
