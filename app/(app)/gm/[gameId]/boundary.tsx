@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, Alert, Modal, FlatList,
+  View, Text, StyleSheet, TouchableOpacity, Alert, Modal, FlatList, ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -22,6 +22,9 @@ import type { MapBoundary, Checkpoint } from '@/types';
 // boundary is the area *inside* the reticle, so it matches what the GM frames.
 const RETICLE = { vertical: 0.15, horizontal: 0.08 };
 const DEFAULT_RADIUS = 100;
+// Center-of-US fallback view, used only if we can't get the GM's location.
+const DEFAULT_REGION: Region = { latitude: 37.0902, longitude: -95.7129, latitudeDelta: 0.05, longitudeDelta: 0.05 };
+const USER_DELTA = 0.02;
 
 function regionToBoundary(r: Region): MapBoundary {
   const latSpan = r.latitudeDelta * (1 - RETICLE.vertical * 2);
@@ -49,13 +52,17 @@ export default function PlayAreaScreen() {
   const router = useRouter();
   const boundary: MapBoundary | undefined = game?.boundary;
   const mapRef = useRef<MapView>(null);
-  const initialRegion: Region = { latitude: 37.0902, longitude: -95.7129, latitudeDelta: 0.05, longitudeDelta: 0.05 };
-  // Default the captured region to the initial view so saving works even if the
-  // GM doesn't pan; onRegionChangeComplete keeps it current as they move.
-  const regionRef = useRef<Region | null>(initialRegion);
+  // The map opens framed on `initialRegion` once we resolve it (the GM's current
+  // location for a new game, or the saved boundary when editing). We hold the map
+  // off until then so it *starts* centered — animateToRegion is a no-op on this
+  // mapType="none" + Google setup, so we never rely on it for the initial camera.
+  // regionRef tracks the framed area for saving; onRegionChangeComplete keeps it
+  // current as the GM pans.
+  const [initialRegion, setInitialRegion] = useState<Region | null>(null);
+  const resolvedInitial = useRef(false);
+  const regionRef = useRef<Region | null>(DEFAULT_REGION);
   const [mode, setMode] = useState<'map' | 'list'>('map');
   const [locating, setLocating] = useState(false);
-  const didAutoCenter = useRef(false);
   const [savingBoundary, setSavingBoundary] = useState(false);
 
   // Checkpoint add/edit modal state
@@ -95,11 +102,15 @@ export default function PlayAreaScreen() {
       const region: Region = {
         latitude: pos.coords.latitude,
         longitude: pos.coords.longitude,
-        latitudeDelta: 0.02,
-        longitudeDelta: 0.02,
+        latitudeDelta: USER_DELTA,
+        longitudeDelta: USER_DELTA,
       };
       regionRef.current = region;
-      mapRef.current?.animateToRegion(region, 600);
+      // animateCamera (not animateToRegion, which is a no-op with mapType="none").
+      mapRef.current?.animateCamera(
+        { center: { latitude: pos.coords.latitude, longitude: pos.coords.longitude }, zoom: 14 },
+        { duration: 600 }
+      );
     } catch {
       // Location unavailable — leave the current view in place.
     } finally {
@@ -107,64 +118,68 @@ export default function PlayAreaScreen() {
     }
   }, []);
 
-  // Auto-center on the GM's location for a fresh (boundary-less) game.
-  //
-  // Earlier approaches were unreliable: gating on `onMapReady` (which is flaky
-  // with mapType="none") and a one-shot getCurrentPositionAsync (which often
-  // hangs on Android cold start), with an onUserLocationChange fallback that only
-  // fires when the device actually *moves* — so a stationary GM with a cached fix
-  // saw their pin but the map never recentered.
-  //
-  // watchPositionAsync is the reliable trigger: it delivers the current fix
-  // shortly after subscribing even when the device is still, and that ~1s delay
-  // means the map is already laid out, so animateToRegion isn't dropped. We jump
-  // on the first fix, then stop watching so we don't yank the map while the GM
-  // frames the play area. The manual "locate me" button still uses centerOnUser.
+  // Resolve the map's opening region exactly once, then hold it.
+  const resolveInitial = useCallback((region: Region) => {
+    if (resolvedInitial.current) return;
+    resolvedInitial.current = true;
+    regionRef.current = region;
+    setInitialRegion(region);
+  }, []);
+
+  // Frame on an existing boundary as soon as it's known (editing an existing game).
   useEffect(() => {
-    if (boundary) return;
+    if (!boundary) return;
+    resolveInitial({
+      latitude: (boundary.minLat + boundary.maxLat) / 2,
+      longitude: (boundary.minLng + boundary.maxLng) / 2,
+      latitudeDelta: Math.max(0.01, boundary.maxLat - boundary.minLat),
+      longitudeDelta: Math.max(0.01, boundary.maxLng - boundary.minLng),
+    });
+  }, [boundary, resolveInitial]);
+
+  // Otherwise frame on the GM's current location. getLastKnownPositionAsync is
+  // instant when a fix is cached (the same fix that draws the blue dot); fall back
+  // to a live watch, then to the default region after a short wait so the map
+  // never stays stuck behind the spinner.
+  useEffect(() => {
     let cancelled = false;
     let sub: Location.LocationSubscription | null = null;
     (async () => {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted' || cancelled) return;
+        if (cancelled || status !== 'granted') return;
+        const last = await Location.getLastKnownPositionAsync();
+        if (cancelled) return;
+        if (last) {
+          resolveInitial({
+            latitude: last.coords.latitude,
+            longitude: last.coords.longitude,
+            latitudeDelta: USER_DELTA,
+            longitudeDelta: USER_DELTA,
+          });
+          return;
+        }
         sub = await Location.watchPositionAsync(
           { accuracy: Location.Accuracy.Balanced, timeInterval: 1000, distanceInterval: 0 },
           (pos) => {
-            if (cancelled || didAutoCenter.current) return;
-            didAutoCenter.current = true;
-            const region: Region = {
+            if (cancelled) return;
+            resolveInitial({
               latitude: pos.coords.latitude,
               longitude: pos.coords.longitude,
-              latitudeDelta: 0.02,
-              longitudeDelta: 0.02,
-            };
-            regionRef.current = region;
-            // Double-fire: on Android the first animateToRegion right after layout
-            // is occasionally dropped, so re-issue it a beat later.
-            mapRef.current?.animateToRegion(region, 600);
-            setTimeout(() => { mapRef.current?.animateToRegion(region, 600); }, 350);
+              latitudeDelta: USER_DELTA,
+              longitudeDelta: USER_DELTA,
+            });
             sub?.remove();
             sub = null;
           }
         );
       } catch {
-        // Location unavailable — leave the default view in place.
+        // ignore — the fallback timer below applies the default region
       }
     })();
-    return () => { cancelled = true; sub?.remove(); };
-  }, [boundary]);
-
-  // When a boundary already exists, recenter the map on it once it loads.
-  useEffect(() => {
-    if (!boundary || !mapRef.current) return;
-    mapRef.current.animateToRegion({
-      latitude: (boundary.minLat + boundary.maxLat) / 2,
-      longitude: (boundary.minLng + boundary.maxLng) / 2,
-      latitudeDelta: Math.max(0.005, boundary.maxLat - boundary.minLat),
-      longitudeDelta: Math.max(0.005, boundary.maxLng - boundary.minLng),
-    }, 500);
-  }, [boundary?.minLat, boundary?.maxLat, boundary?.minLng, boundary?.maxLng]);
+    const fallback = setTimeout(() => resolveInitial(DEFAULT_REGION), 4000);
+    return () => { cancelled = true; clearTimeout(fallback); sub?.remove(); };
+  }, [resolveInitial]);
 
   async function handleSaveBoundary() {
     if (!gameId || !regionRef.current) return;
@@ -315,6 +330,12 @@ export default function PlayAreaScreen() {
       ) : (
         <>
         <View style={styles.mapWrapper}>
+        {!initialRegion ? (
+          <View style={[StyleSheet.absoluteFill, styles.mapLoading]}>
+            <ActivityIndicator color={Colors.primary} />
+            <Text style={styles.mapLoadingText}>Finding your location…</Text>
+          </View>
+        ) : (
         <MapView
           ref={mapRef}
           style={StyleSheet.absoluteFill}
@@ -364,6 +385,7 @@ export default function PlayAreaScreen() {
             />
           ))}
         </MapView>
+        )}
 
         {/* Reticle showing the area that will be captured as the boundary */}
         <View pointerEvents="none" style={styles.reticle} />
@@ -475,6 +497,8 @@ const styles = StyleSheet.create({
   empty: { alignItems: 'center', paddingTop: 60, gap: 12 },
   emptyText: { color: Colors.textSecondary, fontSize: 14, textAlign: 'center', lineHeight: 22 },
   mapWrapper: { flex: 1, position: 'relative' },
+  mapLoading: { alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: Colors.surface },
+  mapLoadingText: { color: Colors.textSecondary, fontSize: 14 },
   reticle: {
     position: 'absolute',
     top: '15%',
