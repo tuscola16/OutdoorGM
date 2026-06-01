@@ -58,51 +58,58 @@ export async function startLocationTracking(gameId: string, displayName: string)
   await AsyncStorage.setItem(ACTIVE_GAME_KEY, gameId);
   await AsyncStorage.setItem(DISPLAY_NAME_KEY, displayName);
 
-  // Always run the foreground watcher (frequent updates, no background grant
-  // needed). Restart it so it captures the current gameId/displayName.
-  if (foregroundSub) { foregroundSub.remove(); foregroundSub = null; }
-  foregroundSub = await Location.watchPositionAsync(
-    { accuracy: Location.Accuracy.High, timeInterval: 5000, distanceInterval: 5 },
-    async (pos) => {
-      const user = auth().currentUser;
-      if (!user) return;
-      try {
-        await updatePlayerLocation(gameId, user.uid, displayName, {
-          latitude: pos.coords.latitude,
-          longitude: pos.coords.longitude,
-          accuracy: pos.coords.accuracy ?? undefined,
-          heading: pos.coords.heading ?? undefined,
-        });
-      } catch (err) {
-        console.error('[Location] foreground upload failed:', err);
-      }
-    }
-  );
-
-  // Background location is a *bonus* — it keeps tracking alive when the app is
-  // backgrounded/screen-off. Never block tracking on it: if the player grants
-  // only "While Using", the foreground watcher above still works.
+  // Use exactly ONE location source — never both at once (running the foreground
+  // watcher and the background task together produces redundant updates and
+  // instability). Prefer the background task when "Always" is granted, since it
+  // also fires while the app is foregrounded; otherwise fall back to a foreground
+  // watcher that works with just "While Using" (uploads while the app is open).
+  let bgGranted = false;
   try {
     const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
-    if (bgStatus === 'granted') {
-      const isRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME).catch(() => false);
-      if (!isRunning) {
-        await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
-          accuracy: Location.Accuracy.High,
-          timeInterval: 5000,       // every 5 seconds
-          distanceInterval: 10,     // or every 10 meters
-          foregroundService: {
-            notificationTitle: 'Outdoor GM',
-            notificationBody: 'Your location is being shared with your Game Master.',
-            notificationColor: '#D4893F',
-          },
-          showsBackgroundLocationIndicator: true,
-          pausesUpdatesAutomatically: false,
-        });
-      }
+    bgGranted = bgStatus === 'granted';
+  } catch {
+    bgGranted = false;
+  }
+
+  if (bgGranted) {
+    // Stop any foreground watcher from a previous "While Using" session.
+    if (foregroundSub) { foregroundSub.remove(); foregroundSub = null; }
+    const isRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME).catch(() => false);
+    if (!isRunning) {
+      await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
+        accuracy: Location.Accuracy.High,
+        timeInterval: 5000,       // every 5 seconds
+        distanceInterval: 10,     // or every 10 meters
+        foregroundService: {
+          notificationTitle: 'Outdoor GM',
+          notificationBody: 'Your location is being shared with your Game Master.',
+          notificationColor: '#D4893F',
+        },
+        showsBackgroundLocationIndicator: true,
+        pausesUpdatesAutomatically: false,
+      });
     }
-  } catch (err) {
-    console.warn('[Location] background updates not started (foreground tracking still active):', err);
+  } else {
+    // Foreground-only fallback (works with "While Using"). Restart it so it
+    // captures the current gameId/displayName.
+    if (foregroundSub) { foregroundSub.remove(); foregroundSub = null; }
+    foregroundSub = await Location.watchPositionAsync(
+      { accuracy: Location.Accuracy.High, timeInterval: 5000, distanceInterval: 5 },
+      async (pos) => {
+        const user = auth().currentUser;
+        if (!user) return;
+        try {
+          await updatePlayerLocation(gameId, user.uid, displayName, {
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            accuracy: pos.coords.accuracy ?? undefined,
+            heading: pos.coords.heading ?? undefined,
+          });
+        } catch (err) {
+          console.error('[Location] foreground upload failed:', err);
+        }
+      }
+    );
   }
 }
 

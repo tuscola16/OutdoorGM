@@ -68,6 +68,11 @@ function PlayerMarker({ player }: { player: PlayerLocation }) {
       coordinate={{ latitude: player.latitude, longitude: player.longitude }}
       anchor={{ x: 0.5, y: 0.5 }}
       title={player.displayName}
+      // The marker view is static (initials never change), only its coordinate
+      // moves. Without this, Android regenerates the marker bitmap on every
+      // re-render — with live location updates every few seconds that thrashes
+      // the map and crashes the app. Position updates still apply.
+      tracksViewChanges={false}
     >
       <View style={styles.playerMarker}>
         <Text style={styles.playerInitials}>{initials}</Text>
