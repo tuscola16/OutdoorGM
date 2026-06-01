@@ -14,12 +14,14 @@ import type { GameMember } from '@/types';
 
 export default function PlayersScreen() {
   const { gameId } = useLocalSearchParams<{ gameId: string }>();
-  const { members, loadGame, clearGame } = useGame();
+  const { members, loadGame } = useGame();
   const router = useRouter();
 
+  // Ensure the shared game subscription is active. We intentionally do NOT
+  // clearGame() on unmount: the GM screen underneath stays mounted and relies on
+  // the same singleton context, so clearing here would blank it out on return.
   useEffect(() => {
     if (gameId) loadGame(gameId, 'gm');
-    return () => clearGame();
   }, [gameId]);
 
   function handleRoleToggle(member: GameMember) {

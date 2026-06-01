@@ -218,11 +218,44 @@ $bmp.Save(".\screenshots\screen.jpg", $enc, $p); $bmp.Dispose()
 firebase emulators:start --config firebase.emulator.json
 ```
 
-Then start Metro with the emulator flag:
+Then start Metro with the emulator flag. `EXPO_PUBLIC_*` vars are inlined into the
+bundle, so add `-c` to clear Metro's cache whenever you change them:
 ```powershell
 $env:EXPO_PUBLIC_USE_EMULATOR = "true"
-npx expo start --dev-client
+npx expo start --dev-client -c
 ```
+
+### Reaching the emulators from the app (host resolution)
+
+The emulators run on your dev machine, but "localhost" means something different
+inside the app. `services/firebase.ts` picks the host automatically:
+
+| App runs on | Host used | Notes |
+|-------------|-----------|-------|
+| Android emulator (AVD) | `10.0.2.2` | The AVD's alias for the host's `127.0.0.1`, which is where the emulators bind by default. Works out of the box. |
+| iOS simulator | `localhost` | Shares the host network. |
+| Physical device | *(your LAN IP)* | Set `EXPO_PUBLIC_EMULATOR_HOST` (see below). |
+
+> Earlier this was hardcoded to `localhost`, which silently failed on the Android
+> emulator (every Firestore/Auth call returned `[firestore/unavailable]`, e.g. an
+> empty **My Games** list with a `loadGames error` in the console). It is now
+> platform-aware.
+
+For a **physical device**, the device must reach your machine over the LAN:
+```powershell
+# Start the emulators listening on all interfaces (not just 127.0.0.1)
+firebase emulators:start --config firebase.emulator.json --host 0.0.0.0
+
+# Point the app at your machine's LAN IP (find it with `ipconfig`), e.g.:
+$env:EXPO_PUBLIC_EMULATOR_HOST = "192.168.1.50"
+$env:EXPO_PUBLIC_USE_EMULATOR  = "true"
+npx expo start --dev-client -c
+```
+…and make sure Windows Firewall allows inbound connections on ports 8080/9099/5001.
+
+> **Emulator data is separate from production.** The emulators start empty, so
+> there will be no account or games until you create them there. To test against
+> your real data instead, leave `EXPO_PUBLIC_USE_EMULATOR` unset (or `false`).
 
 ---
 
@@ -236,6 +269,10 @@ npx expo start --dev-client
 | Metro shows "port 8081 in use" | A Metro server is already running — connect to it directly. |
 | `autoFocus` crash on Create Game navigation | Transient RN view-hierarchy error — press Reload in the error screen and navigate again. |
 | Profile icon tap opens dev menu | See known limitation in Section 7. |
+| Empty **My Games** + `loadGames error [firestore/unavailable]` (emulator) | The app can't reach the emulators. Confirm they're running and see Section 8 → host resolution (Android uses `10.0.2.2`; physical device needs `EXPO_PUBLIC_EMULATOR_HOST`). |
+| Newly created/joined game never appears in **My Games** | Was a member-doc write aborting on an `undefined` fcmToken (FCM is unavailable on the emulator). Fixed via `ignoreUndefinedProperties` in `services/firebase.ts` + a guarded `joinGame`. Games created *before* that fix are orphaned (no member doc) and won't reappear — just create new ones. |
+| Map base is blank/empty (markers + boundary still draw) | The basemap is a raster `UrlTile` (`mapType="none"`), not Google imagery. It uses **Mapbox Outdoors** when `EXPO_PUBLIC_MAPBOX_TOKEN` is set, else falls back to OpenStreetMap. A blank base means tiles aren't loading: confirm the token is set (and re-bundle with `-c`), or that the device can reach the tile host. See `constants/map.ts`. |
+| Map goes blank only when zoomed in very far | Fixed: `UrlTile` now sets `maximumNativeZ` so the deepest available tiles upscale instead of vanishing. If it recurs on a new tile source, lower `TOPO_MAX_NATIVE_ZOOM` in `constants/map.ts` to that source's real max zoom. |
 | Blank/grey Google Map | API-key authorization failure — see below. |
 
 ### Blank Google Map (Authorization failure)

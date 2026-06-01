@@ -123,9 +123,11 @@ export async function joinGame(
     role,
     displayName,
     email,
-    fcmToken,
     joinedAt: firestore.FieldValue.serverTimestamp() as any,
   };
+  // Only include fcmToken when we actually have one — never write `undefined`,
+  // which would abort the member-doc write and orphan the game.
+  if (fcmToken) memberData.fcmToken = fcmToken;
   await firestore()
     .collection(Collections.GAMES)
     .doc(gameId)

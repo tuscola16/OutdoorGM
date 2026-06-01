@@ -2,7 +2,7 @@ import React, { useRef, useEffect } from 'react';
 import { View, StyleSheet, Text } from 'react-native';
 import MapView, { Marker, Circle, Polygon, UrlTile, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import { Colors } from '@/constants/colors';
-import { TOPO_TILE_URL, TOPO_MAX_ZOOM } from '@/constants/map';
+import { TOPO_TILE_URL, TOPO_TILE_SIZE, TOPO_MAX_ZOOM, TOPO_MAX_NATIVE_ZOOM } from '@/constants/map';
 import type { Checkpoint, PlayerLocation, MapBoundary } from '@/types';
 
 interface GameMapProps {
@@ -122,8 +122,14 @@ export function GameMap({
       showsUserLocation={false}
       showsMyLocationButton={false}
     >
-      {/* Topographic basemap (contours + trails) in place of satellite imagery */}
-      <UrlTile urlTemplate={TOPO_TILE_URL} maximumZ={TOPO_MAX_ZOOM} zIndex={-1} />
+      {/* Outdoors basemap (trails + terrain) in place of satellite imagery */}
+      <UrlTile
+        urlTemplate={TOPO_TILE_URL}
+        tileSize={TOPO_TILE_SIZE}
+        maximumZ={TOPO_MAX_ZOOM}
+        maximumNativeZ={TOPO_MAX_NATIVE_ZOOM}
+        zIndex={-1}
+      />
       {boundary && (
         <Polygon
           coordinates={boundaryCorners(boundary)}

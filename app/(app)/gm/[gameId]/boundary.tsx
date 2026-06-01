@@ -1,21 +1,27 @@
-import { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  View, Text, StyleSheet, TouchableOpacity, Alert, Modal, FlatList,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import MapView, { Polygon, UrlTile, PROVIDER_GOOGLE, Region } from 'react-native-maps';
+import MapView, { Marker, Circle, Polygon, UrlTile, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
 import { useGame } from '@/context/GameContext';
 import { Button } from '@/components/ui/Button';
+import { Input } from '@/components/ui/Input';
 import { Colors } from '@/constants/colors';
-import { TOPO_TILE_URL, TOPO_MAX_ZOOM } from '@/constants/map';
-import { updateGameConfig } from '@/services/gameService';
+import { TOPO_TILE_URL, TOPO_TILE_SIZE, TOPO_MAX_ZOOM, TOPO_MAX_NATIVE_ZOOM } from '@/constants/map';
+import {
+  updateGameConfig, addCheckpoint, updateCheckpoint, deleteCheckpoint,
+} from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
-import type { MapBoundary } from '@/types';
+import type { MapBoundary, Checkpoint } from '@/types';
 
 // Fractions of the screen the framing reticle insets from each edge. The saved
 // boundary is the area *inside* the reticle, so it matches what the GM frames.
 const RETICLE = { vertical: 0.15, horizontal: 0.08 };
+const DEFAULT_RADIUS = 100;
 
 function regionToBoundary(r: Region): MapBoundary {
   const latSpan = r.latitudeDelta * (1 - RETICLE.vertical * 2);
@@ -37,9 +43,9 @@ function corners(b: MapBoundary) {
   ];
 }
 
-export default function BoundaryScreen() {
+export default function PlayAreaScreen() {
   const { gameId } = useLocalSearchParams<{ gameId: string }>();
-  const { game, loadGame, clearGame } = useGame();
+  const { game, checkpoints, loadGame } = useGame();
   const router = useRouter();
   const boundary: MapBoundary | undefined = game?.boundary;
   const mapRef = useRef<MapView>(null);
@@ -47,40 +53,70 @@ export default function BoundaryScreen() {
   // Default the captured region to the initial view so saving works even if the
   // GM doesn't pan; onRegionChangeComplete keeps it current as they move.
   const regionRef = useRef<Region | null>(initialRegion);
-  const [saving, setSaving] = useState(false);
+  const [mode, setMode] = useState<'map' | 'list'>('map');
+  const [mapReady, setMapReady] = useState(false);
+  const [locating, setLocating] = useState(false);
+  const didAutoCenter = useRef(false);
+  const [savingBoundary, setSavingBoundary] = useState(false);
 
+  // Checkpoint add/edit modal state
+  const [showCpModal, setShowCpModal] = useState(false);
+  const [editTarget, setEditTarget] = useState<Checkpoint | null>(null);
+  const [pendingCoord, setPendingCoord] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [cpName, setCpName] = useState('');
+  const [cpRadius, setCpRadius] = useState(String(DEFAULT_RADIUS));
+  const [savingCp, setSavingCp] = useState(false);
+
+  // Keep the shared game subscription alive (no clearGame on unmount — the GM
+  // screen underneath relies on the same singleton context).
   useEffect(() => {
     if (gameId) loadGame(gameId, 'gm');
-    return () => clearGame();
   }, [gameId]);
 
-  // On first open (no boundary yet), center the map on the GM's current location so
-  // they start framing where they actually are instead of the middle of the country.
-  useEffect(() => {
-    if (boundary) return; // editing an existing boundary — handled below
-    let cancelled = false;
-    (async () => {
-      try {
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted' || cancelled) return;
-        const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-        if (cancelled) return;
-        const region: Region = {
-          latitude: pos.coords.latitude,
-          longitude: pos.coords.longitude,
-          latitudeDelta: 0.02,
-          longitudeDelta: 0.02,
-        };
-        regionRef.current = region;
-        mapRef.current?.animateToRegion(region, 600);
-      } catch {
-        // Location unavailable — leave the default region in place.
+  // Request permission, find the GM, and recenter the map on them. Used both for
+  // the one-time auto-center and the manual "locate me" button. Tries the cached
+  // last-known position first (instant) before waiting on a fresh GPS fix.
+  const centerOnUser = useCallback(async (showPromptOnDenied = false) => {
+    setLocating(true);
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        if (showPromptOnDenied) {
+          Alert.alert(
+            'Location off',
+            'Enable location access for Outdoor GM in Settings to center the map on you.',
+          );
+        }
+        return;
       }
-    })();
-    return () => { cancelled = true; };
+      const pos =
+        (await Location.getLastKnownPositionAsync()) ??
+        (await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }));
+      if (!pos) return;
+      const region: Region = {
+        latitude: pos.coords.latitude,
+        longitude: pos.coords.longitude,
+        latitudeDelta: 0.02,
+        longitudeDelta: 0.02,
+      };
+      regionRef.current = region;
+      mapRef.current?.animateToRegion(region, 600);
+    } catch {
+      // Location unavailable — leave the current view in place.
+    } finally {
+      setLocating(false);
+    }
   }, []);
 
-  // When editing an existing boundary, recenter the map on it once it loads.
+  // Auto-center once, after the map is ready, on a fresh (boundary-less) game.
+  // Gating on mapReady ensures animateToRegion isn't lost before the map lays out.
+  useEffect(() => {
+    if (boundary || !mapReady || didAutoCenter.current) return;
+    didAutoCenter.current = true;
+    centerOnUser();
+  }, [boundary, mapReady, centerOnUser]);
+
+  // When a boundary already exists, recenter the map on it once it loads.
   useEffect(() => {
     if (!boundary || !mapRef.current) return;
     mapRef.current.animateToRegion({
@@ -91,20 +127,77 @@ export default function BoundaryScreen() {
     }, 500);
   }, [boundary?.minLat, boundary?.maxLat, boundary?.minLng, boundary?.maxLng]);
 
-  async function handleSave() {
-    if (!gameId || !regionRef.current) {
-      Alert.alert('Move the map', 'Pan and zoom so the play area fills the screen, then save.');
-      return;
-    }
-    setSaving(true);
+  async function handleSaveBoundary() {
+    if (!gameId || !regionRef.current) return;
+    setSavingBoundary(true);
     try {
       await updateGameConfig(gameId, { boundary: regionToBoundary(regionRef.current) });
-      router.back();
     } catch (err) {
       Alert.alert('Error', friendlyError(err));
     } finally {
-      setSaving(false);
+      setSavingBoundary(false);
     }
+  }
+
+  function openAddCheckpoint(coord: { latitude: number; longitude: number }) {
+    setPendingCoord(coord);
+    setEditTarget(null);
+    setCpName(`Checkpoint ${checkpoints.length + 1}`);
+    setCpRadius(String(DEFAULT_RADIUS));
+    setShowCpModal(true);
+  }
+
+  function openEditCheckpoint(cp: Checkpoint) {
+    setEditTarget(cp);
+    setPendingCoord({ latitude: cp.latitude, longitude: cp.longitude });
+    setCpName(cp.name);
+    setCpRadius(String(cp.radius));
+    setShowCpModal(true);
+  }
+
+  async function handleSaveCheckpoint() {
+    if (!cpName.trim()) { Alert.alert('Enter a checkpoint name'); return; }
+    const radius = parseInt(cpRadius, 10);
+    if (isNaN(radius) || radius < 10) { Alert.alert('Enter a valid radius (minimum 10m)'); return; }
+    if (!pendingCoord || !gameId) return;
+
+    setSavingCp(true);
+    try {
+      if (editTarget) {
+        await updateCheckpoint(gameId, editTarget.id, { name: cpName.trim(), radius });
+      } else {
+        await addCheckpoint(gameId, {
+          name: cpName.trim(),
+          latitude: pendingCoord.latitude,
+          longitude: pendingCoord.longitude,
+          radius,
+        });
+      }
+      setShowCpModal(false);
+    } catch (err) {
+      Alert.alert('Error', friendlyError(err));
+    } finally {
+      setSavingCp(false);
+    }
+  }
+
+  function confirmDeleteCheckpoint(cp: Checkpoint) {
+    if (!gameId) return;
+    Alert.alert(`Delete "${cp.name}"?`, 'This cannot be undone.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await deleteCheckpoint(gameId, cp.id);
+            setShowCpModal(false);
+          } catch (err) {
+            Alert.alert('Error', friendlyError(err));
+          }
+        },
+      },
+    ]);
   }
 
   return (
@@ -113,20 +206,96 @@ export default function BoundaryScreen() {
         <TouchableOpacity onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={24} color={Colors.text} />
         </TouchableOpacity>
-        <Text style={styles.title}>Play Boundary</Text>
-        <View style={{ width: 24 }} />
+        <Text style={styles.title}>Play Area</Text>
+        <View style={styles.headerRight}>
+          <View style={styles.cpCount}>
+            <Ionicons name="location" size={14} color={Colors.primary} />
+            <Text style={styles.cpCountText}>{checkpoints.length}</Text>
+          </View>
+          <View style={styles.modeToggle}>
+            <TouchableOpacity
+              style={[styles.modeBtn, mode === 'map' && styles.activeModeBtn]}
+              onPress={() => setMode('map')}
+            >
+              <Ionicons name="map" size={18} color={mode === 'map' ? Colors.primary : Colors.textSecondary} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.modeBtn, mode === 'list' && styles.activeModeBtn]}
+              onPress={() => setMode('list')}
+            >
+              <Ionicons name="list" size={18} color={mode === 'list' ? Colors.primary : Colors.textSecondary} />
+            </TouchableOpacity>
+          </View>
+        </View>
       </View>
 
-      <View style={styles.mapWrapper}>
+      {mode === 'list' ? (
+        <>
+          <FlatList
+            data={checkpoints}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={styles.list}
+            ListHeaderComponent={
+              checkpoints.length > 0 ? (
+                <Text style={styles.listHeading}>
+                  {checkpoints.length} checkpoint{checkpoints.length === 1 ? '' : 's'}
+                </Text>
+              ) : null
+            }
+            renderItem={({ item }) => (
+              <View style={styles.checkpointRow}>
+                <Ionicons name="location" size={20} color={Colors.primary} style={{ marginRight: 10 }} />
+                <View style={styles.cpInfo}>
+                  <Text style={styles.cpName}>{item.name}</Text>
+                  <Text style={styles.cpSub}>
+                    {item.latitude.toFixed(5)}, {item.longitude.toFixed(5)} · {item.radius}m radius
+                  </Text>
+                </View>
+                <TouchableOpacity onPress={() => openEditCheckpoint(item)} style={styles.iconBtn}>
+                  <Ionicons name="pencil-outline" size={18} color={Colors.textSecondary} />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => confirmDeleteCheckpoint(item)} style={styles.iconBtn}>
+                  <Ionicons name="trash-outline" size={18} color={Colors.danger} />
+                </TouchableOpacity>
+              </View>
+            )}
+            ListEmptyComponent={
+              <View style={styles.empty}>
+                <Ionicons name="location-outline" size={40} color={Colors.textMuted} />
+                <Text style={styles.emptyText}>
+                  No checkpoints yet.{'\n'}Switch to the map and long-press to add one.
+                </Text>
+              </View>
+            }
+          />
+          <View style={styles.footer}>
+            <Button title="Add Checkpoints on Map" onPress={() => setMode('map')} variant="ghost" />
+            <Button title="Done" onPress={() => router.back()} />
+          </View>
+        </>
+      ) : (
+        <>
+        <View style={styles.mapWrapper}>
         <MapView
           ref={mapRef}
           style={StyleSheet.absoluteFill}
           provider={PROVIDER_GOOGLE}
           mapType="none"
           initialRegion={initialRegion}
+          showsUserLocation
+          showsMyLocationButton={false}
+          onMapReady={() => setMapReady(true)}
           onRegionChangeComplete={(r) => { regionRef.current = r; }}
+          onLongPress={(e) => openAddCheckpoint(e.nativeEvent.coordinate)}
         >
-          <UrlTile urlTemplate={TOPO_TILE_URL} maximumZ={TOPO_MAX_ZOOM} zIndex={-1} />
+          <UrlTile
+            urlTemplate={TOPO_TILE_URL}
+            tileSize={TOPO_TILE_SIZE}
+            maximumZ={TOPO_MAX_ZOOM}
+            maximumNativeZ={TOPO_MAX_NATIVE_ZOOM}
+            zIndex={-1}
+          />
+
           {boundary && (
             <Polygon
               coordinates={corners(boundary)}
@@ -135,19 +304,98 @@ export default function BoundaryScreen() {
               fillColor="rgba(212, 137, 63, 0.08)"
             />
           )}
+
+          {checkpoints.map((cp) => (
+            <Circle
+              key={`c-${cp.id}`}
+              center={{ latitude: cp.latitude, longitude: cp.longitude }}
+              radius={cp.radius}
+              fillColor="rgba(232, 64, 42, 0.15)"
+              strokeColor={Colors.primary}
+              strokeWidth={2}
+            />
+          ))}
+          {checkpoints.map((cp) => (
+            <Marker
+              key={`m-${cp.id}`}
+              coordinate={{ latitude: cp.latitude, longitude: cp.longitude }}
+              title={cp.name}
+              description={`Radius: ${cp.radius}m — tap to edit`}
+              pinColor={Colors.secondary}
+              onPress={() => openEditCheckpoint(cp)}
+            />
+          ))}
         </MapView>
 
-        {/* Reticle showing the area that will be captured */}
+        {/* Reticle showing the area that will be captured as the boundary */}
         <View pointerEvents="none" style={styles.reticle} />
+
+        {/* Recenter the map on the GM's current location */}
+        <TouchableOpacity
+          style={styles.locateBtn}
+          onPress={() => centerOnUser(true)}
+          disabled={locating}
+        >
+          <Ionicons
+            name={locating ? 'ellipsis-horizontal' : 'locate'}
+            size={22}
+            color={Colors.text}
+          />
+        </TouchableOpacity>
       </View>
 
       <View style={styles.footer}>
         <Text style={styles.hint}>
-          Pan and zoom so the play area fills the framed box, then save. The current
-          view becomes the boundary.
+          Frame the play area in the box and tap below to set the boundary.
+          Long-press anywhere on the map to drop a checkpoint.
         </Text>
-        <Button title="Set Boundary to Current View" onPress={handleSave} loading={saving} />
+        <Button
+          title={boundary ? 'Update Boundary to This View' : 'Set Boundary to This View'}
+          onPress={handleSaveBoundary}
+          loading={savingBoundary}
+        />
+        <Button title="Done" onPress={() => router.back()} variant="ghost" />
       </View>
+        </>
+      )}
+
+      {/* Add / edit checkpoint modal */}
+      <Modal visible={showCpModal} transparent animationType="slide" onRequestClose={() => setShowCpModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>{editTarget ? 'Edit Checkpoint' : 'New Checkpoint'}</Text>
+            {pendingCoord && (
+              <Text style={styles.coords}>
+                📍 {pendingCoord.latitude.toFixed(5)}, {pendingCoord.longitude.toFixed(5)}
+              </Text>
+            )}
+            <Input
+              label="Name"
+              value={cpName}
+              onChangeText={setCpName}
+              placeholder="e.g. Cornucopia"
+              autoFocus
+            />
+            <Input
+              label="Detection Radius (meters)"
+              value={cpRadius}
+              onChangeText={setCpRadius}
+              keyboardType="number-pad"
+              placeholder="100"
+            />
+            <View style={styles.modalActions}>
+              <Button title="Cancel" onPress={() => setShowCpModal(false)} variant="ghost" fullWidth={false} style={{ flex: 1 }} />
+              <Button title={editTarget ? 'Save' : 'Add'} onPress={handleSaveCheckpoint} loading={savingCp} fullWidth={false} style={{ flex: 1 }} />
+            </View>
+            {editTarget && (
+              <TouchableOpacity onPress={() => confirmDeleteCheckpoint(editTarget)} style={styles.deleteRow}>
+                <Ionicons name="trash-outline" size={18} color={Colors.danger} />
+                <Text style={styles.deleteText}>Delete checkpoint</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -161,7 +409,33 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
   },
-  title: { fontSize: 20, fontWeight: '800', color: Colors.text },
+  title: { flex: 1, fontSize: 20, fontWeight: '800', color: Colors.text, marginLeft: 12 },
+  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  cpCount: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: Colors.surface, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 4,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  cpCountText: { color: Colors.text, fontWeight: '700', fontSize: 13 },
+  modeToggle: {
+    flexDirection: 'row', backgroundColor: Colors.surface, borderRadius: 8,
+    borderWidth: 1, borderColor: Colors.border, overflow: 'hidden',
+  },
+  modeBtn: { padding: 8, paddingHorizontal: 12 },
+  activeModeBtn: { backgroundColor: Colors.surfaceElevated },
+  list: { paddingHorizontal: 16, paddingVertical: 8, flexGrow: 1 },
+  listHeading: { fontSize: 13, fontWeight: '700', color: Colors.textSecondary, marginBottom: 8 },
+  checkpointRow: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: Colors.surface, borderRadius: 10, padding: 12, marginBottom: 8,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  cpInfo: { flex: 1 },
+  cpName: { fontSize: 15, fontWeight: '700', color: Colors.text },
+  cpSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
+  iconBtn: { padding: 6, marginLeft: 4 },
+  empty: { alignItems: 'center', paddingTop: 60, gap: 12 },
+  emptyText: { color: Colors.textSecondary, fontSize: 14, textAlign: 'center', lineHeight: 22 },
   mapWrapper: { flex: 1, position: 'relative' },
   reticle: {
     position: 'absolute',
@@ -174,6 +448,23 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: 'rgba(212, 137, 63, 0.05)',
   },
-  footer: { padding: 16, gap: 12 },
+  locateBtn: {
+    position: 'absolute', right: 16, bottom: 16,
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  footer: { padding: 16, gap: 10 },
   hint: { color: Colors.textSecondary, fontSize: 13, lineHeight: 19, textAlign: 'center' },
+
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
+  modalContent: {
+    backgroundColor: Colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    padding: 24, paddingBottom: 40, gap: 12,
+  },
+  modalTitle: { fontSize: 20, fontWeight: '800', color: Colors.text },
+  coords: { fontSize: 12, color: Colors.textSecondary },
+  modalActions: { flexDirection: 'row', gap: 12, marginTop: 4 },
+  deleteRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingTop: 4 },
+  deleteText: { color: Colors.danger, fontSize: 14, fontWeight: '600' },
 });
