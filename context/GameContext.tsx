@@ -1,8 +1,18 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import firestore from '@react-native-firebase/firestore';
+import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
+import auth from '@react-native-firebase/auth';
 import { Collections } from '@/services/firebase';
 import { gamePhase } from '@/services/gameService';
-import type { Game, Checkpoint, GameMember, PlayerLocation, Arrival, GamePhase } from '@/types';
+import type {
+  Game,
+  Checkpoint,
+  GameMember,
+  PlayerLocation,
+  Arrival,
+  GamePhase,
+  Broadcast,
+  RationSubmission,
+} from '@/types';
 
 interface GameContextValue {
   game: Game | null;
@@ -12,6 +22,10 @@ interface GameContextValue {
   members: GameMember[];
   playerLocations: PlayerLocation[];
   arrivals: Arrival[];
+  /** GM→player messages. Players see only global + their own targeted messages. */
+  broadcasts: Broadcast[];
+  /** Ration submissions awaiting/holding GM review (GM only). */
+  rations: RationSubmission[];
   loadGame: (gameId: string, role: 'player' | 'gm') => void;
   clearGame: () => void;
 }
@@ -26,6 +40,8 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   const [members, setMembers] = useState<GameMember[]>([]);
   const [playerLocations, setPlayerLocations] = useState<PlayerLocation[]>([]);
   const [arrivals, setArrivals] = useState<Arrival[]>([]);
+  const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
+  const [rations, setRations] = useState<RationSubmission[]>([]);
 
   const loadGame = useCallback((id: string, role: 'player' | 'gm') => {
     setGameId(id);
@@ -40,6 +56,8 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     setMembers([]);
     setPlayerLocations([]);
     setArrivals([]);
+    setBroadcasts([]);
+    setRations([]);
   }, []);
 
   // Subscribe to game document
@@ -118,9 +136,73 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
       );
   }, [gameId]);
 
+  // Subscribe to broadcasts. GMs see every message; players see global messages
+  // (targetPlayerId == null) plus ones targeted at them. Firestore can't OR those
+  // in one query, so players run two listeners and merge.
+  useEffect(() => {
+    if (!gameId) return;
+    const col = firestore()
+      .collection(Collections.GAMES)
+      .doc(gameId)
+      .collection(Collections.BROADCASTS);
+
+    if (myRole === 'gm') {
+      return col
+        .orderBy('createdAt', 'desc')
+        .limit(100)
+        .onSnapshot(
+          (snap) => setBroadcasts(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Broadcast))),
+          (err) => console.error('[GameContext] broadcasts listener error', err)
+        );
+    }
+
+    const uid = auth().currentUser?.uid;
+    const merged = new Map<string, Broadcast>();
+    const emit = () =>
+      setBroadcasts(
+        [...merged.values()].sort(
+          (a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0)
+        )
+      );
+    const handle = (snap: FirebaseFirestoreTypes.QuerySnapshot) => {
+      snap.docChanges().forEach((c) => {
+        if (c.type === 'removed') merged.delete(c.doc.id);
+        else merged.set(c.doc.id, { id: c.doc.id, ...c.doc.data() } as Broadcast);
+      });
+      emit();
+    };
+    const unsubGlobal = col
+      .where('targetPlayerId', '==', null)
+      .onSnapshot(handle, (err) => console.error('[GameContext] global broadcasts error', err));
+    const unsubMine = uid
+      ? col
+          .where('targetPlayerId', '==', uid)
+          .onSnapshot(handle, (err) => console.error('[GameContext] my broadcasts error', err))
+      : () => {};
+    return () => {
+      unsubGlobal();
+      unsubMine();
+    };
+  }, [gameId, myRole]);
+
+  // Subscribe to ration submissions (GM review feed only).
+  useEffect(() => {
+    if (!gameId || myRole !== 'gm') return;
+    return firestore()
+      .collection(Collections.GAMES)
+      .doc(gameId)
+      .collection(Collections.RATIONS)
+      .orderBy('submittedAt', 'desc')
+      .limit(200)
+      .onSnapshot(
+        (snap) => setRations(snap.docs.map((d) => ({ id: d.id, ...d.data() } as RationSubmission))),
+        (err) => console.error('[GameContext] rations listener error', err)
+      );
+  }, [gameId, myRole]);
+
   return (
     <GameContext.Provider
-      value={{ game, phase: gamePhase(game), myRole, checkpoints, members, playerLocations, arrivals, loadGame, clearGame }}
+      value={{ game, phase: gamePhase(game), myRole, checkpoints, members, playerLocations, arrivals, broadcasts, rations, loadGame, clearGame }}
     >
       {children}
     </GameContext.Provider>

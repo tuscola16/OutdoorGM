@@ -1,9 +1,12 @@
 import * as admin from 'firebase-admin';
 
-export async function sendArrivalPushNotifications(
+/** Send a high-priority push to a set of FCM tokens. Logs (does not throw) on
+ * failure so callers can fire-and-forget. `channelId` selects the Android channel. */
+export async function sendPushToTokens(
   tokens: string[],
   title: string,
-  body: string
+  body: string,
+  channelId = 'arrivals'
 ): Promise<void> {
   if (tokens.length === 0) return;
 
@@ -13,7 +16,7 @@ export async function sendArrivalPushNotifications(
       notification: {
         sound: 'default',
         priority: 'high',
-        channelId: 'arrivals',
+        channelId,
       },
       priority: 'high',
     },
@@ -40,4 +43,13 @@ export async function sendArrivalPushNotifications(
   } catch (err) {
     console.error('FCM send error:', err);
   }
+}
+
+/** Back-compat wrapper used by the geofence arrival path. */
+export async function sendArrivalPushNotifications(
+  tokens: string[],
+  title: string,
+  body: string
+): Promise<void> {
+  await sendPushToTokens(tokens, title, body, 'arrivals');
 }

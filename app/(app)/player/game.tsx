@@ -10,10 +10,11 @@ import { useAuth } from '@/context/AuthContext';
 import { Colors } from '@/constants/colors';
 import { Button } from '@/components/ui/Button';
 import { GameMap } from '@/components/GameMap';
+import { BroadcastFeed } from '@/components/BroadcastFeed';
 import { Tutorial } from '@/components/Tutorial';
 import { startLocationTracking, stopLocationTracking } from '@/services/locationTask';
 import { onForegroundMessage } from '@/services/notificationService';
-import { markPlayerOut, gamePhase } from '@/services/gameService';
+import { eliminatePlayer, raiseSos, gamePhase } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
 import { useElapsed, formatDuration } from '@/hooks/useElapsed';
 import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
@@ -166,18 +167,41 @@ export default function PlayerGameScreen() {
 
   function handleMarkOut() {
     Alert.alert(
-      "Tap out?",
-      'You will stop sharing your location and your time will be locked in. You cannot rejoin this round.',
+      'Mark yourself out?',
+      'Honor system (Rule 16): if you were struck, remove yourself. You will stop sharing your location and your time will be locked in. You cannot rejoin this round.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: "I'm Out",
+          text: "I've been killed",
           style: 'destructive',
           onPress: async () => {
             if (!gameId || !user) return;
             try {
-              await markPlayerOut(gameId, user.uid);
+              await eliminatePlayer(gameId, user.uid, 'self');
               await stopLocationTracking();
+            } catch (err) {
+              Alert.alert('Error', friendlyError(err));
+            }
+          },
+        },
+      ]
+    );
+  }
+
+  function handleSos() {
+    Alert.alert(
+      'Send safety alert?',
+      'This notifies the Game Master that you need assistance (Rule 22). Use it if you feel unsafe, are injured, or are too cold to continue.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Send alert',
+          style: 'destructive',
+          onPress: async () => {
+            if (!gameId || !user) return;
+            try {
+              await raiseSos(gameId, user.uid);
+              Alert.alert('Alert sent', 'The Game Master has been notified and can see your location.');
             } catch (err) {
               Alert.alert('Error', friendlyError(err));
             }
@@ -203,6 +227,11 @@ export default function PlayerGameScreen() {
           <Ionicons name="help-circle-outline" size={18} color={Colors.primary} />
           <Text style={styles.howToText}>How to play</Text>
         </TouchableOpacity>
+        {gameId ? (
+          <View style={styles.waitFeed}>
+            <BroadcastFeed gameId={gameId} max={10} />
+          </View>
+        ) : null}
       </View>
     );
   }
@@ -227,12 +256,16 @@ export default function PlayerGameScreen() {
           )}
         </View>
 
+        <BroadcastFeed gameId={gameId!} />
+
         {out ? (
           <View style={[styles.statusCard, { borderColor: Colors.danger }]}>
             <View style={[styles.statusDot, styles.inactiveDot]} />
             <View style={{ flex: 1 }}>
               <Text style={styles.statusTitle}>You're out</Text>
-              <Text style={styles.statusSub}>Your time is locked in. Hang tight for the results.</Text>
+              <Text style={styles.statusSub}>
+                Wave your red bandana overhead as you exit the arena (Rule 2).
+              </Text>
             </View>
           </View>
         ) : (
@@ -260,7 +293,11 @@ export default function PlayerGameScreen() {
 
         {!out && (
           <View style={styles.outBtnWrap}>
-            <Button title="I'm Out" onPress={handleMarkOut} variant="danger" />
+            <Button title="I've been killed" onPress={handleMarkOut} variant="danger" />
+            <TouchableOpacity style={styles.sosBtn} onPress={handleSos}>
+              <Ionicons name="alert-circle-outline" size={18} color={Colors.danger} />
+              <Text style={styles.sosText}>Safety alert — I need help</Text>
+            </TouchableOpacity>
           </View>
         )}
       </>
@@ -331,6 +368,7 @@ const styles = StyleSheet.create({
   },
   waitTitle: { fontSize: 22, fontWeight: '800', color: Colors.text, textAlign: 'center' },
   waitSub: { fontSize: 15, color: Colors.textSecondary, textAlign: 'center', lineHeight: 22 },
+  waitFeed: { alignSelf: 'stretch', marginTop: 16 },
   howToBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 12, padding: 8 },
   howToText: { color: Colors.primary, fontSize: 15, fontWeight: '600' },
   resultLabel: { color: Colors.textSecondary, fontWeight: '800', letterSpacing: 2, fontSize: 12, marginTop: 8 },
@@ -369,5 +407,10 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.danger,
   },
   settingsBtnText: { color: Colors.danger, fontSize: 13, fontWeight: '600' },
-  outBtnWrap: { paddingHorizontal: 16, paddingBottom: 16 },
+  outBtnWrap: { paddingHorizontal: 16, paddingBottom: 16, gap: 10 },
+  sosBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: Colors.danger,
+  },
+  sosText: { color: Colors.danger, fontSize: 14, fontWeight: '600' },
 });

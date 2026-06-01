@@ -15,7 +15,7 @@ import { AlertFeed } from '@/components/AlertFeed';
 import { Button } from '@/components/ui/Button';
 import { Colors } from '@/constants/colors';
 import { onForegroundMessage } from '@/services/notificationService';
-import { endGame, openLobby, reopenSetup, startGame, updateGameConfig, deleteGame, setGameArchived } from '@/services/gameService';
+import { endGame, openLobby, reopenSetup, startGame, updateGameConfig, deleteGame, setGameArchived, sendBroadcast } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
 import { useElapsed, formatDuration } from '@/hooks/useElapsed';
 import type { Checkpoint, GameMember } from '@/types';
@@ -38,6 +38,8 @@ export default function GMGameScreen() {
   const [showCodes, setShowCodes] = useState(false);
   const [showRules, setShowRules] = useState(false);
   const [rulesText, setRulesText] = useState('');
+  const [showBroadcast, setShowBroadcast] = useState(false);
+  const [broadcastText, setBroadcastText] = useState('');
   const [newAlertCount, setNewAlertCount] = useState(0);
   const [lastSeenArrivals, setLastSeenArrivals] = useState(0);
   const [copiedCode, setCopiedCode] = useState<'player' | 'gm' | null>(null);
@@ -162,6 +164,22 @@ export default function GMGameScreen() {
     setShowRules(false);
   }
 
+  async function sendBroadcastMessage() {
+    const text = broadcastText.trim();
+    if (!text) return;
+    await runPhaseAction(() => sendBroadcast(gameId!, text));
+    setBroadcastText('');
+    setShowBroadcast(false);
+  }
+
+  // Quick action: push the current living-player count to everyone (Rule 24).
+  async function broadcastPlayerCount() {
+    const living = members.filter((m) => m.role === 'player' && !m.out).length;
+    await runPhaseAction(() =>
+      sendBroadcast(gameId!, `${living} ${living === 1 ? 'tribute remains' : 'tributes remain'}.`)
+    );
+  }
+
   const players = members.filter((m) => m.role === 'player');
 
   return (
@@ -181,6 +199,11 @@ export default function GMGameScreen() {
           </View>
         </View>
         <View style={styles.headerActions}>
+          {(phase === 'lobby' || phase === 'play') && (
+            <TouchableOpacity onPress={() => setShowBroadcast(true)} style={styles.headerBtn}>
+              <Ionicons name="megaphone-outline" size={22} color={Colors.text} />
+            </TouchableOpacity>
+          )}
           <TouchableOpacity onPress={() => setShowCodes(true)} style={styles.headerBtn}>
             <Ionicons name="qr-code-outline" size={22} color={Colors.text} />
           </TouchableOpacity>
@@ -340,6 +363,35 @@ export default function GMGameScreen() {
             <View style={styles.modalActions}>
               <Button title="Cancel" onPress={() => setShowRules(false)} variant="ghost" fullWidth={false} style={{ flex: 1 }} />
               <Button title="Save" onPress={saveRules} loading={busy} fullWidth={false} style={{ flex: 1 }} />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Broadcast composer modal */}
+      <Modal visible={showBroadcast} transparent animationType="slide" onRequestClose={() => setShowBroadcast(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Broadcast to players</Text>
+            <Text style={styles.modalSub}>
+              One-way message to every player (gear drops, updates, warnings). Players can't reply.
+            </Text>
+            <TextInput
+              style={styles.rulesInput}
+              value={broadcastText}
+              onChangeText={setBroadcastText}
+              placeholder="e.g. Gear drop at the old oak — marked with your name."
+              placeholderTextColor={Colors.textMuted}
+              multiline
+              textAlignVertical="top"
+            />
+            <TouchableOpacity onPress={broadcastPlayerCount} style={styles.quickAction} disabled={busy}>
+              <Ionicons name="people-outline" size={18} color={Colors.primary} />
+              <Text style={styles.quickActionText}>Send living-player count instead</Text>
+            </TouchableOpacity>
+            <View style={styles.modalActions}>
+              <Button title="Cancel" onPress={() => setShowBroadcast(false)} variant="ghost" fullWidth={false} style={{ flex: 1 }} />
+              <Button title="Send" onPress={sendBroadcastMessage} loading={busy} fullWidth={false} style={{ flex: 1 }} />
             </View>
           </View>
         </View>
@@ -677,5 +729,10 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surfaceElevated, borderRadius: 12, borderWidth: 1, borderColor: Colors.border,
     color: Colors.text, fontSize: 15, padding: 14, minHeight: 120, marginBottom: 16,
   },
+  quickAction: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 10, marginBottom: 12,
+  },
+  quickActionText: { color: Colors.primary, fontSize: 14, fontWeight: '600' },
   modalActions: { flexDirection: 'row', gap: 12 },
 });

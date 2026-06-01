@@ -1,7 +1,22 @@
 import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
-import { sendArrivalPushNotifications } from './notifications';
+import { sendArrivalPushNotifications, sendPushToTokens } from './notifications';
 import { sendArrivalSMS } from './sms';
+
+type CheckpointEventType =
+  | 'arrival-alert'
+  | 'beast-attack'
+  | 'gear-drop'
+  | 'announcement'
+  | 'silent-alert';
+
+interface CheckpointEvent {
+  type: CheckpointEventType;
+  message?: string;
+  audience: 'crossing-player' | 'all-players' | 'gm-only';
+  once?: boolean;
+  recipientPlayerId?: string;
+}
 
 /** Haversine formula — returns distance in meters between two coordinates. */
 function distanceMeters(
@@ -48,6 +63,7 @@ export const onLocationUpdate = functions.firestore
       .get();
 
     if (!memberSnap.exists || memberSnap.data()?.role === 'gm') return;
+    const playerFcmToken = memberSnap.data()?.fcmToken as string | undefined;
 
     // Fetch all checkpoints for this game
     const checkpointsSnap = await admin.firestore()
@@ -72,7 +88,11 @@ export const onLocationUpdate = functions.firestore
 
     const db = admin.firestore();
     const batch = db.batch();
-    const newArrivals: Array<{ checkpointName: string; playerName: string }> = [];
+    const newArrivals: Array<{
+      checkpointName: string;
+      playerName: string;
+      event?: CheckpointEvent;
+    }> = [];
 
     for (const cpDoc of checkpointsSnap.docs) {
       const cp = cpDoc.data() as {
@@ -80,6 +100,7 @@ export const onLocationUpdate = functions.firestore
         longitude: number;
         radius: number;
         name: string;
+        event?: CheckpointEvent;
       };
       const checkpointId = cpDoc.id;
 
@@ -109,7 +130,11 @@ export const onLocationUpdate = functions.firestore
           longitude: location.longitude,
         });
 
-        newArrivals.push({ checkpointName: cp.name, playerName: location.displayName });
+        newArrivals.push({
+          checkpointName: cp.name,
+          playerName: location.displayName,
+          event: cp.event,
+        });
         // Prevent duplicate arrivals within the same batch
         arrivedCheckpointIds.add(checkpointId);
       }
@@ -136,15 +161,109 @@ export const onLocationUpdate = functions.firestore
       if (gm.phone) gmPhones.push(gm.phone as string);
     }
 
-    // Fire notifications for each new arrival
+    // For all-players events we need every living player's token. Only fetch the
+    // full roster if at least one arrival carries such an event.
+    const needsAllPlayers = newArrivals.some(
+      (a) => a.event && a.event.type !== 'arrival-alert' && a.event.audience === 'all-players'
+    );
+    const allPlayerTokens = needsAllPlayers
+      ? (await admin.firestore().collection('games').doc(gameId).collection('members').get()).docs
+          .map((d) => d.data())
+          .filter((m) => m.role !== 'gm' && !m.out)
+          .map((m) => m.fcmToken as string | undefined)
+          .filter((t): t is string => !!t)
+      : [];
+
+    // Fire notifications + events for each new arrival.
     await Promise.all(
-      newArrivals.map(async ({ playerName, checkpointName }) => {
-        const title = `📍 Arrival Alert`;
-        const body = `${playerName} reached ${checkpointName}`;
-        await Promise.allSettled([
-          sendArrivalPushNotifications(gmTokens, title, body),
-          sendArrivalSMS(gmPhones, body),
-        ]);
+      newArrivals.map(async ({ playerName, checkpointName, event }) => {
+        // Default behavior (no event, or 'arrival-alert'): notify the GM only.
+        if (!event || event.type === 'arrival-alert') {
+          const body = `${playerName} reached ${checkpointName}`;
+          await Promise.allSettled([
+            sendArrivalPushNotifications(gmTokens, `📍 Arrival Alert`, body),
+            sendArrivalSMS(gmPhones, body),
+          ]);
+          return;
+        }
+
+        await dispatchCheckpointEvent({
+          gameId,
+          event,
+          checkpointName,
+          playerName,
+          crossingPlayerId: userId,
+          crossingPlayerToken: playerFcmToken,
+          gmTokens,
+          gmPhones,
+          allPlayerTokens,
+        });
       })
     );
   });
+
+const EVENT_TITLES: Record<CheckpointEventType, string> = {
+  'arrival-alert': '📍 Arrival Alert',
+  'beast-attack': '🐺 A beast attacks!',
+  'gear-drop': '🎁 Gear drop',
+  announcement: '📢 Announcement',
+  'silent-alert': '📍 Checkpoint',
+};
+
+async function dispatchCheckpointEvent(args: {
+  gameId: string;
+  event: CheckpointEvent;
+  checkpointName: string;
+  playerName: string;
+  crossingPlayerId: string;
+  crossingPlayerToken?: string;
+  gmTokens: string[];
+  gmPhones: string[];
+  allPlayerTokens: string[];
+}): Promise<void> {
+  const { gameId, event, checkpointName, playerName } = args;
+  const title = EVENT_TITLES[event.type] ?? '📍 Checkpoint';
+  const body = event.message || `${event.type} at ${checkpointName}`;
+  const db = admin.firestore();
+
+  // Always tell the GM something fired (so they can react in person).
+  const gmBody = `${playerName} triggered ${event.type} at ${checkpointName}`;
+  const work: Promise<unknown>[] = [
+    sendArrivalPushNotifications(args.gmTokens, '⚡ Event triggered', gmBody),
+    sendArrivalSMS(args.gmPhones, gmBody),
+  ];
+
+  if (event.audience === 'gm-only' || event.type === 'silent-alert') {
+    await Promise.allSettled(work);
+    return;
+  }
+
+  // Write an in-app broadcast so the player(s) see it in their feed, and push it.
+  if (event.audience === 'all-players') {
+    work.push(
+      db.collection('games').doc(gameId).collection('broadcasts').add({
+        kind: 'checkpoint-event',
+        message: body,
+        targetPlayerId: null,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      })
+    );
+    work.push(sendPushToTokens(args.allPlayerTokens, title, body, 'broadcasts'));
+  } else {
+    // crossing-player: a targeted broadcast (so it lands in that player's feed)
+    // plus a direct push.
+    work.push(
+      db.collection('games').doc(gameId).collection('broadcasts').add({
+        kind: 'checkpoint-event',
+        message: body,
+        targetPlayerId: args.crossingPlayerId,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      })
+    );
+    if (args.crossingPlayerToken) {
+      work.push(sendPushToTokens([args.crossingPlayerToken], title, body, 'broadcasts'));
+    }
+  }
+
+  await Promise.allSettled(work);
+}

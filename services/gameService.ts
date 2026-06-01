@@ -1,7 +1,16 @@
 import firestore from '@react-native-firebase/firestore';
 import auth from '@react-native-firebase/auth';
 import { Collections, functions } from './firebase';
-import type { Game, Checkpoint, GamePhase, GameStatus, MapBoundary } from '@/types';
+import {
+  BASE_GAME_CONFIG,
+  type Game,
+  type GameConfig,
+  type Checkpoint,
+  type GamePhase,
+  type GameStatus,
+  type MapBoundary,
+  type EliminationCause,
+} from '@/types';
 
 /** Resolve a game's phase, defaulting legacy games (created before the `phase`
  * field existed) to `play` while active and `results` once ended. */
@@ -9,6 +18,29 @@ export function gamePhase(game: { phase?: GamePhase; status?: GameStatus } | nul
   if (!game) return 'setup';
   if (game.phase) return game.phase;
   return game.status === 'ended' ? 'results' : 'play';
+}
+
+/** Resolve a game's full config by layering its overrides over the base rules.
+ * Mirrors `gamePhase` — legacy games (no `config`) get the base game rules. */
+export function gameConfig(game: { config?: Partial<GameConfig> } | null | undefined): GameConfig {
+  return { ...BASE_GAME_CONFIG, ...(game?.config ?? {}) };
+}
+
+/** Ration eat-window math (Rules 6–9). Given a started game and "now", which
+ * 0-based interval are we in, how many total intervals, and the window's end. */
+export function rationInterval(
+  game: Game | null | undefined,
+  now: number = Date.now()
+): { index: number; total: number; windowEndsAt: number; isPlaying: boolean } | null {
+  const cfg = gameConfig(game);
+  const startedMs = game?.startedAt?.toMillis?.();
+  if (!startedMs) return null;
+  const windowMs = cfg.rationIntervalMinutes * 60_000;
+  const total = Math.ceil(cfg.durationMinutes / cfg.rationIntervalMinutes);
+  const elapsed = now - startedMs;
+  const index = Math.floor(elapsed / windowMs);
+  const windowEndsAt = startedMs + (index + 1) * windowMs;
+  return { index, total, windowEndsAt, isPlaying: index >= 0 && index < total };
 }
 
 /**
@@ -46,22 +78,144 @@ export async function startGame(gameId: string): Promise<void> {
   });
 }
 
-/** Update the play-area boundary and/or rules text during setup. */
+/** Update the play-area boundary, rules text, and/or per-GM config during setup. */
 export async function updateGameConfig(
   gameId: string,
-  config: { boundary?: MapBoundary; rules?: string }
+  updates: { boundary?: MapBoundary; rules?: string; config?: Partial<GameConfig> }
 ): Promise<void> {
-  await firestore().collection(Collections.GAMES).doc(gameId).update(config);
+  await firestore().collection(Collections.GAMES).doc(gameId).update(updates);
 }
 
-/** Mark a player as out of the game (they tap "I'm Out"). */
-export async function markPlayerOut(gameId: string, userId: string): Promise<void> {
+/**
+ * Eliminate a player (set `out`/`outAt` + `cause`). A player self-reports their
+ * own death (honor system, Rule 16); a GM may eliminate anyone (starvation, bad
+ * sport, etc.). The death broadcast + winner detection happen server-side in the
+ * onMemberWrite Cloud Function, so they fire no matter who eliminated whom.
+ */
+export async function eliminatePlayer(
+  gameId: string,
+  userId: string,
+  cause: EliminationCause = 'self'
+): Promise<void> {
   await firestore()
     .collection(Collections.GAMES)
     .doc(gameId)
     .collection(Collections.MEMBERS)
     .doc(userId)
-    .update({ out: true, outAt: firestore.FieldValue.serverTimestamp() });
+    .update({ out: true, outAt: firestore.FieldValue.serverTimestamp(), cause });
+}
+
+/** Back-compat alias — the "I'm Out" button now reports an honor-system death. */
+export async function markPlayerOut(gameId: string, userId: string): Promise<void> {
+  await eliminatePlayer(gameId, userId, 'self');
+}
+
+/** Record where a dead player dropped their pack/weapons (Rules 19, 20). */
+export async function setDeathLocation(
+  gameId: string,
+  userId: string,
+  coords: { latitude: number; longitude: number }
+): Promise<void> {
+  await firestore()
+    .collection(Collections.GAMES)
+    .doc(gameId)
+    .collection(Collections.MEMBERS)
+    .doc(userId)
+    .update({ deathLocation: coords });
+}
+
+/** Raise a safety alert to the GM (Rules 22, 27, 28). The onMemberWrite function
+ * pushes the alert + the player's location to all GMs. */
+export async function raiseSos(
+  gameId: string,
+  userId: string,
+  coords?: { latitude: number; longitude: number }
+): Promise<void> {
+  await firestore()
+    .collection(Collections.GAMES)
+    .doc(gameId)
+    .collection(Collections.MEMBERS)
+    .doc(userId)
+    .update({
+      sos: true,
+      sosAt: firestore.FieldValue.serverTimestamp(),
+      sosLocation: coords ?? null,
+    });
+}
+
+/** GM clears a resolved safety alert. */
+export async function clearSos(gameId: string, userId: string): Promise<void> {
+  await firestore()
+    .collection(Collections.GAMES)
+    .doc(gameId)
+    .collection(Collections.MEMBERS)
+    .doc(userId)
+    .update({ sos: false });
+}
+
+/** GM sends a one-way message to players. Omit `targetPlayerId` to broadcast to
+ * everyone, or set it to target a single player (e.g. a marked gear drop, Rule 32).
+ * Players have no write access to this collection (Rule 23: no player↔player comms). */
+export async function sendBroadcast(
+  gameId: string,
+  message: string,
+  targetPlayerId?: string
+): Promise<void> {
+  await firestore()
+    .collection(Collections.GAMES)
+    .doc(gameId)
+    .collection(Collections.BROADCASTS)
+    .add({
+      kind: 'gm-message',
+      message,
+      // Always written (null = global) so players can query `targetPlayerId == null`;
+      // Firestore can't match on an absent field.
+      targetPlayerId: targetPlayerId ?? null,
+      createdAt: firestore.FieldValue.serverTimestamp(),
+    });
+}
+
+/**
+ * Submit a ration-card photo for the current eat window (Rules 6–9). The photo
+ * must already be uploaded (returns a download URL); this writes the submission
+ * record. The doc id is deterministic (`${playerId}_${intervalIndex}`) so a
+ * re-submit within the same window overwrites rather than duplicates.
+ */
+export async function submitRation(
+  gameId: string,
+  player: { userId: string; displayName: string },
+  intervalIndex: number,
+  photoUrl: string,
+  cardNumber?: string
+): Promise<void> {
+  await firestore()
+    .collection(Collections.GAMES)
+    .doc(gameId)
+    .collection(Collections.RATIONS)
+    .doc(`${player.userId}_${intervalIndex}`)
+    .set({
+      playerId: player.userId,
+      playerName: player.displayName,
+      intervalIndex,
+      photoUrl,
+      cardNumber: cardNumber ?? null,
+      status: 'pending',
+      submittedAt: firestore.FieldValue.serverTimestamp(),
+    });
+}
+
+/** GM marks a submitted ration valid or rejected. */
+export async function reviewRation(
+  gameId: string,
+  rationId: string,
+  status: 'valid' | 'rejected'
+): Promise<void> {
+  await firestore()
+    .collection(Collections.GAMES)
+    .doc(gameId)
+    .collection(Collections.RATIONS)
+    .doc(rationId)
+    .update({ status, reviewedAt: firestore.FieldValue.serverTimestamp() });
 }
 
 /**

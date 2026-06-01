@@ -42,4 +42,6 @@ export const Collections = {
   MEMBERS: 'members',
   LOCATIONS: 'locations',
   ARRIVALS: 'arrivals',
+  BROADCASTS: 'broadcasts',
+  RATIONS: 'rations',
 } as const;

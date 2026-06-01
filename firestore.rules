@@ -54,7 +54,7 @@ service cloud.firestore {
       // and creatorId are protected because changing them isn't permitted here).
       allow update: if isGameGM(gameId)
         && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['name', 'phase', 'status', 'rules', 'boundary', 'startedAt', 'endedAt']);
+             .hasOnly(['name', 'phase', 'status', 'rules', 'boundary', 'config', 'startedAt', 'endedAt']);
 
       // Checkpoints — GM only. Players intentionally cannot see checkpoint
       // locations (it would reveal the objectives), so reads are GM-scoped too.
@@ -107,6 +107,36 @@ service cloud.firestore {
       match /arrivals/{arrivalId} {
         allow read: if isGameGM(gameId);
         allow write: if false;
+      }
+
+      // Broadcasts — GM→player one-way messages (Rule 23: no player↔player comms).
+      // Players read global messages (targetPlayerId == null) + ones aimed at them.
+      // Only GMs write; Cloud Functions (death/winner/checkpoint events) use the
+      // admin SDK and bypass rules.
+      match /broadcasts/{broadcastId} {
+        allow read: if isGameGM(gameId)
+          || (isSignedIn()
+              && (resource.data.targetPlayerId == null
+                  || resource.data.targetPlayerId == request.auth.uid));
+        allow create, update, delete: if isGameGM(gameId);
+      }
+
+      // Rations — a player writes only their own submission (doc id `${uid}_${n}`)
+      // and only while it's still pending; the GM reviews (sets status). A player
+      // can never mark their own ration valid.
+      match /rations/{rationId} {
+        allow read: if isGameGM(gameId)
+          || (isSignedIn() && resource.data.playerId == request.auth.uid);
+        allow create: if isSignedIn()
+          && isGameMember(gameId)
+          && request.resource.data.playerId == request.auth.uid
+          && request.resource.data.status == 'pending';
+        allow update: if isGameGM(gameId)
+          || (isSignedIn()
+              && request.auth.uid == resource.data.playerId
+              && resource.data.status == 'pending'
+              && request.resource.data.status == 'pending');
+        allow delete: if isGameGM(gameId);
       }
     }
   }
