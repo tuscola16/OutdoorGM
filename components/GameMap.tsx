@@ -1,9 +1,39 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useMemo } from 'react';
 import { View, StyleSheet, Text } from 'react-native';
 import MapView, { Marker, Circle, Polygon, UrlTile, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import { Colors } from '@/constants/colors';
 import { TOPO_TILE_URL, TOPO_TILE_SIZE, TOPO_MAX_ZOOM, TOPO_MAX_NATIVE_ZOOM } from '@/constants/map';
 import type { Checkpoint, PlayerLocation, MapBoundary } from '@/types';
+
+// Whole-US fallback, used only when there's no boundary/checkpoints/players to frame.
+const DEFAULT_REGION: Region = { latitude: 37.0902, longitude: -95.7129, latitudeDelta: 30, longitudeDelta: 30 };
+
+/** Region framing a rectangular boundary, with ~30% padding so it isn't edge-to-edge. */
+function regionFromBoundary(b: MapBoundary): Region {
+  const latSpan = Math.max(0.005, b.maxLat - b.minLat);
+  const lngSpan = Math.max(0.005, b.maxLng - b.minLng);
+  return {
+    latitude: (b.minLat + b.maxLat) / 2,
+    longitude: (b.minLng + b.maxLng) / 2,
+    latitudeDelta: latSpan * 1.3,
+    longitudeDelta: lngSpan * 1.3,
+  };
+}
+
+/** Region covering a set of points (bounding box + padding), or null if empty. */
+function regionFromCoords(coords: { latitude: number; longitude: number }[]): Region | null {
+  if (coords.length === 0) return null;
+  const lats = coords.map((c) => c.latitude);
+  const lngs = coords.map((c) => c.longitude);
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
+  return {
+    latitude: (minLat + maxLat) / 2,
+    longitude: (minLng + maxLng) / 2,
+    latitudeDelta: Math.max(0.005, (maxLat - minLat) * 1.3),
+    longitudeDelta: Math.max(0.005, (maxLng - minLng) * 1.3),
+  };
+}
 
 interface GameMapProps {
   checkpoints: Checkpoint[];
@@ -86,7 +116,25 @@ export function GameMap({
 }: GameMapProps) {
   const mapRef = useRef<MapView>(null);
 
-  // Auto-fit map to show all markers (and the boundary) when data loads
+  // Frame the map on mount. animateToRegion/fitToCoordinates are no-ops on this
+  // mapType="none" + Google setup, so we can't reliably zoom *after* render —
+  // instead we compute the opening region (boundary first, else the checkpoints/
+  // players bounding box) and pass it as initialRegion so the map *opens* framed.
+  // This is what zooms the player's map to the boundary when the game starts.
+  const computedInitialRegion = useMemo<Region>(() => {
+    if (initialRegion) return initialRegion;
+    if (boundary) return regionFromBoundary(boundary);
+    const coords = [
+      ...checkpoints.map((c) => ({ latitude: c.latitude, longitude: c.longitude })),
+      ...playerLocations.map((p) => ({ latitude: p.latitude, longitude: p.longitude })),
+    ];
+    return regionFromCoords(coords) ?? DEFAULT_REGION;
+    // Intentionally computed once for the initial mount; MapView ignores later
+    // initialRegion changes. Recompute only if the boundary identity changes.
+  }, [initialRegion, boundary, checkpoints, playerLocations]);
+
+  // Best-effort dynamic re-fit as live data changes (e.g. players spreading out).
+  // Harmless if it no-ops; initialRegion already gives a correct starting frame.
   useEffect(() => {
     if (!mapRef.current) return;
     const coords = [
@@ -108,14 +156,7 @@ export function GameMap({
       style={styles.map}
       provider={PROVIDER_GOOGLE}
       mapType="none"
-      initialRegion={
-        initialRegion ?? {
-          latitude: 37.0902,
-          longitude: -95.7129,
-          latitudeDelta: 30,
-          longitudeDelta: 30,
-        }
-      }
+      initialRegion={computedInitialRegion}
       onLongPress={
         onMapLongPress ? (e) => onMapLongPress(e.nativeEvent.coordinate) : undefined
       }
