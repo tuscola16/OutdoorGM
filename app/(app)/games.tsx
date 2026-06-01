@@ -8,8 +8,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/context/AuthContext';
 import { Button } from '@/components/ui/Button';
 import { Colors } from '@/constants/colors';
-import { getMyGames, gamePhase } from '@/services/gameService';
-import type { Game } from '@/types';
+import { getMyGames, gamePhase, deleteGame, setGameArchived, type MyGameEntry } from '@/services/gameService';
+import { friendlyError } from '@/services/errorUtils';
 
 const PHASE_TEXT: Record<string, string> = {
   setup: '● Setting up',
@@ -18,10 +18,7 @@ const PHASE_TEXT: Record<string, string> = {
   results: '○ Finished',
 };
 
-interface GameEntry {
-  game: Game;
-  role: 'player' | 'gm';
-}
+type GameEntry = MyGameEntry;
 
 export default function GamesScreen() {
   const { user, profile, signOut } = useAuth();
@@ -30,6 +27,7 @@ export default function GamesScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const [showArchived, setShowArchived] = useState(false);
 
   const loadGames = useCallback(async () => {
     if (!user) return;
@@ -61,8 +59,69 @@ export default function GamesScreen() {
     }
   }
 
+  async function toggleArchive(entry: GameEntry) {
+    if (!user) return;
+    const next = !entry.archived;
+    // Optimistically flip locally so the card moves between views immediately.
+    setGames((prev) =>
+      prev.map((g) => (g.game.id === entry.game.id ? { ...g, archived: next } : g))
+    );
+    try {
+      await setGameArchived(entry.game.id, user.uid, next);
+    } catch (err) {
+      setGames((prev) =>
+        prev.map((g) => (g.game.id === entry.game.id ? { ...g, archived: !next } : g))
+      );
+      Alert.alert('Error', friendlyError(err));
+    }
+  }
+
+  function confirmDelete(entry: GameEntry) {
+    Alert.alert(
+      `Delete "${entry.game.name}"?`,
+      'This permanently removes the game, its checkpoints, and all members for everyone. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteGame(entry.game.id);
+              setGames((prev) => prev.filter((g) => g.game.id !== entry.game.id));
+            } catch (err) {
+              Alert.alert('Error', friendlyError(err));
+            }
+          },
+        },
+      ]
+    );
+  }
+
+  function openActions(entry: GameEntry) {
+    const phase = gamePhase(entry.game);
+    const canDelete = entry.role === 'gm' && (phase === 'setup' || phase === 'lobby');
+    const canArchive = phase === 'results';
+
+    const options: { text: string; style?: 'cancel' | 'destructive'; onPress?: () => void }[] = [];
+    if (canArchive) {
+      options.push({
+        text: entry.archived ? 'Unarchive' : 'Archive',
+        onPress: () => toggleArchive(entry),
+      });
+    }
+    if (canDelete) {
+      options.push({ text: 'Delete game', style: 'destructive', onPress: () => confirmDelete(entry) });
+    }
+    if (options.length === 0) return;
+    options.push({ text: 'Cancel', style: 'cancel' });
+    Alert.alert(entry.game.name, undefined, options);
+  }
+
   function renderGame({ item }: { item: GameEntry }) {
     const isGM = item.role === 'gm';
+    const phase = gamePhase(item.game);
+    const hasActions = (isGM && (phase === 'setup' || phase === 'lobby')) || phase === 'results';
     return (
       <TouchableOpacity style={styles.gameCard} onPress={() => openGame(item)} activeOpacity={0.8}>
         <View style={[styles.roleTag, isGM ? styles.gmTag : styles.playerTag]}>
@@ -71,13 +130,27 @@ export default function GamesScreen() {
         <View style={styles.gameInfo}>
           <Text style={styles.gameName}>{item.game.name}</Text>
           <Text style={styles.gameStatus}>
-            {PHASE_TEXT[gamePhase(item.game)]}
+            {PHASE_TEXT[phase]}
           </Text>
         </View>
-        <Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
+        {hasActions ? (
+          <TouchableOpacity
+            onPress={() => openActions(item)}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            style={styles.actionsBtn}
+          >
+            <Ionicons name="ellipsis-horizontal" size={20} color={Colors.textMuted} />
+          </TouchableOpacity>
+        ) : (
+          <Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
+        )}
       </TouchableOpacity>
     );
   }
+
+  const activeGames = games.filter((g) => !g.archived);
+  const archivedGames = games.filter((g) => g.archived);
+  const visibleGames = showArchived ? archivedGames : activeGames;
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
@@ -100,17 +173,42 @@ export default function GamesScreen() {
       </View>
 
       <FlatList
-        data={games}
+        data={visibleGames}
         keyExtractor={(item) => item.game.id}
         renderItem={renderGame}
         contentContainerStyle={styles.list}
         refreshing={refreshing}
         onRefresh={() => { setRefreshing(true); loadGames(); }}
+        ListHeaderComponent={
+          archivedGames.length > 0 ? (
+            <View style={styles.segmentRow}>
+              <TouchableOpacity
+                style={[styles.segment, !showArchived && styles.segmentActive]}
+                onPress={() => setShowArchived(false)}
+              >
+                <Text style={[styles.segmentText, !showArchived && styles.segmentTextActive]}>
+                  Active ({activeGames.length})
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.segment, showArchived && styles.segmentActive]}
+                onPress={() => setShowArchived(true)}
+              >
+                <Text style={[styles.segmentText, showArchived && styles.segmentTextActive]}>
+                  Archived ({archivedGames.length})
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ) : null
+        }
         ListEmptyComponent={
           !loading ? (
             <View style={styles.empty}>
               <Text style={styles.emptyText}>
-                {error || 'No games yet.\nJoin or create one below.'}
+                {error
+                  || (showArchived
+                    ? 'No archived games.'
+                    : 'No games yet.\nJoin or create one below.')}
               </Text>
             </View>
           ) : null
@@ -180,6 +278,25 @@ const styles = StyleSheet.create({
   gameInfo: { flex: 1 },
   gameName: { fontSize: 16, fontWeight: '700', color: Colors.text },
   gameStatus: { fontSize: 13, color: Colors.textSecondary, marginTop: 2 },
+  actionsBtn: { padding: 4 },
+  segmentRow: {
+    flexDirection: 'row',
+    backgroundColor: Colors.surface,
+    borderRadius: 10,
+    padding: 4,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  segment: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  segmentActive: { backgroundColor: Colors.surfaceElevated },
+  segmentText: { color: Colors.textSecondary, fontWeight: '600', fontSize: 14 },
+  segmentTextActive: { color: Colors.primary },
   empty: {
     alignItems: 'center',
     paddingTop: 60,

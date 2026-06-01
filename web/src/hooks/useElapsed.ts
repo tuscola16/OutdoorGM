@@ -1,8 +1,10 @@
-﻿import { useState, useEffect } from 'react';
-import type { FsTimestamp } from '@/types';
+import { useState, useEffect } from 'react';
+import type { FsTimestamp } from '@shared/types';
 
 type Timestamp = FsTimestamp | null | undefined;
 
+/** Live elapsed-seconds counter between startedAt and (endedAt ?? now).
+ *  Ported from the mobile app's hooks/useElapsed.ts. */
 export function useElapsed(startedAt: Timestamp, endedAt: Timestamp): number | null {
   const [elapsed, setElapsed] = useState<number | null>(null);
 

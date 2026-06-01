@@ -177,3 +177,46 @@ export const joinGameByCode = functions.https.onCall(async (data, context) => {
 
   return { gameId, role: member.role };
 });
+
+/**
+ * Delete a game that hasn't started yet (phase `setup` or `lobby`). GM-only.
+ * Game docs are not client-deletable (`allow delete: if false`) and Firestore
+ * doesn't cascade subcollections, so this runs server-side and recursively
+ * removes the game plus its members/checkpoints/locations/arrivals.
+ */
+export const deleteGame = functions.https.onCall(async (data, context) => {
+  const uid = requireAuth(context);
+  const gameId = String(data?.gameId ?? '').trim();
+  if (!gameId) {
+    throw new functions.https.HttpsError('invalid-argument', 'A game id is required.');
+  }
+
+  const db = admin.firestore();
+  const gameRef = db.collection('games').doc(gameId);
+  const [gameSnap, memberSnap] = await Promise.all([
+    gameRef.get(),
+    gameRef.collection('members').doc(uid).get(),
+  ]);
+
+  if (!gameSnap.exists) {
+    // Already gone — treat as success so a double-tap doesn't error.
+    return { deleted: true };
+  }
+  if (!memberSnap.exists || memberSnap.data()?.role !== 'gm') {
+    throw new functions.https.HttpsError('permission-denied', 'Only a Game Master can delete this game.');
+  }
+
+  const game = gameSnap.data() ?? {};
+  // Resolve phase the same way gameService.gamePhase() does, then refuse to
+  // delete anything that has started: only `setup`/`lobby` games are removable.
+  const phase = game.phase ?? (game.status === 'ended' ? 'results' : 'play');
+  if (game.startedAt || phase === 'play' || phase === 'results') {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Only games that haven\'t started can be deleted. Archive a finished game instead.'
+    );
+  }
+
+  await db.recursiveDelete(gameRef);
+  return { deleted: true };
+});

@@ -9,12 +9,13 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
 import { useGame } from '@/context/GameContext';
+import { useAuth } from '@/context/AuthContext';
 import { GameMap } from '@/components/GameMap';
 import { AlertFeed } from '@/components/AlertFeed';
 import { Button } from '@/components/ui/Button';
 import { Colors } from '@/constants/colors';
 import { onForegroundMessage } from '@/services/notificationService';
-import { endGame, openLobby, reopenSetup, startGame, updateGameConfig } from '@/services/gameService';
+import { endGame, openLobby, reopenSetup, startGame, updateGameConfig, deleteGame, setGameArchived } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
 import { useElapsed, formatDuration } from '@/hooks/useElapsed';
 import type { Checkpoint, GameMember } from '@/types';
@@ -31,6 +32,7 @@ const PHASE_LABEL: Record<string, string> = {
 export default function GMGameScreen() {
   const { gameId } = useLocalSearchParams<{ gameId: string }>();
   const { game, phase, checkpoints, members, playerLocations, arrivals, loadGame, clearGame } = useGame();
+  const { user } = useAuth();
   const router = useRouter();
   const [tab, setTab] = useState<Tab>('map');
   const [showCodes, setShowCodes] = useState(false);
@@ -124,6 +126,32 @@ export default function GMGameScreen() {
     );
   }
 
+  function handleDeleteGame() {
+    Alert.alert(
+      `Delete "${game?.name ?? 'this game'}"?`,
+      'This permanently removes the game, its checkpoints, and all members for everyone. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => runPhaseAction(async () => {
+            await deleteGame(gameId!);
+            router.replace('/(app)/games');
+          }),
+        },
+      ]
+    );
+  }
+
+  function handleArchiveGame() {
+    if (!user) return;
+    runPhaseAction(async () => {
+      await setGameArchived(gameId!, user.uid, true);
+      router.replace('/(app)/games');
+    });
+  }
+
   function openRulesEditor() {
     setRulesText(game?.rules ?? '');
     setShowRules(true);
@@ -170,6 +198,7 @@ export default function GMGameScreen() {
           rulesSet={!!game?.rules?.trim()}
           onEditRules={openRulesEditor}
           onContinue={() => runPhaseAction(() => openLobby(gameId!))}
+          onDelete={handleDeleteGame}
           busy={busy}
         />
       )}
@@ -182,6 +211,7 @@ export default function GMGameScreen() {
           copied={copiedCode === 'player'}
           onStart={confirmStart}
           onBack={() => runPhaseAction(() => reopenSetup(gameId!))}
+          onDelete={handleDeleteGame}
           busy={busy}
         />
       )}
@@ -249,6 +279,8 @@ export default function GMGameScreen() {
           startedAtMs={game?.startedAt?.toMillis?.() ?? null}
           endedAtMs={game?.endedAt?.toMillis?.() ?? null}
           onDone={() => router.replace('/(app)/games')}
+          onArchive={handleArchiveGame}
+          busy={busy}
         />
       )}
 
@@ -319,7 +351,7 @@ export default function GMGameScreen() {
 // --- Phase sub-views ---
 
 function SetupView({
-  gameId, boundarySet, checkpointCount, rulesSet, onEditRules, onContinue, busy,
+  gameId, boundarySet, checkpointCount, rulesSet, onEditRules, onContinue, onDelete, busy,
 }: {
   gameId: string;
   boundarySet: boolean;
@@ -327,6 +359,7 @@ function SetupView({
   rulesSet: boolean;
   onEditRules: () => void;
   onContinue: () => void;
+  onDelete: () => void;
   busy: boolean;
 }) {
   const router = useRouter();
@@ -358,6 +391,9 @@ function SetupView({
       </ScrollView>
       <View style={styles.footer}>
         <Button title="Open to Players" onPress={onContinue} loading={busy} />
+        <TouchableOpacity onPress={onDelete} style={styles.linkBtn} disabled={busy}>
+          <Text style={styles.deleteLinkText}>Delete game</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -391,7 +427,7 @@ function ChecklistRow({
 }
 
 function LobbyView({
-  players, playerCode, onCopyCode, copied, onStart, onBack, busy,
+  players, playerCode, onCopyCode, copied, onStart, onBack, onDelete, busy,
 }: {
   players: GameMember[];
   playerCode: string;
@@ -399,6 +435,7 @@ function LobbyView({
   copied: boolean;
   onStart: () => void;
   onBack: () => void;
+  onDelete: () => void;
   busy: boolean;
 }) {
   return (
@@ -434,19 +471,24 @@ function LobbyView({
         <TouchableOpacity onPress={onBack} style={styles.linkBtn} disabled={busy}>
           <Text style={styles.linkBtnText}>← Back to setup</Text>
         </TouchableOpacity>
+        <TouchableOpacity onPress={onDelete} style={styles.linkBtn} disabled={busy}>
+          <Text style={styles.deleteLinkText}>Delete game</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
 }
 
 function ResultsView({
-  totalDuration, players, startedAtMs, endedAtMs, onDone,
+  totalDuration, players, startedAtMs, endedAtMs, onDone, onArchive, busy,
 }: {
   totalDuration: number | null;
   players: GameMember[];
   startedAtMs: number | null;
   endedAtMs: number | null;
   onDone: () => void;
+  onArchive: () => void;
+  busy: boolean;
 }) {
   function playerTime(p: GameMember): string {
     if (startedAtMs == null) return '—';
@@ -482,6 +524,9 @@ function ResultsView({
       </ScrollView>
       <View style={styles.footer}>
         <Button title="Back to My Games" onPress={onDone} />
+        <TouchableOpacity onPress={onArchive} style={styles.linkBtn} disabled={busy}>
+          <Text style={styles.linkBtnText}>Archive game (hide from My Games)</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -585,6 +630,7 @@ const styles = StyleSheet.create({
   lobbyEmpty: { color: Colors.textSecondary, fontSize: 14, paddingHorizontal: 16, paddingTop: 12, lineHeight: 20 },
   linkBtn: { alignSelf: 'center', paddingVertical: 6 },
   linkBtnText: { color: Colors.textSecondary, fontSize: 14, fontWeight: '600' },
+  deleteLinkText: { color: Colors.danger, fontSize: 14, fontWeight: '600' },
 
   // Results
   resultHero: { alignItems: 'center', gap: 4, paddingVertical: 24 },

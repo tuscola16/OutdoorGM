@@ -4,6 +4,10 @@ This guide covers running the app locally on Windows against a physical Android
 device or the Pixel6_API34 emulator. The app uses native modules and **cannot
 run in Expo Go** — a custom dev client is required.
 
+> **Web GM dashboard:** there is also a desktop web app for Game Masters in
+> [`web/`](web/README.md) (Vite + React + Firebase JS SDK + Mapbox GL). It uses
+> the same Firebase backend. Dev: `cd web && npm install && npm run dev`.
+
 ---
 
 ## Prerequisites

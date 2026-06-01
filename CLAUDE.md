@@ -103,7 +103,9 @@ games/{gameId}/checkpoints/{checkpointId}
   name, latitude, longitude, radius (meters), order (optional)
 
 games/{gameId}/members/{userId}
-  userId, role ('player'|'gm'), displayName, email, fcmToken, out?, outAt?, joinedAt
+  userId, role ('player'|'gm'), displayName, email, fcmToken, out?, outAt?, archived?, joinedAt
+  // `archived` is a per-member flag the user sets to hide a *finished* game from
+  // their own "My Games" list; it does not affect other members' views.
 
 games/{gameId}/locations/{userId}
   userId, displayName, latitude, longitude, accuracy, heading, updatedAt
@@ -199,6 +201,12 @@ games, so a finished game can't be joined.
 - `assets/` — Icons, splash images
 - `plugins/` — Custom Expo plugins (e.g., Gradle version override for Android)
 - `scripts/` — Build-time scripts (e.g., postinstall)
+- `web/` — **Desktop web GM dashboard** (Vite + React + Firebase JS SDK + Mapbox GL).
+  A standalone app for Game Masters that uses the *same* Firebase backend (project,
+  Firestore schema, rules, Cloud Functions) as the mobile app. The data layer mirrors
+  `services/` + `context/` but uses the Firebase JS SDK (the RN native modules don't
+  run on web). Shares root `types/` via the `@shared` alias. GM-only — no GPS/push.
+  See [web/README.md](web/README.md).
 
 ## Development Notes
 

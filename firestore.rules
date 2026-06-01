@@ -25,6 +25,17 @@ service cloud.firestore {
       allow read, write: if isSignedIn() && request.auth.uid == userId;
     }
 
+    // Collection-group read for the "my games" / account-deletion query
+    // (collectionGroup('members').where('userId','==',uid)). A rule on the
+    // explicit games/{gameId}/members/{memberId} path governs single-document
+    // reads but does NOT authorize a collection-GROUP query — that requires a
+    // recursive-wildcard match on the collection group. This grants a user read
+    // access to their own membership docs wherever they live, which is exactly
+    // what the query needs (and no more).
+    match /{path=**}/members/{memberId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
     // Games
     match /games/{gameId} {
       // The game doc holds the secret join codes (playerCode/gmCode), so only
@@ -56,10 +67,9 @@ service cloud.firestore {
         // GMs see the full roster (names, emails, tokens). Everyone else may read
         // only their own membership doc — players never read other members.
         allow read: if isGameGM(gameId) || (isSignedIn() && request.auth.uid == memberId);
-        // Collection-group "my games" / account-deletion query. Mirrors
-        // where('userId','==',uid); Firestore can't run the per-game exists()
-        // check across a group query, so this field rule stands in for it.
-        allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+        // NOTE: the collection-group "my games" query (where userId == uid) is
+        // authorized by the recursive-wildcard `/{path=**}/members/{memberId}`
+        // rule above — a nested-path rule here does not apply to group queries.
 
         // Members are created only by Cloud Functions (createGame / joinGameByCode)
         // so role can never be self-assigned by a client.

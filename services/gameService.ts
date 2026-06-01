@@ -89,14 +89,21 @@ export async function updateFcmToken(gameId: string, userId: string, fcmToken: s
     .update({ fcmToken });
 }
 
-export async function getMyGames(userId: string): Promise<{ game: Game; role: 'player' | 'gm' }[]> {
+export interface MyGameEntry {
+  game: Game;
+  role: 'player' | 'gm';
+  /** Whether this user has archived the game from their own list. */
+  archived: boolean;
+}
+
+export async function getMyGames(userId: string): Promise<MyGameEntry[]> {
   // Query all member subcollections where the userId field matches
   const snap = await firestore()
     .collectionGroup(Collections.MEMBERS)
     .where('userId', '==', userId)
     .get();
 
-  const results: { game: Game; role: 'player' | 'gm' }[] = [];
+  const results: MyGameEntry[] = [];
   for (const memberDoc of snap.docs) {
     // Parent path: games/{gameId}/members/{userId}
     const gameId = memberDoc.ref.parent.parent?.id;
@@ -106,10 +113,35 @@ export async function getMyGames(userId: string): Promise<{ game: Game; role: 'p
       results.push({
         game: { id: gameSnap.id, ...gameSnap.data() } as Game,
         role: memberDoc.data().role as 'player' | 'gm',
+        archived: memberDoc.data().archived === true,
       });
     }
   }
   return results;
+}
+
+/** Delete a game that hasn't started yet (GM-only). Runs server-side so the game
+ * doc and all its subcollections are removed atomically — see the deleteGame
+ * Cloud Function. */
+export async function deleteGame(gameId: string): Promise<void> {
+  const callable = functions().httpsCallable('deleteGame');
+  await callable({ gameId });
+}
+
+/** Archive/unarchive a finished game from this user's own "My Games" list. Sets
+ * `archived` on the caller's member doc (the rules allow self-updates that don't
+ * change role/userId), so it only affects this user's view. */
+export async function setGameArchived(
+  gameId: string,
+  userId: string,
+  archived: boolean
+): Promise<void> {
+  await firestore()
+    .collection(Collections.GAMES)
+    .doc(gameId)
+    .collection(Collections.MEMBERS)
+    .doc(userId)
+    .update({ archived });
 }
 
 /** Stop play and move to results (phase: play → results). Keeps `status: 'ended'`

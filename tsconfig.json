@@ -10,7 +10,8 @@
   },
   "exclude": [
     "node_modules",
-    "functions"
+    "functions",
+    "web"
   ],
   "include": [
     "**/*.ts",

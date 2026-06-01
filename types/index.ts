@@ -1,4 +1,15 @@
-import { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
+/**
+ * Platform-neutral Firestore timestamp shape. Both the React Native SDK's
+ * `FsTimestamp` and the Firebase JS SDK's `Timestamp`
+ * satisfy this structurally, so these types compile in both the mobile app and
+ * the web GM dashboard (web/) without either importing the other's Firestore SDK.
+ */
+export interface FsTimestamp {
+  toMillis(): number;
+  toDate(): Date;
+  seconds: number;
+  nanoseconds: number;
+}
 
 export type UserRole = 'player' | 'gm';
 export type GameStatus = 'active' | 'ended';
@@ -25,7 +36,7 @@ export interface UserProfile {
   email: string;
   displayName: string;
   fcmToken?: string;
-  createdAt: FirebaseFirestoreTypes.Timestamp;
+  createdAt: FsTimestamp;
 }
 
 export interface Game {
@@ -41,10 +52,10 @@ export interface Game {
   /** Rectangular play area, set by the GM during setup. */
   boundary?: MapBoundary;
   /** When the GM pressed Start (phase → play). */
-  startedAt?: FirebaseFirestoreTypes.Timestamp | null;
+  startedAt?: FsTimestamp | null;
   /** When the GM pressed End (phase → results). */
-  endedAt?: FirebaseFirestoreTypes.Timestamp | null;
-  createdAt: FirebaseFirestoreTypes.Timestamp;
+  endedAt?: FsTimestamp | null;
+  createdAt: FsTimestamp;
 }
 
 export interface Checkpoint {
@@ -65,8 +76,10 @@ export interface GameMember {
   fcmToken?: string;
   /** Player marked themselves out of the game (phase: play). */
   out?: boolean;
-  outAt?: FirebaseFirestoreTypes.Timestamp | null;
-  joinedAt: FirebaseFirestoreTypes.Timestamp;
+  outAt?: FsTimestamp | null;
+  /** This member hid the game from their own "My Games" list (finished games only). */
+  archived?: boolean;
+  joinedAt: FsTimestamp;
 }
 
 export interface PlayerLocation {
@@ -76,7 +89,7 @@ export interface PlayerLocation {
   longitude: number;
   accuracy?: number;
   heading?: number;
-  updatedAt: FirebaseFirestoreTypes.Timestamp;
+  updatedAt: FsTimestamp;
 }
 
 export interface Arrival {
@@ -85,7 +98,7 @@ export interface Arrival {
   playerName: string;
   checkpointId: string;
   checkpointName: string;
-  timestamp: FirebaseFirestoreTypes.Timestamp;
+  timestamp: FsTimestamp;
   latitude: number;
   longitude: number;
 }
