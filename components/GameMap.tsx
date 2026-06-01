@@ -123,14 +123,17 @@ export function GameMap({
   // This is what zooms the player's map to the boundary when the game starts.
   const computedInitialRegion = useMemo<Region>(() => {
     if (initialRegion) return initialRegion;
-    if (boundary) return regionFromBoundary(boundary);
+    // Frame everything we know about at mount: the boundary plus any checkpoints
+    // and live player pins. For the GM this keeps players in view (not just the
+    // play area); for the player (who gets only the boundary) it frames the area.
     const coords = [
+      ...(boundary ? boundaryCorners(boundary) : []),
       ...checkpoints.map((c) => ({ latitude: c.latitude, longitude: c.longitude })),
       ...playerLocations.map((p) => ({ latitude: p.latitude, longitude: p.longitude })),
     ];
-    return regionFromCoords(coords) ?? DEFAULT_REGION;
+    return regionFromCoords(coords) ?? (boundary ? regionFromBoundary(boundary) : DEFAULT_REGION);
     // Intentionally computed once for the initial mount; MapView ignores later
-    // initialRegion changes. Recompute only if the boundary identity changes.
+    // initialRegion changes.
   }, [initialRegion, boundary, checkpoints, playerLocations]);
 
   // Best-effort dynamic re-fit as live data changes (e.g. players spreading out).
