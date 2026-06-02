@@ -345,6 +345,17 @@ export default function PlayAreaScreen() {
           initialRegion={displayRegion}
           showsUserLocation
           showsMyLocationButton={false}
+          // Backup centering source: the native map's own user-location stream
+          // (what draws the blue dot). If expo-location is slow to deliver a fix
+          // and we've rendered the default view, this recenters us once — using
+          // the exact source that's clearly already working on the device.
+          onUserLocationChange={(e) => {
+            if (boundary || gotInitialFix.current) return;
+            const c = e.nativeEvent?.coordinate;
+            if (!c) return;
+            gotInitialFix.current = true;
+            showRegion(regionFromCoords(c));
+          }}
           onRegionChangeComplete={(r) => { regionRef.current = r; }}
           onLongPress={(e) => openAddCheckpoint(e.nativeEvent.coordinate)}
         >
