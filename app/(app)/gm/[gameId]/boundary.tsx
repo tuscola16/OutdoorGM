@@ -52,15 +52,33 @@ export default function PlayAreaScreen() {
   const router = useRouter();
   const boundary: MapBoundary | undefined = game?.boundary;
   const mapRef = useRef<MapView>(null);
-  // The map opens framed on `initialRegion` once we resolve it (the GM's current
-  // location for a new game, or the saved boundary when editing). We hold the map
-  // off until then so it *starts* centered — animateToRegion is a no-op on this
-  // mapType="none" + Google setup, so we never rely on it for the initial camera.
-  // regionRef tracks the framed area for saving; onRegionChangeComplete keeps it
-  // current as the GM pans.
-  const [initialRegion, setInitialRegion] = useState<Region | null>(null);
-  const resolvedInitial = useRef(false);
+  // The map opens framed on `displayRegion` (the GM's location for a new game, or
+  // the saved boundary when editing). animateToRegion/animateCamera are no-ops on
+  // this mapType="none" + Google setup, so we can't move the camera after render —
+  // instead, to recenter we *remount* the MapView by bumping `renderKey`. That's
+  // what lets a GPS fix that arrives late (e.g. after the permission prompt) still
+  // recenter the map, and what makes the manual "locate" button work.
+  const [displayRegion, setDisplayRegion] = useState<Region | null>(null);
+  const [renderKey, setRenderKey] = useState(0);
+  const gotInitialFix = useRef(false); // a real source (boundary or GPS) resolved
+  const mapMountedRef = useRef(false);  // map has been shown at least once
   const regionRef = useRef<Region | null>(DEFAULT_REGION);
+
+  // Show a region on the map. The first call mounts the map; later calls remount
+  // it (key bump) to recenter, since the camera can't be moved imperatively here.
+  const showRegion = useCallback((region: Region) => {
+    regionRef.current = region;
+    if (mapMountedRef.current) setRenderKey((k) => k + 1);
+    mapMountedRef.current = true;
+    setDisplayRegion(region);
+  }, []);
+
+  const regionFromCoords = (c: { latitude: number; longitude: number }): Region => ({
+    latitude: c.latitude,
+    longitude: c.longitude,
+    latitudeDelta: USER_DELTA,
+    longitudeDelta: USER_DELTA,
+  });
   const [mode, setMode] = useState<'map' | 'list'>('map');
   const [locating, setLocating] = useState(false);
   const [savingBoundary, setSavingBoundary] = useState(false);
@@ -99,87 +117,69 @@ export default function PlayAreaScreen() {
         (await Location.getLastKnownPositionAsync()) ??
         (await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }));
       if (!pos) return;
-      const region: Region = {
-        latitude: pos.coords.latitude,
-        longitude: pos.coords.longitude,
-        latitudeDelta: USER_DELTA,
-        longitudeDelta: USER_DELTA,
-      };
-      regionRef.current = region;
-      // animateCamera (not animateToRegion, which is a no-op with mapType="none").
-      mapRef.current?.animateCamera(
-        { center: { latitude: pos.coords.latitude, longitude: pos.coords.longitude }, zoom: 14 },
-        { duration: 600 }
-      );
+      // Remount the map centered on the user (camera can't be moved imperatively).
+      showRegion(regionFromCoords(pos.coords));
     } catch {
       // Location unavailable — leave the current view in place.
     } finally {
       setLocating(false);
     }
-  }, []);
-
-  // Resolve the map's opening region exactly once, then hold it.
-  const resolveInitial = useCallback((region: Region) => {
-    if (resolvedInitial.current) return;
-    resolvedInitial.current = true;
-    regionRef.current = region;
-    setInitialRegion(region);
-  }, []);
+  }, [showRegion]);
 
   // Frame on an existing boundary as soon as it's known (editing an existing game).
   useEffect(() => {
-    if (!boundary) return;
-    resolveInitial({
+    if (!boundary || gotInitialFix.current) return;
+    gotInitialFix.current = true;
+    showRegion({
       latitude: (boundary.minLat + boundary.maxLat) / 2,
       longitude: (boundary.minLng + boundary.maxLng) / 2,
       latitudeDelta: Math.max(0.01, boundary.maxLat - boundary.minLat),
       longitudeDelta: Math.max(0.01, boundary.maxLng - boundary.minLng),
     });
-  }, [boundary, resolveInitial]);
+  }, [boundary, showRegion]);
 
   // Otherwise frame on the GM's current location. getLastKnownPositionAsync is
-  // instant when a fix is cached (the same fix that draws the blue dot); fall back
-  // to a live watch, then to the default region after a short wait so the map
-  // never stays stuck behind the spinner.
+  // instant when a fix is cached (the same fix that draws the blue dot); otherwise
+  // watch for the first live fix. A generous fallback shows the default view so the
+  // map never spins forever — and because we can remount to recenter, a fix that
+  // arrives *after* the fallback (e.g. once the permission prompt is answered)
+  // still recenters the map rather than being stuck on the default.
   useEffect(() => {
+    if (boundary) return; // boundary path handles framing
     let cancelled = false;
     let sub: Location.LocationSubscription | null = null;
+    const applyFix = (coords: { latitude: number; longitude: number }) => {
+      if (cancelled || gotInitialFix.current) return;
+      gotInitialFix.current = true;
+      showRegion(regionFromCoords(coords));
+      sub?.remove();
+      sub = null;
+    };
     (async () => {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
-        if (cancelled || status !== 'granted') return;
-        const last = await Location.getLastKnownPositionAsync();
         if (cancelled) return;
-        if (last) {
-          resolveInitial({
-            latitude: last.coords.latitude,
-            longitude: last.coords.longitude,
-            latitudeDelta: USER_DELTA,
-            longitudeDelta: USER_DELTA,
-          });
+        if (status !== 'granted') {
+          if (!gotInitialFix.current) showRegion(DEFAULT_REGION);
           return;
         }
+        const last = await Location.getLastKnownPositionAsync();
+        if (cancelled) return;
+        if (last) { applyFix(last.coords); return; }
         sub = await Location.watchPositionAsync(
-          { accuracy: Location.Accuracy.Balanced, timeInterval: 1000, distanceInterval: 0 },
-          (pos) => {
-            if (cancelled) return;
-            resolveInitial({
-              latitude: pos.coords.latitude,
-              longitude: pos.coords.longitude,
-              latitudeDelta: USER_DELTA,
-              longitudeDelta: USER_DELTA,
-            });
-            sub?.remove();
-            sub = null;
-          }
+          { accuracy: Location.Accuracy.High, timeInterval: 1000, distanceInterval: 0 },
+          (pos) => applyFix(pos.coords)
         );
       } catch {
-        // ignore — the fallback timer below applies the default region
+        if (!cancelled && !gotInitialFix.current) showRegion(DEFAULT_REGION);
       }
     })();
-    const fallback = setTimeout(() => resolveInitial(DEFAULT_REGION), 4000);
+    // Show *something* if no fix after a while; a later fix still recenters.
+    const fallback = setTimeout(() => {
+      if (!cancelled && !gotInitialFix.current) showRegion(DEFAULT_REGION);
+    }, 9000);
     return () => { cancelled = true; clearTimeout(fallback); sub?.remove(); };
-  }, [resolveInitial]);
+  }, [boundary, showRegion]);
 
   async function handleSaveBoundary() {
     if (!gameId || !regionRef.current) return;
@@ -330,18 +330,19 @@ export default function PlayAreaScreen() {
       ) : (
         <>
         <View style={styles.mapWrapper}>
-        {!initialRegion ? (
+        {!displayRegion ? (
           <View style={[StyleSheet.absoluteFill, styles.mapLoading]}>
             <ActivityIndicator color={Colors.primary} />
             <Text style={styles.mapLoadingText}>Finding your location…</Text>
           </View>
         ) : (
         <MapView
+          key={String(renderKey)}
           ref={mapRef}
           style={StyleSheet.absoluteFill}
           provider={PROVIDER_GOOGLE}
           mapType="none"
-          initialRegion={initialRegion}
+          initialRegion={displayRegion}
           showsUserLocation
           showsMyLocationButton={false}
           onRegionChangeComplete={(r) => { regionRef.current = r; }}
