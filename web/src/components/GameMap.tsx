@@ -249,11 +249,15 @@ export function GameMap({
     checkpointMarkers.current.forEach((m) => m.remove());
     checkpointMarkers.current = checkpoints.map((cp) => {
       const el = document.createElement('div');
-      el.style.cssText = `display:flex;flex-direction:column;align-items:center;cursor:pointer;`;
+      // The element box is just the dot (16×16) so Mapbox's default `center` anchor
+      // lands the dot exactly on the checkpoint coordinate. The name label is absolutely
+      // positioned below and doesn't affect the layout box (otherwise it would push the
+      // dot up toward the top of the radius).
+      el.style.cssText = `position:relative;width:16px;height:16px;cursor:pointer;`;
       const cpColor = KIND_META[checkpointKind(cp)].color;
       el.innerHTML = `
         <div style="width:16px;height:16px;border-radius:50%;background:${cpColor};border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.5)"></div>
-        <div style="margin-top:2px;font-size:11px;font-weight:700;color:#fff;text-shadow:0 1px 2px #000;white-space:nowrap">${escapeHtml(cp.name)}</div>`;
+        <div style="position:absolute;top:20px;left:50%;transform:translateX(-50%);font-size:11px;font-weight:700;color:#fff;text-shadow:0 1px 2px #000;white-space:nowrap">${escapeHtml(cp.name)}</div>`;
       el.addEventListener('click', (ev) => {
         ev.stopPropagation();
         onCheckpointClickRef.current?.(cp);
