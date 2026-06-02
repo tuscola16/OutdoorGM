@@ -12,11 +12,12 @@ import { Button } from '@/components/ui/Button';
 import { GameMap } from '@/components/GameMap';
 import { BroadcastFeed } from '@/components/BroadcastFeed';
 import { Tutorial } from '@/components/Tutorial';
+import * as Location from 'expo-location';
 import { startLocationTracking, stopLocationTracking } from '@/services/locationTask';
 import { onForegroundMessage } from '@/services/notificationService';
-import { eliminatePlayer, raiseSos, gamePhase } from '@/services/gameService';
+import { eliminatePlayer, raiseSos, setDeathLocation, gamePhase, gameConfig } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
-import { useElapsed, formatDuration } from '@/hooks/useElapsed';
+import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
 import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
 import { Collections } from '@/services/firebase';
 import type { GamePhase, MapBoundary } from '@/types';
@@ -34,6 +35,8 @@ export default function PlayerGameScreen() {
   const [boundary, setBoundary] = useState<MapBoundary | null>(null);
   const [startedAt, setStartedAt] = useState<Ts>(null);
   const [endedAt, setEndedAt] = useState<Ts>(null);
+  const [durationMinutes, setDurationMinutes] = useState(gameConfig(null).durationMinutes);
+  const [batterySaver, setBatterySaver] = useState(gameConfig(null).batterySaver);
 
   // Empty until the member doc loads, so location tracking starts with the real
   // name rather than the "Player" placeholder. The tracking effect gates on it.
@@ -53,6 +56,7 @@ export default function PlayerGameScreen() {
   // Elapsed play time: ticks during play, freezes at outAt (if out) or endedAt.
   const frozenEnd = out ? outAt : phase === 'results' ? endedAt : null;
   const elapsed = useElapsed(startedAt, frozenEnd);
+  const remaining = useRemaining(startedAt, durationMinutes, frozenEnd);
 
   // Subscribe to the game doc (phase, timing, rules) and own member doc.
   useEffect(() => {
@@ -70,6 +74,8 @@ export default function PlayerGameScreen() {
           setBoundary(d.boundary ?? null);
           setStartedAt(d.startedAt ?? null);
           setEndedAt(d.endedAt ?? null);
+          setDurationMinutes(gameConfig(d as any).durationMinutes);
+          setBatterySaver(gameConfig(d as any).batterySaver);
         },
         (err) => console.error('[PlayerGame] game listener error', err)
       );
@@ -129,7 +135,7 @@ export default function PlayerGameScreen() {
       return;
     }
     let started = false;
-    startLocationTracking(gameId, displayName)
+    startLocationTracking(gameId, displayName, { batterySaver })
       .then(() => { setTracking(true); started = true; })
       .catch((err: Error) => {
         if (err.message.startsWith('PERMISSION_DENIED:')) {
@@ -140,7 +146,7 @@ export default function PlayerGameScreen() {
         }
       });
     return () => { if (started) stopLocationTracking().catch(console.error); };
-  }, [gameId, displayName, phase, out]);
+  }, [gameId, displayName, phase, out, batterySaver]);
 
   useEffect(() => {
     return onForegroundMessage((title, body) => Alert.alert(title, body));
@@ -178,6 +184,19 @@ export default function PlayerGameScreen() {
             if (!gameId || !user) return;
             try {
               await eliminatePlayer(gameId, user.uid, 'self');
+              // Drop a pin where the player fell so the GM can recover their pack
+              // and weapons (Rules 19, 20). Best-effort — never block elimination.
+              try {
+                const pos = await Location.getLastKnownPositionAsync();
+                if (pos) {
+                  await setDeathLocation(gameId, user.uid, {
+                    latitude: pos.coords.latitude,
+                    longitude: pos.coords.longitude,
+                  });
+                }
+              } catch {
+                /* location unavailable — skip the pin */
+              }
               await stopLocationTracking();
             } catch (err) {
               Alert.alert('Error', friendlyError(err));
@@ -240,8 +259,13 @@ export default function PlayerGameScreen() {
     return (
       <>
         <View style={styles.timerCard}>
-          <Text style={styles.timerLabel}>YOUR TIME</Text>
-          <Text style={styles.timerValue}>{elapsed != null ? formatDuration(elapsed) : '0:00'}</Text>
+          <Text style={styles.timerLabel}>TIME LEFT</Text>
+          <Text style={[styles.timerValue, remaining === 0 && styles.timerValueDanger]}>
+            {remaining != null ? formatDuration(remaining) : '—'}
+          </Text>
+          <Text style={styles.timerSub}>
+            You've played {elapsed != null ? formatDuration(elapsed) : '0:00'}
+          </Text>
         </View>
 
         <View style={styles.mapContainer}>
@@ -382,6 +406,8 @@ const styles = StyleSheet.create({
   },
   timerLabel: { fontSize: 11, color: Colors.textSecondary, fontWeight: '700', letterSpacing: 1.5 },
   timerValue: { fontSize: 34, fontWeight: '800', color: Colors.text, fontVariant: ['tabular-nums'] },
+  timerValueDanger: { color: Colors.danger },
+  timerSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
 
   mapContainer: { flex: 1, margin: 16, borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: Colors.border },
   map: { flex: 1 },

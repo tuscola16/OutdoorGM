@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, Modal,
-  Alert, ScrollView, TextInput, FlatList,
+  Alert, ScrollView, TextInput, FlatList, Switch,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -15,9 +15,11 @@ import { AlertFeed } from '@/components/AlertFeed';
 import { Button } from '@/components/ui/Button';
 import { Colors } from '@/constants/colors';
 import { onForegroundMessage } from '@/services/notificationService';
-import { endGame, openLobby, reopenSetup, startGame, updateGameConfig, deleteGame, setGameArchived, sendBroadcast } from '@/services/gameService';
+import { endGame, openLobby, reopenSetup, startGame, updateGameConfig, deleteGame, setGameArchived, sendBroadcast, gameConfig } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
-import { useElapsed, formatDuration } from '@/hooks/useElapsed';
+import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
+import { useNow } from '@/hooks/useNow';
+import { STALE_MS } from '@/services/locationStatus';
 import type { Checkpoint, GameMember } from '@/types';
 
 type Tab = 'map' | 'alerts';
@@ -40,6 +42,11 @@ export default function GMGameScreen() {
   const [rulesText, setRulesText] = useState('');
   const [showBroadcast, setShowBroadcast] = useState(false);
   const [broadcastText, setBroadcastText] = useState('');
+  const [showConfig, setShowConfig] = useState(false);
+  const [cfgDuration, setCfgDuration] = useState('');
+  const [cfgPlayerCount, setCfgPlayerCount] = useState(true);
+  const [cfgWinner, setCfgWinner] = useState(true);
+  const [cfgBattery, setCfgBattery] = useState(true);
   const [newAlertCount, setNewAlertCount] = useState(0);
   const [lastSeenArrivals, setLastSeenArrivals] = useState(0);
   const [copiedCode, setCopiedCode] = useState<'player' | 'gm' | null>(null);
@@ -47,6 +54,7 @@ export default function GMGameScreen() {
   const prevArrivalsRef = useRef(0);
 
   const elapsed = useElapsed(game?.startedAt, game?.endedAt);
+  const remaining = useRemaining(game?.startedAt, gameConfig(game).durationMinutes, game?.endedAt);
 
   useEffect(() => {
     if (gameId) loadGame(gameId, 'gm');
@@ -164,6 +172,30 @@ export default function GMGameScreen() {
     setShowRules(false);
   }
 
+  function openConfigEditor() {
+    const cfg = gameConfig(game);
+    setCfgDuration(String(cfg.durationMinutes));
+    setCfgPlayerCount(cfg.playerCountBroadcast);
+    setCfgWinner(cfg.winnerDetection);
+    setCfgBattery(cfg.batterySaver);
+    setShowConfig(true);
+  }
+
+  async function saveConfig() {
+    const minutes = Math.max(5, Math.round(Number(cfgDuration) || gameConfig(game).durationMinutes));
+    await runPhaseAction(() =>
+      updateGameConfig(gameId!, {
+        config: {
+          durationMinutes: minutes,
+          playerCountBroadcast: cfgPlayerCount,
+          winnerDetection: cfgWinner,
+          batterySaver: cfgBattery,
+        },
+      })
+    );
+    setShowConfig(false);
+  }
+
   async function sendBroadcastMessage() {
     const text = broadcastText.trim();
     if (!text) return;
@@ -181,6 +213,20 @@ export default function GMGameScreen() {
   }
 
   const players = members.filter((m) => m.role === 'player');
+
+  // Players who have silently dropped off the map (no fix, or none in 2 min). Since
+  // Outdoor GM replaces Pingo as the only tracker, the GM must see this immediately.
+  const now = useNow(10000);
+  const lastFixByUser = new Map<string, number>();
+  for (const loc of playerLocations) {
+    const ms = loc.updatedAt?.toMillis?.();
+    if (ms) lastFixByUser.set(loc.userId, ms);
+  }
+  const notReporting = players.filter((p) => {
+    if (p.out) return false;
+    const ms = lastFixByUser.get(p.userId);
+    return ms == null || now - ms >= STALE_MS;
+  }).length;
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
@@ -219,7 +265,9 @@ export default function GMGameScreen() {
           boundarySet={!!game?.boundary}
           checkpointCount={checkpoints.length}
           rulesSet={!!game?.rules?.trim()}
+          durationMinutes={gameConfig(game).durationMinutes}
           onEditRules={openRulesEditor}
+          onEditSettings={openConfigEditor}
           onContinue={() => runPhaseAction(() => openLobby(gameId!))}
           onDelete={handleDeleteGame}
           busy={busy}
@@ -244,8 +292,15 @@ export default function GMGameScreen() {
           {/* Stats bar */}
           <View style={styles.statsBar}>
             <View style={styles.stat}>
-              <Text style={styles.statValue}>{elapsed != null ? formatDuration(elapsed) : '0:00'}</Text>
-              <Text style={styles.statLabel}>Elapsed</Text>
+              <Text style={[styles.statValue, remaining === 0 && styles.statValueDanger]}>
+                {remaining != null ? formatDuration(remaining) : '—'}
+              </Text>
+              <Text style={styles.statLabel}>Remaining</Text>
+            </View>
+            <View style={styles.statDivider} />
+            <View style={styles.stat}>
+              <Text style={styles.statValue}>{players.filter((p) => !p.out).length}</Text>
+              <Text style={styles.statLabel}>Alive</Text>
             </View>
             <View style={styles.statDivider} />
             <View style={styles.stat}>
@@ -274,12 +329,32 @@ export default function GMGameScreen() {
             </TouchableOpacity>
           </View>
 
+          {notReporting > 0 && (
+            <TouchableOpacity
+              style={styles.staleChip}
+              onPress={() => router.push(`/(app)/gm/${gameId}/players`)}
+            >
+              <Ionicons name="warning-outline" size={16} color={Colors.danger} />
+              <Text style={styles.staleChipText}>
+                {notReporting} player{notReporting === 1 ? '' : 's'} not reporting — tap to check
+              </Text>
+            </TouchableOpacity>
+          )}
+
           <View style={styles.content}>
             {tab === 'map' ? (
               <GameMap
                 checkpoints={checkpoints}
                 playerLocations={playerLocations}
                 boundary={game?.boundary}
+                deathMarkers={members
+                  .filter((m) => m.out && m.deathLocation)
+                  .map((m) => ({
+                    userId: m.userId,
+                    displayName: m.displayName,
+                    latitude: m.deathLocation!.latitude,
+                    longitude: m.deathLocation!.longitude,
+                  }))}
                 onCheckpointPress={handleCheckpointPress}
               />
             ) : (
@@ -396,20 +471,91 @@ export default function GMGameScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Game settings modal */}
+      <Modal visible={showConfig} transparent animationType="slide" onRequestClose={() => setShowConfig(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Game settings</Text>
+            <Text style={styles.modalSub}>Tune the rules for this game. Defaults match the base game.</Text>
+
+            <Text style={styles.codeLabel}>GAME LENGTH (MINUTES)</Text>
+            <TextInput
+              style={styles.durationInput}
+              value={cfgDuration}
+              onChangeText={setCfgDuration}
+              keyboardType="number-pad"
+              placeholder="210"
+              placeholderTextColor={Colors.textMuted}
+            />
+            <Text style={styles.settingHint}>210 = 3.5 hours</Text>
+
+            <ConfigToggle
+              label="Auto player-count updates"
+              hint="Push the living-player count each interval"
+              value={cfgPlayerCount}
+              onValueChange={setCfgPlayerCount}
+            />
+            <ConfigToggle
+              label="Declare a winner"
+              hint="Announce the survivor when one player remains"
+              value={cfgWinner}
+              onValueChange={setCfgWinner}
+            />
+            <ConfigToggle
+              label="Battery saver"
+              hint="Coarser GPS cadence when players are still"
+              value={cfgBattery}
+              onValueChange={setCfgBattery}
+            />
+
+            <View style={styles.modalActions}>
+              <Button title="Cancel" onPress={() => setShowConfig(false)} variant="ghost" fullWidth={false} style={{ flex: 1 }} />
+              <Button title="Save" onPress={saveConfig} loading={busy} fullWidth={false} style={{ flex: 1 }} />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
+  );
+}
+
+function ConfigToggle({
+  label, hint, value, onValueChange,
+}: {
+  label: string;
+  hint: string;
+  value: boolean;
+  onValueChange: (v: boolean) => void;
+}) {
+  return (
+    <View style={styles.toggleRow}>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.toggleLabel}>{label}</Text>
+        <Text style={styles.toggleHint}>{hint}</Text>
+      </View>
+      <Switch
+        value={value}
+        onValueChange={onValueChange}
+        trackColor={{ false: Colors.border, true: Colors.primary }}
+        thumbColor={Colors.white}
+      />
+    </View>
   );
 }
 
 // --- Phase sub-views ---
 
 function SetupView({
-  gameId, boundarySet, checkpointCount, rulesSet, onEditRules, onContinue, onDelete, busy,
+  gameId, boundarySet, checkpointCount, rulesSet, durationMinutes, onEditRules, onEditSettings, onContinue, onDelete, busy,
 }: {
   gameId: string;
   boundarySet: boolean;
   checkpointCount: number;
   rulesSet: boolean;
+  durationMinutes: number;
   onEditRules: () => void;
+  onEditSettings: () => void;
   onContinue: () => void;
   onDelete: () => void;
   busy: boolean;
@@ -439,6 +585,13 @@ function SetupView({
           sub={rulesSet ? 'Rules written' : 'None yet — optional'}
           done={rulesSet}
           onPress={onEditRules}
+        />
+        <ChecklistRow
+          icon="settings-outline"
+          title="Game settings"
+          sub={`${(durationMinutes / 60).toFixed(1).replace(/\.0$/, '')}h game · tap to adjust`}
+          done={false}
+          onPress={onEditSettings}
         />
       </ScrollView>
       <View style={styles.footer}>
@@ -619,6 +772,7 @@ const styles = StyleSheet.create({
   },
   stat: { flex: 1, alignItems: 'center' },
   statValue: { fontSize: 20, fontWeight: '800', color: Colors.text },
+  statValueDanger: { color: Colors.danger },
   statLabel: { fontSize: 11, color: Colors.textSecondary, marginTop: 2 },
   statDivider: { width: 1, backgroundColor: Colors.border },
   tabBar: {
@@ -643,6 +797,12 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4,
   },
   badgeText: { color: Colors.white, fontSize: 10, fontWeight: '700' },
+  staleChip: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    marginHorizontal: 16, marginBottom: 8, paddingVertical: 8, paddingHorizontal: 12,
+    borderRadius: 8, backgroundColor: Colors.danger + '1A', borderWidth: 1, borderColor: Colors.danger,
+  },
+  staleChipText: { color: Colors.danger, fontSize: 13, fontWeight: '600' },
   content: { flex: 1, marginHorizontal: 16, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: Colors.border },
   alertContainer: { flex: 1, backgroundColor: Colors.surface, padding: 12 },
   footer: { paddingHorizontal: 16, paddingVertical: 12, gap: 8 },
@@ -734,5 +894,16 @@ const styles = StyleSheet.create({
     paddingVertical: 10, marginBottom: 12,
   },
   quickActionText: { color: Colors.primary, fontSize: 14, fontWeight: '600' },
-  modalActions: { flexDirection: 'row', gap: 12 },
+  durationInput: {
+    backgroundColor: Colors.surfaceElevated, borderRadius: 12, borderWidth: 1, borderColor: Colors.border,
+    color: Colors.text, fontSize: 18, fontWeight: '700', padding: 14, marginTop: 6,
+  },
+  settingHint: { fontSize: 12, color: Colors.textMuted, marginTop: 6, marginBottom: 8 },
+  toggleRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12,
+    borderTopWidth: 1, borderTopColor: Colors.border,
+  },
+  toggleLabel: { fontSize: 15, fontWeight: '600', color: Colors.text },
+  toggleHint: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
+  modalActions: { flexDirection: 'row', gap: 12, marginTop: 12 },
 });

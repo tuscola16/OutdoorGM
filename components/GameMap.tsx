@@ -35,10 +35,19 @@ function regionFromCoords(coords: { latitude: number; longitude: number }[]): Re
   };
 }
 
+/** A spot where an eliminated player dropped their gear (Rules 19, 20). */
+export interface DeathMarker {
+  userId: string;
+  displayName: string;
+  latitude: number;
+  longitude: number;
+}
+
 interface GameMapProps {
   checkpoints: Checkpoint[];
   playerLocations: PlayerLocation[];
   boundary?: MapBoundary | null;
+  deathMarkers?: DeathMarker[];
   onMapLongPress?: (coord: { latitude: number; longitude: number }) => void;
   onCheckpointPress?: (checkpoint: Checkpoint) => void;
   editMode?: boolean;
@@ -114,6 +123,7 @@ export function GameMap({
   checkpoints,
   playerLocations,
   boundary,
+  deathMarkers = [],
   onMapLongPress,
   onCheckpointPress,
   editMode = false,
@@ -198,6 +208,20 @@ export function GameMap({
       {playerLocations.map((pl) => (
         <PlayerMarker key={pl.userId} player={pl} />
       ))}
+      {deathMarkers.map((d) => (
+        <Marker
+          key={`death-${d.userId}`}
+          coordinate={{ latitude: d.latitude, longitude: d.longitude }}
+          title={`${d.displayName} fell here`}
+          description="Gear & weapons dropped"
+          anchor={{ x: 0.5, y: 0.5 }}
+          tracksViewChanges={false}
+        >
+          <View style={styles.deathMarker}>
+            <Text style={styles.deathSkull}>☠️</Text>
+          </View>
+        </Marker>
+      ))}
     </MapView>
   );
 }
@@ -227,4 +251,15 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     fontSize: 12,
   },
+  deathMarker: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    borderWidth: 2,
+    borderColor: Colors.danger,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deathSkull: { fontSize: 14 },
 });

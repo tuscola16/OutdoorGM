@@ -47,13 +47,28 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
 // stop it when tracking ends.
 let foregroundSub: Location.LocationSubscription | null = null;
 
-export async function startLocationTracking(gameId: string, displayName: string): Promise<void> {
+export interface TrackingOptions {
+  /** Coarser cadence + balanced accuracy to conserve battery over a long game
+   * (Rule 21). Falls back to high-accuracy 5s/10m when false. */
+  batterySaver?: boolean;
+}
+
+export async function startLocationTracking(
+  gameId: string,
+  displayName: string,
+  options: TrackingOptions = {}
+): Promise<void> {
   // Foreground permission is the only hard requirement — it's enough to share
   // location while the app is open, which is when the GM is watching live.
   const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
   if (fgStatus !== 'granted') {
     throw new Error('PERMISSION_DENIED:Location access is required to play. Please enable it in Settings.');
   }
+
+  // Tracking cadence: tighter when accuracy matters, looser to save battery.
+  const accuracy = options.batterySaver ? Location.Accuracy.Balanced : Location.Accuracy.High;
+  const timeInterval = options.batterySaver ? 15000 : 5000;
+  const distanceInterval = options.batterySaver ? 30 : 10;
 
   await AsyncStorage.setItem(ACTIVE_GAME_KEY, gameId);
   await AsyncStorage.setItem(DISPLAY_NAME_KEY, displayName);
@@ -77,9 +92,9 @@ export async function startLocationTracking(gameId: string, displayName: string)
     const isRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME).catch(() => false);
     if (!isRunning) {
       await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
-        accuracy: Location.Accuracy.High,
-        timeInterval: 5000,       // every 5 seconds
-        distanceInterval: 10,     // or every 10 meters
+        accuracy,
+        timeInterval,             // 5s normally, 15s in battery saver
+        distanceInterval,         // 10m normally, 30m in battery saver
         foregroundService: {
           notificationTitle: 'Outdoor GM',
           notificationBody: 'Your location is being shared with your Game Master.',
@@ -94,7 +109,7 @@ export async function startLocationTracking(gameId: string, displayName: string)
     // captures the current gameId/displayName.
     if (foregroundSub) { foregroundSub.remove(); foregroundSub = null; }
     foregroundSub = await Location.watchPositionAsync(
-      { accuracy: Location.Accuracy.High, timeInterval: 5000, distanceInterval: 5 },
+      { accuracy, timeInterval, distanceInterval: options.batterySaver ? 20 : 5 },
       async (pos) => {
         const user = auth().currentUser;
         if (!user) return;

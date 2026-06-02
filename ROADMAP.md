@@ -26,15 +26,37 @@ Landed (compiles; app `tsc` + functions build green):
 - **Checkpoint-triggered events**: `Checkpoint.event` schema + the geofence function routes
   `beast-attack`/`gear-drop`/`announcement`/`silent-alert` by audience to broadcasts/pushes.
 
-Not yet done (needs new native deps → a dev-client rebuild, so deferred):
+Also landed (second pass — no new native deps):
+
+- **GM elimination + SOS controls** (`gm/[gameId]/players.tsx`): per-player eliminate
+  (skull), live SOS highlight + clear, dead/alive badges, and an "N alive" count.
+- **Game clock / countdown** (P1 #6): `useRemaining()` hook; player screen leads with
+  "TIME LEFT" + elapsed subline; GM stats bar shows Remaining / Alive / Active / Arrivals.
+- **Death-drop gear pin** (P2 #9): player's last position is stamped on death
+  (`setDeathLocation`), rendered as skull markers on the GM map (`GameMap` `deathMarkers`).
+- **Per-GM config screen** (P3): a "Game settings" modal in setup — duration, auto
+  player-count, winner detection, battery saver — persisted to `game.config`.
+- **Battery-aware tracking** (P2 #7): `startLocationTracking({ batterySaver })` uses
+  balanced accuracy + 15s/30m cadence when enabled; player reads it from `game.config`.
+
+Not yet done (ration mechanic — deferred to last for testing; needs new native deps):
 
 - **Ration photo capture/upload UI** and the **scheduled starvation** function (requires
-  `@react-native-firebase/storage` + a camera picker). Service layer (`submitRation`,
-  `reviewRation`) and rules are already in place; only the photo UI + the timed sweep
-  remain. Holding the auto-starvation function until the photo path ships avoids
-  wrongly starving everyone.
-- **GM ration review feed**, **GM elimination/SOS controls** on the players screen,
-  **per-GM config screen**, **game clock/countdown** (P1 #6), and all P2/P3 items.
+  `@react-native-firebase/storage` + a camera picker, i.e. a dev-client rebuild). Service
+  layer (`submitRation`, `reviewRation`) + rules are already in place; only the photo UI,
+  the **GM ration review feed**, and the timed starvation sweep remain. Holding the
+  auto-starvation function until the photo path ships avoids wrongly starving everyone.
+- **Offline resilience** (P2 #8 — now safety-critical, see the Pingo consequence note),
+  **graceful SMS fallback for SOS**, **custom arena map overlay** (P3, needs storage),
+  **sponsorship tracking** (P3).
+- **Pingo reconciliation**: decided — Outdoor GM replaces it (no code; rewrite Rule 26).
+
+Landed (Pingo-replacement hardening):
+
+- **Stale-fix indicator**: per-player "last fix Xm ago" + color dot in the GM roster
+  (`players.tsx`), and a "N players not reporting" warning chip on the GM map screen that
+  deep-links to the roster. Backed by `hooks/useNow.ts` + `services/locationStatus.ts`.
+  Marker bitmaps stay static (avoids the Android marker-thrash crash).
 
 ## Cross-cutting theme: per-GM configurability
 
@@ -137,9 +159,30 @@ location infrastructure already exists.
   overlay instead of relying only on generic tiles + a rectangle boundary.
 - **Sponsorship / prize-pool tracking** (Rules 3, 30–32) — mostly admin/out-of-app; low
   app priority.
-- **Reconcile the Pingo redundancy** (Rule 26) — decide whether Outdoor GM *replaces*
-  "Find My Kids by Pingo" or runs alongside it; the rules currently deploy a competing
-  location app for the app's own core job.
+- ~~Reconcile the Pingo redundancy~~ — **DECIDED: Outdoor GM replaces "Find My Kids by
+  Pingo".** Only one location app runs. Rule 26 should be rewritten to onboard Outdoor GM
+  the night before instead of Pingo. See the consequence note below.
+
+---
+
+## Consequence of replacing Pingo (sole location & safety tool)
+
+Outdoor GM is now the **only** thing tracking players and the only channel to reach the
+GM. That promotes two items from "robustness" to **load-bearing / safety-critical**:
+
+- **Location reliability & background tracking** must be rock-solid — a player who
+  force-quits, loses permission, or drops signal silently disappears from the only map
+  anyone has. Add a GM-visible **"stale fix" indicator** (last-seen age per player) so the
+  GM can tell "stopped moving" from "stopped reporting."
+- **Offline / poor-signal resilience (P2 #8)** is no longer just about gameplay fairness —
+  it's a safety gap. Queue-and-flush location writes, and the **SOS path** should degrade
+  gracefully (e.g. fall back to SMS if push/Firestore is unreachable).
+- **Onboarding**: since setup moves into Outdoor GM, the night-before flow now means
+  installing the app, signing in, granting **"Always" location**, and joining the game
+  code — worth a short pre-game checklist screen.
+
+These don't change the P0 ordering, but they raise P2 #8 and the tracking-hardening work
+to "must ship before a real game" rather than "nice to have."
 
 ---
 

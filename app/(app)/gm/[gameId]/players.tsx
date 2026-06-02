@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity,
   FlatList, Alert
@@ -8,14 +8,25 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useGame } from '@/context/GameContext';
 import { Colors } from '@/constants/colors';
-import { updateMemberRole, removePlayer } from '@/services/gameService';
+import { updateMemberRole, removePlayer, eliminatePlayer, clearSos } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
+import { useNow } from '@/hooks/useNow';
+import { stalenessLevel, stalenessColor, formatAgo } from '@/services/locationStatus';
 import type { GameMember } from '@/types';
 
 export default function PlayersScreen() {
   const { gameId } = useLocalSearchParams<{ gameId: string }>();
-  const { members, loadGame } = useGame();
+  const { members, playerLocations, phase, loadGame } = useGame();
   const router = useRouter();
+  const now = useNow(10000);
+
+  // userId → last location fix (ms), for the stale-fix indicator. Outdoor GM is the
+  // only tracker now, so a silent drop-off needs to be visible to the GM.
+  const lastFixByUser = new Map<string, number>();
+  for (const loc of playerLocations) {
+    const ms = loc.updatedAt?.toMillis?.();
+    if (ms) lastFixByUser.set(loc.userId, ms);
+  }
 
   // Ensure the shared game subscription is active. We intentionally do NOT
   // clearGame() on unmount: the GM screen underneath stays mounted and relies on
@@ -69,24 +80,91 @@ export default function PlayersScreen() {
     );
   }
 
+  function handleEliminate(member: GameMember) {
+    Alert.alert(
+      `Eliminate ${member.displayName}?`,
+      'Marks this player as dead. Everyone is notified and, if they are the last one standing, the survivor is declared the winner.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Eliminate',
+          style: 'destructive',
+          onPress: async () => {
+            if (!gameId) return;
+            try {
+              await eliminatePlayer(gameId, member.userId, 'gm-other');
+            } catch (err) {
+              Alert.alert('Error', friendlyError(err));
+            }
+          },
+        },
+      ]
+    );
+  }
+
+  async function handleClearSos(member: GameMember) {
+    if (!gameId) return;
+    try {
+      await clearSos(gameId, member.userId);
+    } catch (err) {
+      Alert.alert('Error', friendlyError(err));
+    }
+  }
+
   function renderMember({ item }: { item: GameMember }) {
     const isGM = item.role === 'gm';
+    const isOut = !!item.out;
+    // Stale-fix indicator: only meaningful for a living player during active play
+    // (out players intentionally stop reporting; GMs aren't tracked).
+    const showFix = !isGM && !isOut && phase === 'play';
+    const fixMs = lastFixByUser.get(item.userId) ?? null;
+    const level = showFix ? stalenessLevel(fixMs == null ? null : now - fixMs) : 'none';
     return (
-      <View style={styles.row}>
-        <View style={[styles.avatar, isGM ? styles.gmAvatar : styles.playerAvatar]}>
+      <View style={[styles.row, item.sos ? styles.sosRow : null]}>
+        <View style={[styles.avatar, isGM ? styles.gmAvatar : styles.playerAvatar, isOut ? styles.outAvatar : null]}>
           <Text style={styles.avatarText}>
             {item.displayName.charAt(0).toUpperCase()}
           </Text>
         </View>
 
         <View style={styles.info}>
-          <Text style={styles.name}>{item.displayName}</Text>
-          <Text style={styles.email}>{item.email}</Text>
+          <Text style={[styles.name, isOut ? styles.outName : null]}>{item.displayName}</Text>
+          {item.sos ? (
+            <Text style={styles.sosLabel}>🆘 Needs assistance — tap the alert icon to clear</Text>
+          ) : showFix ? (
+            <View style={styles.fixRow}>
+              <View style={[styles.fixDot, { backgroundColor: stalenessColor(level) }]} />
+              <Text style={[styles.fixText, level === 'stale' && styles.fixTextStale]}>
+                {fixMs == null ? 'No signal yet' : `Last fix ${formatAgo(now - fixMs)}`}
+              </Text>
+            </View>
+          ) : (
+            <Text style={styles.email}>{item.email}</Text>
+          )}
         </View>
 
-        <View style={[styles.badge, isGM ? styles.gmBadge : styles.playerBadge]}>
-          <Text style={styles.badgeText}>{isGM ? 'GM' : 'PLAYER'}</Text>
-        </View>
+        {isOut ? (
+          <View style={[styles.badge, styles.deadBadge]}>
+            <Text style={styles.badgeText}>DEAD</Text>
+          </View>
+        ) : (
+          <View style={[styles.badge, isGM ? styles.gmBadge : styles.playerBadge]}>
+            <Text style={styles.badgeText}>{isGM ? 'GM' : 'PLAYER'}</Text>
+          </View>
+        )}
+
+        {item.sos && (
+          <TouchableOpacity onPress={() => handleClearSos(item)} style={styles.iconBtn}>
+            <Ionicons name="alert-circle" size={24} color={Colors.danger} />
+          </TouchableOpacity>
+        )}
+
+        {/* Eliminate is only meaningful for a living player. */}
+        {!isGM && !isOut && (
+          <TouchableOpacity onPress={() => handleEliminate(item)} style={styles.iconBtn}>
+            <Ionicons name="skull-outline" size={22} color={Colors.danger} />
+          </TouchableOpacity>
+        )}
 
         <TouchableOpacity onPress={() => handleRoleToggle(item)} style={styles.iconBtn}>
           <Ionicons
@@ -105,6 +183,7 @@ export default function PlayersScreen() {
 
   const players = members.filter((m) => m.role === 'player');
   const gms = members.filter((m) => m.role === 'gm');
+  const livingPlayers = players.filter((m) => !m.out).length;
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
@@ -125,7 +204,7 @@ export default function PlayersScreen() {
           members.length > 0 ? (
             <View style={styles.legend}>
               <Text style={styles.legendText}>
-                {gms.length} GM{gms.length !== 1 ? 's' : ''} · {players.length} player{players.length !== 1 ? 's' : ''}
+                {gms.length} GM{gms.length !== 1 ? 's' : ''} · {players.length} player{players.length !== 1 ? 's' : ''} · {livingPlayers} alive
               </Text>
             </View>
           ) : null
@@ -166,6 +245,15 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
     gap: 8,
   },
+  sosRow: { borderColor: Colors.danger, backgroundColor: Colors.danger + '14' },
+  outAvatar: { opacity: 0.5 },
+  outName: { textDecorationLine: 'line-through', color: Colors.textSecondary },
+  sosLabel: { fontSize: 12, color: Colors.danger, marginTop: 1, fontWeight: '600' },
+  deadBadge: { backgroundColor: Colors.danger + '33' },
+  fixRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
+  fixDot: { width: 8, height: 8, borderRadius: 4 },
+  fixText: { fontSize: 12, color: Colors.textSecondary },
+  fixTextStale: { color: Colors.danger, fontWeight: '600' },
   avatar: {
     width: 40,
     height: 40,
