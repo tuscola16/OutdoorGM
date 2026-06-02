@@ -189,6 +189,34 @@ games, so a finished game can't be joined.
 
 **Notification handlers**: Set up in `app/_layout.tsx` (Android channel) and `services/notificationService.ts` (foreground handling)
 
+### Rations / meal-photo loop (Rules 6–9)
+
+The survival "heartbeat": every `config.rationIntervalMinutes` window each player
+photographs a numbered ration card so the GM can verify they ate, or they risk
+starvation.
+
+- **Player** (`components/RationPanel.tsx`, in the play screen): a per-window countdown,
+  a **live camera-only** capture (`expo-image-picker` → no library picks, anti-cheat), an
+  optional/required card-number field, and the submission status. The photo uploads to
+  **Firebase Storage** (`services/storage.ts`, `@react-native-firebase/storage`) at
+  `games/{gameId}/rations/{playerId}/{intervalIndex}.jpg`; `submitRation()` then writes the
+  `rations/{playerId}_{intervalIndex}` doc (deterministic id → idempotent re-submit).
+- **GM review feed**: mobile `app/(app)/gm/[gameId]/rations.tsx` (header button + pending
+  badge) and the web `RationsModal`. Photo thumbnails + lightbox, valid/reject
+  (`reviewRation()`), a "who hasn't eaten this window" glance, and a reused-card-number
+  flag when `enforceUniqueRationCards` is on (**manual** Rule 6 enforcement — the GM
+  rejects dupes; there is no automatic uniqueness reject).
+- **Enforcement is manual**: there is no scheduled auto-starvation function yet. The GM
+  eliminates missed players by hand from the Players list. `rationInterval(game, now)`
+  (`services/gameService.ts`) does the window math; `gameConfig()` resolves the ration knobs.
+- **Storage access** is governed by `storage.rules` (registered in `firebase.json`): a
+  player writes only their own path while an active member; the owning player and GMs read.
+  Requires Firebase Storage to be enabled in the console.
+- **Auto-cleanup**: the `cleanupRationPhotosOnGameEnd` Cloud Function
+  (`functions/src/cleanup.ts`) deletes a game's ration photos when it ends (the game-doc
+  `status → 'ended'` transition), so Storage doesn't accumulate a season of meal photos.
+  No scheduler needed — the photos only matter during play.
+
 ## File Organization
 
 - `app/` — Expo Router screens and layouts
@@ -260,8 +288,9 @@ Use `friendlyError()` from `services/errorUtils.ts` to convert Firebase error co
 ### Deployment Steps
 
 ```bash
-# 1. Deploy Firestore rules & indexes
+# 1. Deploy Firestore + Storage rules & indexes
 firebase deploy --only firestore
+firebase deploy --only storage          # ration-photo access (enable Storage first)
 
 # 2. Deploy Cloud Functions
 cd functions && npm run build && cd ..
@@ -314,4 +343,6 @@ See [RUNNING.md](RUNNING.md) for local-dev startup and [SETUP_ANDROID.md](SETUP_
 - `expo-location@~17.0`: GPS
 - `expo-task-manager@~11.8`: Background tasks
 - `expo-notifications@~0.28`: Local & push notifications
+- `expo-image-picker@~15.0`: Live camera capture for ration photos
+- `@react-native-firebase/storage@^20.3`: Ration-photo uploads (Firebase Storage)
 - `react-native-safe-area-context@4.10`: Safe area handling

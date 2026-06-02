@@ -4,3 +4,4 @@ admin.initializeApp();
 export { onLocationUpdate } from './geofence';
 export { onMemberWrite } from './members';
 export { createGame, joinGameByCode, deleteGame } from './games';
+export { cleanupRationPhotosOnGameEnd } from './cleanup';

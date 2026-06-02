@@ -1,0 +1,46 @@
+rules_version = '2';
+
+// Firebase Storage rules for ration-card photos (the meal/food picture loop,
+// Rules 6–9). Photos live at games/{gameId}/rations/{playerId}/{file}. These
+// rules cross-reference Firestore membership so only game members touch a game's
+// photos, mirroring the Firestore rules in firestore.rules.
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Storage rules can read Firestore via the `firestore` global. The members
+    // doc id is the user's uid (games/{gameId}/members/{uid}); its existence
+    // proves membership and its `role` field distinguishes GMs.
+    function memberPath(gameId) {
+      return /databases/(default)/documents/games/$(gameId)/members/$(request.auth.uid);
+    }
+
+    function isGameMember(gameId) {
+      return isSignedIn() && firestore.exists(memberPath(gameId));
+    }
+
+    function isGameGM(gameId) {
+      return isSignedIn()
+        && firestore.exists(memberPath(gameId))
+        && firestore.get(memberPath(gameId)).data.role == 'gm';
+    }
+
+    match /games/{gameId}/rations/{playerId}/{fileName} {
+      // The owning player may read their own photo; any GM of the game may read
+      // it to review. Other players never see each other's ration cards.
+      allow read: if isGameGM(gameId)
+        || (isSignedIn() && request.auth.uid == playerId);
+
+      // A player uploads only to their own path, only while an active member,
+      // and only a reasonably sized image (anti-abuse: cap at 10 MB, images only).
+      allow write: if isSignedIn()
+        && request.auth.uid == playerId
+        && isGameMember(gameId)
+        && request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+  }
+}

@@ -9,7 +9,7 @@ import {
 } from 'firebase/firestore';
 import { db, Collections } from '@/services/firebase';
 import { gamePhase } from '@/services/gameService';
-import type { Game, Checkpoint, GameMember, PlayerLocation, Arrival, GamePhase } from '@shared/types';
+import type { Game, Checkpoint, GameMember, PlayerLocation, Arrival, GamePhase, RationSubmission } from '@shared/types';
 
 interface GameContextValue {
   game: Game | null;
@@ -19,6 +19,8 @@ interface GameContextValue {
   members: GameMember[];
   playerLocations: PlayerLocation[];
   arrivals: Arrival[];
+  /** Ration submissions awaiting/holding GM review (GM only). */
+  rations: RationSubmission[];
   loadGame: (gameId: string, role: 'player' | 'gm') => void;
   clearGame: () => void;
 }
@@ -33,6 +35,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   const [members, setMembers] = useState<GameMember[]>([]);
   const [playerLocations, setPlayerLocations] = useState<PlayerLocation[]>([]);
   const [arrivals, setArrivals] = useState<Arrival[]>([]);
+  const [rations, setRations] = useState<RationSubmission[]>([]);
 
   const loadGame = useCallback((id: string, role: 'player' | 'gm') => {
     setGameId(id);
@@ -47,6 +50,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     setMembers([]);
     setPlayerLocations([]);
     setArrivals([]);
+    setRations([]);
   }, []);
 
   // Game document
@@ -105,9 +109,23 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     );
   }, [gameId]);
 
+  // Rations (GMs only) — the review feed.
+  useEffect(() => {
+    if (!gameId || myRole !== 'gm') return;
+    return onSnapshot(
+      query(
+        collection(db, Collections.GAMES, gameId, Collections.RATIONS),
+        orderBy('submittedAt', 'desc'),
+        limit(200)
+      ),
+      (snap) => setRations(snap.docs.map((d) => ({ id: d.id, ...d.data() } as RationSubmission))),
+      (err) => console.error('[GameContext] rations listener error', err)
+    );
+  }, [gameId, myRole]);
+
   return (
     <GameContext.Provider
-      value={{ game, phase: gamePhase(game), myRole, checkpoints, members, playerLocations, arrivals, loadGame, clearGame }}
+      value={{ game, phase: gamePhase(game), myRole, checkpoints, members, playerLocations, arrivals, rations, loadGame, clearGame }}
     >
       {children}
     </GameContext.Provider>

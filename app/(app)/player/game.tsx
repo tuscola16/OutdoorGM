@@ -11,6 +11,7 @@ import { Colors } from '@/constants/colors';
 import { Button } from '@/components/ui/Button';
 import { GameMap } from '@/components/GameMap';
 import { BroadcastFeed } from '@/components/BroadcastFeed';
+import { RationPanel } from '@/components/RationPanel';
 import { Tutorial } from '@/components/Tutorial';
 import * as Location from 'expo-location';
 import { startLocationTracking, stopLocationTracking } from '@/services/locationTask';
@@ -20,7 +21,7 @@ import { friendlyError } from '@/services/errorUtils';
 import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
 import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
 import { Collections } from '@/services/firebase';
-import type { GamePhase, MapBoundary } from '@/types';
+import type { GameConfig, GamePhase, MapBoundary } from '@/types';
 
 type Ts = FirebaseFirestoreTypes.Timestamp | null;
 
@@ -37,6 +38,7 @@ export default function PlayerGameScreen() {
   const [endedAt, setEndedAt] = useState<Ts>(null);
   const [durationMinutes, setDurationMinutes] = useState(gameConfig(null).durationMinutes);
   const [batterySaver, setBatterySaver] = useState(gameConfig(null).batterySaver);
+  const [config, setConfig] = useState<GameConfig>(gameConfig(null));
 
   // Empty until the member doc loads, so location tracking starts with the real
   // name rather than the "Player" placeholder. The tracking effect gates on it.
@@ -76,6 +78,7 @@ export default function PlayerGameScreen() {
           setEndedAt(d.endedAt ?? null);
           setDurationMinutes(gameConfig(d as any).durationMinutes);
           setBatterySaver(gameConfig(d as any).batterySaver);
+          setConfig(gameConfig(d as any));
         },
         (err) => console.error('[PlayerGame] game listener error', err)
       );
@@ -267,6 +270,15 @@ export default function PlayerGameScreen() {
             You've played {elapsed != null ? formatDuration(elapsed) : '0:00'}
           </Text>
         </View>
+
+        {config.rationsEnabled && !out && user && (
+          <RationPanel
+            gameId={gameId!}
+            player={{ userId: user.uid, displayName: displayName || 'Player' }}
+            startedAt={startedAt}
+            config={config}
+          />
+        )}
 
         <View style={styles.mapContainer}>
           {boundary ? (

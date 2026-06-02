@@ -39,16 +39,32 @@ Also landed (second pass — no new native deps):
 - **Battery-aware tracking** (P2 #7): `startLocationTracking({ batterySaver })` uses
   balanced accuracy + 15s/30m cadence when enabled; player reads it from `game.config`.
 
-Not yet done (ration mechanic — deferred to last for testing; needs new native deps):
+Landed (ration mechanic — meal/food photo loop; **needs a dev-client rebuild** for the
+new native deps before it runs on device):
 
-- **Ration photo capture/upload UI** and the **scheduled starvation** function (requires
-  `@react-native-firebase/storage` + a camera picker, i.e. a dev-client rebuild). Service
-  layer (`submitRation`, `reviewRation`) + rules are already in place; only the photo UI,
-  the **GM ration review feed**, and the timed starvation sweep remain. Holding the
-  auto-starvation function until the photo path ships avoids wrongly starving everyone.
+- **Ration photo capture/upload** (`components/RationPanel.tsx`): per-window countdown,
+  live-camera-only capture (`expo-image-picker`), upload to Firebase Storage
+  (`services/storage.ts` + `@react-native-firebase/storage`), card-number entry, and
+  submission status. Wired into the player play screen, gated on `config.rationsEnabled`.
+- **GM ration review feed**: mobile (`app/(app)/gm/[gameId]/rations.tsx`, reached from a
+  header button with a pending badge) and web (`RationsModal` in `web/.../GameScreen.tsx`,
+  opened from the Play sidebar). Photo thumbnails + lightbox, valid/reject, a "who hasn't
+  eaten this window" glance, and a reused-card-number flag (manual Rule 6 enforcement).
+- **Config knobs** surfaced in both GM settings modals: ration on/off, window length,
+  unique-card enforcement.
+- **Storage backend**: `storage.rules` (member-scoped ration-photo access) + a `storage`
+  block in `firebase.json`; tightened the Firestore `rations` create rule.
+
+Still deferred (intentionally): the **scheduled auto-starvation** Cloud Function. Today the
+GM eliminates missed players by hand from the review feed (the "not eaten this window"
+glance feeds this). Holding the timed sweep until the photo path is field-tested avoids
+wrongly starving everyone on a flaky-signal day.
+
+Not yet done:
+
 - **Offline resilience** (P2 #8 — now safety-critical, see the Pingo consequence note),
   **graceful SMS fallback for SOS**, **custom arena map overlay** (P3, needs storage),
-  **sponsorship tracking** (P3).
+  **sponsorship tracking** (P3), **post-game media — recap video + photo album** (P3 #14).
 - **Pingo reconciliation**: decided — Outdoor GM replaces it (no code; rewrite Rule 26).
 
 Landed (Pingo-replacement hardening):
@@ -225,6 +241,30 @@ timed gear drops (Drop 1/Drop 2) the run-sheet announces.
   before the game formally concludes. Add an `endgame` phase between `play` and `results`
   (e.g. a final convergence / sudden-death window) the GM triggers, so the app models that
   step instead of jumping straight to results.
+- **Post-game media — recap video + photo album (#14)** — once a game is complete
+  (`results` / `status: 'ended'`), let a GM attach a **YouTube recap video** and a **Google
+  Photos shared album** so everyone can relive the event. Adding or updating *either* link
+  **pushes an alert to all other GMs and players** in that game ("📺 The recap video is up
+  for *<game>*" / "📷 Photos added").
+  - **Data model:** a `media` object on the game doc — `{ youtubeUrl?, photosAlbumUrl?,
+    updatedAt, updatedBy }` (a single shared object, GM-authored). Validate the URLs to the
+    expected hosts (`youtube.com`/`youtu.be`, `photos.google.com`/`photos.app.goo.gl`) and
+    store empty/cleared as removed.
+  - **Notification:** a Cloud Function (Firestore trigger on the game doc) that fires when
+    `media.youtubeUrl` or `media.photosAlbumUrl` changes, writes a `broadcast`
+    (`kind: 'gm-message'` or a new `media` kind) and FCM-pushes every member token **except
+    the GM who set it**. Reuses the existing broadcast + push pipeline (#4) — no new channel.
+  - **UI:** the GM **results** screen gains an "Add recap / photos" editor (both platforms);
+    the player and co-GM results screen shows tappable **Watch recap** / **View photos**
+    buttons. These are **just outbound links** — no in-app player or gallery: the button
+    hands the URL to the OS (`Linking.openURL` on mobile → opens the YouTube / Google Photos
+    app or browser; a normal `<a target="_blank">` on web). Authoring is GM-only and gated on
+    the game being finished.
+  - **Rules:** the game-doc update rule in `firestore.rules` whitelists keys via
+    `affectedKeys().hasOnly([...])` — add `'media'` so GMs can write it; the Cloud Function
+    (admin SDK) bypasses rules for the broadcast/push.
+  - **Why P3:** post-event enrichment, not match-critical — but cheap given the broadcast
+    pipeline already exists, and it closes the loop after `results`.
 - **Custom arena map overlay** (Rule 33) — let the GM upload the arena map image as a map
   overlay instead of relying only on generic tiles + a rectangle boundary.
 - **Pre-game ops checklist** — the schedule front-loads manual ops (alarm, car departures,

@@ -13,12 +13,12 @@ import {
   openLobby, reopenSetup, startGame, endGame, updateGameConfig, gameConfig,
   addCheckpoint, updateCheckpoint, deleteCheckpoint,
   updateMemberRole, removePlayer, eliminatePlayer, clearSos, sendBroadcast,
-  deleteGame, setGameArchived,
+  deleteGame, setGameArchived, reviewRation, rationInterval,
 } from '@/services/gameService';
 import { KIND_META, KIND_ORDER, checkpointKind, buildEvent } from '@/services/checkpointKinds';
 import { deleteField } from 'firebase/firestore';
 import type {
-  Arrival, Checkpoint, CheckpointEvent, CheckpointKind, EventAudience, GameMember, MapBoundary, PlayerLocation,
+  Arrival, Checkpoint, CheckpointEvent, CheckpointKind, EventAudience, GameMember, MapBoundary, PlayerLocation, RationSubmission,
 } from '@shared/types';
 
 const PHASE_LABEL: Record<string, string> = {
@@ -28,13 +28,14 @@ const PHASE_LABEL: Record<string, string> = {
 export function GameScreen() {
   const { gameId } = useParams<{ gameId: string }>();
   const navigate = useNavigate();
-  const { game, phase, checkpoints, members, playerLocations, arrivals, loadGame, clearGame } = useGame();
+  const { game, phase, checkpoints, members, playerLocations, arrivals, rations, loadGame, clearGame } = useGame();
   const { user } = useAuth();
   const [busy, setBusy] = useState(false);
   const [showCodes, setShowCodes] = useState(false);
   const [showPlayers, setShowPlayers] = useState(false);
   const [showBroadcast, setShowBroadcast] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
+  const [showRations, setShowRations] = useState(false);
   const elapsed = useElapsed(game?.startedAt, game?.endedAt);
   const remaining = useRemaining(game?.startedAt, gameConfig(game).durationMinutes, game?.endedAt);
   const now = useNow(10000);
@@ -103,6 +104,9 @@ export function GameScreen() {
     await run(() => sendBroadcast(gameId!, message, targetPlayerId));
   }
 
+  const rationsEnabled = gameConfig(game).rationsEnabled;
+  const pendingRations = rations.filter((r) => r.status === 'pending').length;
+
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <header
@@ -168,6 +172,9 @@ export function GameScreen() {
             arrivals={arrivals}
             members={players}
             busy={busy}
+            rationsEnabled={rationsEnabled}
+            pendingRations={pendingRations}
+            onOpenRations={() => setShowRations(true)}
             onBroadcast={() => setShowBroadcast(true)}
             onClearSos={(userId) => run(() => clearSos(gameId!, userId))}
             onOpenPlayers={() => setShowPlayers(true)}
@@ -217,6 +224,17 @@ export function GameScreen() {
       )}
       {showConfig && (
         <ConfigModal gameId={gameId!} initial={gameConfig(game)} onClose={() => setShowConfig(false)} />
+      )}
+      {showRations && (
+        <RationsModal
+          gameId={gameId!}
+          rations={rations}
+          members={members}
+          currentIndex={rationInterval(game, now)?.index ?? null}
+          totalWindows={rationInterval(game, now)?.total ?? null}
+          enforceUnique={gameConfig(game).enforceUniqueRationCards}
+          onClose={() => setShowRations(false)}
+        />
       )}
     </div>
   );
@@ -675,6 +693,7 @@ function LobbyView({
 function PlayView({
   remaining, aliveCount, activeCount, arrivalsCount, notReporting, sosPlayers,
   checkpoints, playerLocations, deathMarkers, boundary, arrivals, members, busy,
+  rationsEnabled, pendingRations, onOpenRations,
   onBroadcast, onClearSos, onOpenPlayers, onEnd,
 }: {
   remaining: number | null;
@@ -690,6 +709,9 @@ function PlayView({
   arrivals: Arrival[];
   members: GameMember[];
   busy: boolean;
+  rationsEnabled: boolean;
+  pendingRations: number;
+  onOpenRations: () => void;
   onBroadcast: () => void;
   onClearSos: (userId: string) => void;
   onOpenPlayers: () => void;
@@ -733,6 +755,16 @@ function PlayView({
         )}
 
         <button className="btn" onClick={onBroadcast} disabled={busy}>📢 Broadcast to players</button>
+
+        {rationsEnabled && (
+          <button
+            className="btn btn--ghost"
+            onClick={onOpenRations}
+            style={pendingRations > 0 ? { borderColor: 'var(--primary)', color: 'var(--primary)' } : undefined}
+          >
+            🍽 Ration review{pendingRations > 0 ? ` (${pendingRations} pending)` : ''}
+          </button>
+        )}
 
         <h3 style={{ margin: '4px 0 0' }}>Notifications</h3>
         <div style={{ flex: 1, minHeight: 0 }}>
@@ -995,10 +1027,14 @@ function ConfigModal({
   const [playerCount, setPlayerCount] = useState(initial.playerCountBroadcast);
   const [winner, setWinner] = useState(initial.winnerDetection);
   const [battery, setBattery] = useState(initial.batterySaver);
+  const [rations, setRations] = useState(initial.rationsEnabled);
+  const [rationMinutes, setRationMinutes] = useState(String(initial.rationIntervalMinutes));
+  const [uniqueCards, setUniqueCards] = useState(initial.enforceUniqueRationCards);
   const [busy, setBusy] = useState(false);
 
   async function save() {
     const minutes = Math.max(5, Math.round(Number(duration) || initial.durationMinutes));
+    const rationMins = Math.max(1, Math.round(Number(rationMinutes) || initial.rationIntervalMinutes));
     setBusy(true);
     try {
       await updateGameConfig(gameId, {
@@ -1007,6 +1043,9 @@ function ConfigModal({
           playerCountBroadcast: playerCount,
           winnerDetection: winner,
           batterySaver: battery,
+          rationsEnabled: rations,
+          rationIntervalMinutes: rationMins,
+          enforceUniqueRationCards: uniqueCards,
         },
       });
       onClose();
@@ -1026,6 +1065,17 @@ function ConfigModal({
       <Toggle label="Auto player-count updates" checked={playerCount} onChange={setPlayerCount} />
       <Toggle label="Declare a winner" checked={winner} onChange={setWinner} />
       <Toggle label="Battery saver" checked={battery} onChange={setBattery} />
+      <Toggle label="Ration check" checked={rations} onChange={setRations} />
+      {rations && (
+        <>
+          <div className="field">
+            <label>Ration window (minutes)</label>
+            <input className="input" type="number" value={rationMinutes} onChange={(e) => setRationMinutes(e.target.value)} />
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>How often players must submit a ration card</span>
+          </div>
+          <Toggle label="Unique ration cards" checked={uniqueCards} onChange={setUniqueCards} />
+        </>
+      )}
       <div style={{ display: 'flex', gap: 12 }}>
         <button className="btn btn--ghost" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
         <button className="btn" style={{ flex: 1 }} onClick={save} disabled={busy}>Save</button>
@@ -1040,5 +1090,133 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
       <span>{label}</span>
     </label>
+  );
+}
+
+// --- Ration review (GM-only; web mirrors the mobile review screen) ---
+
+function RationsModal({
+  gameId, rations, members, currentIndex, totalWindows, enforceUnique, onClose,
+}: {
+  gameId: string;
+  rations: RationSubmission[];
+  members: GameMember[];
+  currentIndex: number | null;
+  totalWindows: number | null;
+  enforceUnique: boolean;
+  onClose: () => void;
+}) {
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [lightbox, setLightbox] = useState<string | null>(null);
+
+  // Card numbers in use (valid or pending) → the uniqueness flag (Rule 6).
+  const cardCounts = new Map<string, number>();
+  for (const r of rations) {
+    const c = r.cardNumber?.trim();
+    if (c && r.status !== 'rejected') cardCounts.set(c, (cardCounts.get(c) ?? 0) + 1);
+  }
+
+  const rank = (s: RationSubmission['status']) => (s === 'pending' ? 0 : s === 'rejected' ? 1 : 2);
+  const ordered = [...rations].sort(
+    (a, b) =>
+      rank(a.status) - rank(b.status) ||
+      (b.submittedAt?.toMillis?.() ?? 0) - (a.submittedAt?.toMillis?.() ?? 0)
+  );
+
+  const fed = new Set(
+    rations
+      .filter((r) => currentIndex != null && r.intervalIndex === currentIndex && r.status !== 'rejected')
+      .map((r) => r.playerId)
+  );
+  const notEaten =
+    currentIndex == null ? [] : members.filter((m) => m.role === 'player' && !m.out && !fed.has(m.userId));
+
+  const pendingCount = rations.filter((r) => r.status === 'pending').length;
+
+  async function review(r: RationSubmission, status: 'valid' | 'rejected') {
+    setBusyId(r.id);
+    try {
+      await reviewRation(gameId, r.id, status);
+    } catch (err) {
+      window.alert(friendlyError(err));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <Modal title="Ration review" onClose={onClose}>
+      <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: 14 }}>
+        {pendingCount > 0 ? `${pendingCount} awaiting review` : 'All caught up'}
+        {currentIndex != null ? ` · window ${currentIndex + 1}/${totalWindows ?? '—'}` : ''}
+      </p>
+
+      {notEaten.length > 0 && (
+        <div className="card" style={{ borderColor: 'var(--danger)', background: 'rgba(192,57,43,0.1)' }}>
+          <div style={{ color: 'var(--danger)', fontWeight: 700, fontSize: 14 }}>
+            Not eaten this window ({notEaten.length})
+          </div>
+          <div style={{ fontSize: 13, marginTop: 4 }}>{notEaten.map((m) => m.displayName).join(', ')}</div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6 }}>
+            Eliminate from the Players list if they miss the window (starvation).
+          </div>
+        </div>
+      )}
+
+      {ordered.length === 0 && <p style={{ color: 'var(--text-secondary)' }}>No ration cards submitted yet.</p>}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {ordered.map((r) => {
+          const dup =
+            enforceUnique &&
+            !!r.cardNumber?.trim() &&
+            (cardCounts.get(r.cardNumber.trim()) ?? 0) > 1 &&
+            r.status !== 'rejected';
+          return (
+            <div key={r.id} className="card" style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+              <img
+                src={r.photoUrl}
+                onClick={() => setLightbox(r.photoUrl)}
+                style={{ width: 56, height: 56, borderRadius: 8, objectFit: 'cover', cursor: 'pointer', flexShrink: 0 }}
+              />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700 }}>{r.playerName}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                  Window {r.intervalIndex + 1}
+                  {r.cardNumber ? ` · card #${r.cardNumber}` : ''}
+                </div>
+                {dup && <div style={{ color: 'var(--danger)', fontSize: 12, fontWeight: 600 }}>⚠ Card number reused</div>}
+                {r.status === 'valid' && <div style={{ color: 'var(--success)', fontSize: 12, fontWeight: 600 }}>✓ Accepted</div>}
+                {r.status === 'rejected' && <div style={{ color: 'var(--danger)', fontSize: 12, fontWeight: 600 }}>✕ Rejected</div>}
+              </div>
+              {r.status === 'pending' ? (
+                <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                  <button className="btn btn--ghost" style={{ padding: '6px 10px' }} disabled={busyId === r.id} onClick={() => review(r, 'rejected')}>Reject</button>
+                  <button className="btn" style={{ padding: '6px 10px' }} disabled={busyId === r.id} onClick={() => review(r, 'valid')}>Accept</button>
+                </div>
+              ) : (
+                <button
+                  className="btn btn--ghost"
+                  style={{ padding: '6px 10px', flexShrink: 0 }}
+                  disabled={busyId === r.id}
+                  onClick={() => review(r, r.status === 'valid' ? 'rejected' : 'valid')}
+                >
+                  {r.status === 'valid' ? 'Reject' : 'Accept'}
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {lightbox && (
+        <div
+          onClick={() => setLightbox(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.92)', display: 'grid', placeItems: 'center', zIndex: 60, cursor: 'zoom-out' }}
+        >
+          <img src={lightbox} style={{ maxWidth: '92%', maxHeight: '92%' }} />
+        </div>
+      )}
+    </Modal>
   );
 }

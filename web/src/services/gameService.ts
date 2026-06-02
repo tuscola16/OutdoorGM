@@ -25,6 +25,37 @@ import {
   type EliminationCause,
 } from '@shared/types';
 
+/** Ration eat-window math (Rules 6–9). Ported from the mobile gameService: given
+ * a started game and "now", which 0-based interval we're in, how many total, and
+ * when the current window closes. */
+export function rationInterval(
+  game: Game | null | undefined,
+  now: number = Date.now()
+): { index: number; total: number; windowEndsAt: number; isPlaying: boolean } | null {
+  const cfg = gameConfig(game);
+  const startedMs = game?.startedAt?.toMillis?.();
+  if (!startedMs) return null;
+  const windowMs = cfg.rationIntervalMinutes * 60_000;
+  const total = Math.ceil(cfg.durationMinutes / cfg.rationIntervalMinutes);
+  const elapsed = now - startedMs;
+  const index = Math.floor(elapsed / windowMs);
+  const windowEndsAt = startedMs + (index + 1) * windowMs;
+  return { index, total, windowEndsAt, isPlaying: index >= 0 && index < total };
+}
+
+/** GM marks a submitted ration valid or rejected (web mirror of the mobile
+ * reviewRation). Players have no access; only GMs review. */
+export async function reviewRation(
+  gameId: string,
+  rationId: string,
+  status: 'valid' | 'rejected'
+): Promise<void> {
+  await updateDoc(doc(db, Collections.GAMES, gameId, Collections.RATIONS, rationId), {
+    status,
+    reviewedAt: serverTimestamp(),
+  });
+}
+
 /** Resolve a game's phase, defaulting legacy games (created before the `phase`
  * field existed) to `play` while active and `results` once ended. Ported from
  * the mobile app's gameService.ts. */

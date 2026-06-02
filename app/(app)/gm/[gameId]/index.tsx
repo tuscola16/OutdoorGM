@@ -33,7 +33,7 @@ const PHASE_LABEL: Record<string, string> = {
 
 export default function GMGameScreen() {
   const { gameId } = useLocalSearchParams<{ gameId: string }>();
-  const { game, phase, checkpoints, members, playerLocations, arrivals, loadGame, clearGame } = useGame();
+  const { game, phase, checkpoints, members, playerLocations, arrivals, rations, loadGame, clearGame } = useGame();
   const { user } = useAuth();
   const router = useRouter();
   const [tab, setTab] = useState<Tab>('map');
@@ -47,6 +47,9 @@ export default function GMGameScreen() {
   const [cfgPlayerCount, setCfgPlayerCount] = useState(true);
   const [cfgWinner, setCfgWinner] = useState(true);
   const [cfgBattery, setCfgBattery] = useState(true);
+  const [cfgRations, setCfgRations] = useState(true);
+  const [cfgRationInterval, setCfgRationInterval] = useState('');
+  const [cfgUniqueCards, setCfgUniqueCards] = useState(true);
   const [newAlertCount, setNewAlertCount] = useState(0);
   const [lastSeenArrivals, setLastSeenArrivals] = useState(0);
   const [copiedCode, setCopiedCode] = useState<'player' | 'gm' | null>(null);
@@ -178,11 +181,15 @@ export default function GMGameScreen() {
     setCfgPlayerCount(cfg.playerCountBroadcast);
     setCfgWinner(cfg.winnerDetection);
     setCfgBattery(cfg.batterySaver);
+    setCfgRations(cfg.rationsEnabled);
+    setCfgRationInterval(String(cfg.rationIntervalMinutes));
+    setCfgUniqueCards(cfg.enforceUniqueRationCards);
     setShowConfig(true);
   }
 
   async function saveConfig() {
     const minutes = Math.max(5, Math.round(Number(cfgDuration) || gameConfig(game).durationMinutes));
+    const rationMins = Math.max(1, Math.round(Number(cfgRationInterval) || gameConfig(game).rationIntervalMinutes));
     await runPhaseAction(() =>
       updateGameConfig(gameId!, {
         config: {
@@ -190,6 +197,9 @@ export default function GMGameScreen() {
           playerCountBroadcast: cfgPlayerCount,
           winnerDetection: cfgWinner,
           batterySaver: cfgBattery,
+          rationsEnabled: cfgRations,
+          rationIntervalMinutes: rationMins,
+          enforceUniqueRationCards: cfgUniqueCards,
         },
       })
     );
@@ -213,6 +223,7 @@ export default function GMGameScreen() {
   }
 
   const players = members.filter((m) => m.role === 'player');
+  const pendingRations = rations.filter((r) => r.status === 'pending').length;
 
   // Players who have silently dropped off the map (no fix, or none in 2 min). Since
   // Outdoor GM replaces Pingo as the only tracker, the GM must see this immediately.
@@ -253,6 +264,16 @@ export default function GMGameScreen() {
           <TouchableOpacity onPress={() => setShowCodes(true)} style={styles.headerBtn}>
             <Ionicons name="qr-code-outline" size={22} color={Colors.text} />
           </TouchableOpacity>
+          {phase === 'play' && gameConfig(game).rationsEnabled && (
+            <TouchableOpacity onPress={() => router.push(`/(app)/gm/${gameId}/rations`)} style={styles.headerBtn}>
+              <Ionicons name="restaurant-outline" size={22} color={Colors.text} />
+              {pendingRations > 0 && (
+                <View style={styles.headerBadge}>
+                  <Text style={styles.badgeText}>{pendingRations}</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          )}
           <TouchableOpacity onPress={() => router.push(`/(app)/gm/${gameId}/players`)} style={styles.headerBtn}>
             <Ionicons name="people-outline" size={22} color={Colors.text} />
           </TouchableOpacity>
@@ -508,6 +529,32 @@ export default function GMGameScreen() {
               value={cfgBattery}
               onValueChange={setCfgBattery}
             />
+            <ConfigToggle
+              label="Ration check"
+              hint="Players photograph a ration card each window to avoid starving"
+              value={cfgRations}
+              onValueChange={setCfgRations}
+            />
+            {cfgRations && (
+              <>
+                <Text style={styles.codeLabel}>RATION WINDOW (MINUTES)</Text>
+                <TextInput
+                  style={styles.durationInput}
+                  value={cfgRationInterval}
+                  onChangeText={setCfgRationInterval}
+                  keyboardType="number-pad"
+                  placeholder="30"
+                  placeholderTextColor={Colors.textMuted}
+                />
+                <Text style={styles.settingHint}>How often players must submit a ration card</Text>
+                <ConfigToggle
+                  label="Unique ration cards"
+                  hint="Flag a card number that's been used before so you can reject it"
+                  value={cfgUniqueCards}
+                  onValueChange={setCfgUniqueCards}
+                />
+              </>
+            )}
 
             <View style={styles.modalActions}>
               <Button title="Cancel" onPress={() => setShowConfig(false)} variant="ghost" fullWidth={false} style={{ flex: 1 }} />
@@ -760,6 +807,11 @@ const styles = StyleSheet.create({
   phasePillText: { fontSize: 10, fontWeight: '800', color: Colors.primary, letterSpacing: 1 },
   headerActions: { flexDirection: 'row', gap: 8 },
   headerBtn: { padding: 4 },
+  headerBadge: {
+    position: 'absolute', top: -2, right: -4, backgroundColor: Colors.danger,
+    borderRadius: 8, minWidth: 16, height: 16, alignItems: 'center', justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
   statsBar: {
     flexDirection: 'row',
     backgroundColor: Colors.surface,

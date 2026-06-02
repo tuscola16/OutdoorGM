@@ -52,6 +52,9 @@ results`):
   (click the map), write rules.
 - **lobby** — share the player code, watch players join, start the game.
 - **play** — live map of all players + checkpoints, alerts feed, elapsed timer, end game.
+- **Ration review** — open from the Play sidebar: players' meal/ration-card photos
+  (thumbnail + lightbox), accept/reject each, a "who hasn't eaten this window" glance, and
+  a reused-card flag. GM-only review; players capture photos on the mobile app.
 - **results** — per-player times.
 - **Players** — promote/demote co-GMs, remove members.
 - Create a game, or join an existing one with its **GM code**.
