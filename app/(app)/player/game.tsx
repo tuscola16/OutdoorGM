@@ -140,12 +140,13 @@ export default function PlayerGameScreen() {
     let started = false;
     startLocationTracking(gameId, displayName, { batterySaver })
       .then(() => { setTracking(true); started = true; })
-      .catch((err: Error) => {
-        if (err.message.startsWith('PERMISSION_DENIED:')) {
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.startsWith('PERMISSION_DENIED:')) {
           setPermissionDenied(true);
-          setError(err.message.replace('PERMISSION_DENIED:', ''));
+          setError(msg.replace('PERMISSION_DENIED:', ''));
         } else {
-          setError(err.message);
+          setError(msg || 'Could not start location tracking.');
         }
       });
     return () => { if (started) stopLocationTracking().catch(console.error); };

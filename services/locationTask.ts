@@ -53,6 +53,17 @@ export interface TrackingOptions {
   batterySaver?: boolean;
 }
 
+/** Reject if `p` hasn't settled within `ms` — so a wedged native call (e.g. a
+ * foreground service that won't start on Android 14) can't hang tracking forever. */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    ),
+  ]);
+}
+
 export async function startLocationTracking(
   gameId: string,
   displayName: string,
@@ -86,26 +97,50 @@ export async function startLocationTracking(
     bgGranted = false;
   }
 
+  // Try the background task when "Always" is granted (it also fires while
+  // foregrounded). If it can't start — e.g. the Android 14 location foreground
+  // service is unavailable or wedged — don't leave the player invisible: fall back
+  // to a foreground watcher, which needs no foreground-service permission and
+  // uploads while the app is open (when the GM is most likely watching live).
+  let backgroundActive = false;
   if (bgGranted) {
-    // Stop any foreground watcher from a previous "While Using" session.
-    if (foregroundSub) { foregroundSub.remove(); foregroundSub = null; }
-    const isRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME).catch(() => false);
-    if (!isRunning) {
-      await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
-        accuracy,
-        timeInterval,             // 5s normally, 15s in battery saver
-        distanceInterval,         // 10m normally, 30m in battery saver
-        foregroundService: {
-          notificationTitle: 'Outdoor GM',
-          notificationBody: 'Your location is being shared with your Game Master.',
-          notificationColor: '#D4893F',
-        },
-        showsBackgroundLocationIndicator: true,
-        pausesUpdatesAutomatically: false,
-      });
+    try {
+      // Stop any foreground watcher from a previous "While Using" session.
+      if (foregroundSub) { foregroundSub.remove(); foregroundSub = null; }
+      const isRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME).catch(() => false);
+      if (!isRunning) {
+        await withTimeout(
+          Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
+            accuracy,
+            timeInterval,             // 5s normally, 15s in battery saver
+            distanceInterval,         // 10m normally, 30m in battery saver
+            foregroundService: {
+              notificationTitle: 'Outdoor GM',
+              notificationBody: 'Your location is being shared with your Game Master.',
+              notificationColor: '#D4893F',
+            },
+            showsBackgroundLocationIndicator: true,
+            pausesUpdatesAutomatically: false,
+          }),
+          10000,
+          'startLocationUpdatesAsync'
+        );
+      }
+      backgroundActive = true;
+    } catch (err) {
+      console.error('[Location] background updates unavailable, falling back to foreground watcher:', err);
+      // Tear down any half-started background task so we don't run two sources.
+      try {
+        if (await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME).catch(() => false)) {
+          await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
+        }
+      } catch { /* best effort */ }
     }
-  } else {
-    // Foreground-only fallback (works with "While Using"). Restart it so it
+  }
+
+  if (!backgroundActive) {
+    // Foreground watcher — used when only "While Using" is granted, or as a
+    // fallback when the background service couldn't start. Restart it so it
     // captures the current gameId/displayName.
     if (foregroundSub) { foregroundSub.remove(); foregroundSub = null; }
     foregroundSub = await Location.watchPositionAsync(
