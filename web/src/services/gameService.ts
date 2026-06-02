@@ -14,7 +14,16 @@ import {
 } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { db, functions, Collections } from './firebase';
-import type { Game, Checkpoint, GamePhase, GameStatus, MapBoundary } from '@shared/types';
+import {
+  BASE_GAME_CONFIG,
+  type Game,
+  type GameConfig,
+  type Checkpoint,
+  type GamePhase,
+  type GameStatus,
+  type MapBoundary,
+  type EliminationCause,
+} from '@shared/types';
 
 /** Resolve a game's phase, defaulting legacy games (created before the `phase`
  * field existed) to `play` while active and `results` once ended. Ported from
@@ -23,6 +32,11 @@ export function gamePhase(game: { phase?: GamePhase; status?: GameStatus } | nul
   if (!game) return 'setup';
   if (game.phase) return game.phase;
   return game.status === 'ended' ? 'results' : 'play';
+}
+
+/** Resolve a game's full config by layering its overrides over the base rules. */
+export function gameConfig(game: { config?: Partial<GameConfig> } | null | undefined): GameConfig {
+  return { ...BASE_GAME_CONFIG, ...(game?.config ?? {}) };
 }
 
 /**
@@ -80,19 +94,52 @@ export async function endGame(gameId: string): Promise<void> {
   });
 }
 
-/** Update the play-area boundary and/or rules text during setup. */
+/** Update the play-area boundary, rules text, and/or per-GM config during setup. */
 export async function updateGameConfig(
   gameId: string,
-  config: { boundary?: MapBoundary; rules?: string }
+  updates: { boundary?: MapBoundary; rules?: string; config?: Partial<GameConfig> }
 ): Promise<void> {
-  await updateDoc(doc(db, Collections.GAMES, gameId), config);
+  await updateDoc(doc(db, Collections.GAMES, gameId), updates);
 }
 
-/** Mark a player as out of the game. */
-export async function markPlayerOut(gameId: string, userId: string): Promise<void> {
+/** Eliminate a player (sets out/outAt + cause). The death broadcast + winner
+ * detection run server-side in onMemberWrite, so they fire regardless of who
+ * eliminated whom. Mirrors the mobile app's gameService.eliminatePlayer. */
+export async function eliminatePlayer(
+  gameId: string,
+  userId: string,
+  cause: EliminationCause = 'gm-other'
+): Promise<void> {
   await updateDoc(doc(db, Collections.GAMES, gameId, Collections.MEMBERS, userId), {
     out: true,
     outAt: serverTimestamp(),
+    cause,
+  });
+}
+
+/** Back-compat alias. */
+export async function markPlayerOut(gameId: string, userId: string): Promise<void> {
+  await eliminatePlayer(gameId, userId, 'self');
+}
+
+/** GM clears a resolved safety alert (Rules 22, 27, 28). */
+export async function clearSos(gameId: string, userId: string): Promise<void> {
+  await updateDoc(doc(db, Collections.GAMES, gameId, Collections.MEMBERS, userId), { sos: false });
+}
+
+/** GM sends a one-way message to players. Omit `targetPlayerId` to broadcast to
+ * everyone, or set it to target a single player (Rule 32). Players have no write
+ * access to this collection (Rule 23: no player↔player comms). */
+export async function sendBroadcast(
+  gameId: string,
+  message: string,
+  targetPlayerId?: string
+): Promise<void> {
+  await addDoc(collection(db, Collections.GAMES, gameId, Collections.BROADCASTS), {
+    kind: 'gm-message',
+    message,
+    targetPlayerId: targetPlayerId ?? null,
+    createdAt: serverTimestamp(),
   });
 }
 

@@ -2,17 +2,20 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useGame } from '@/context/GameContext';
 import { useAuth } from '@/context/AuthContext';
-import { GameMap } from '@/components/GameMap';
+import { GameMap, type DeathMarker } from '@/components/GameMap';
 import { AlertFeed } from '@/components/AlertFeed';
 import { Modal } from '@/components/Modal';
-import { useElapsed, formatDuration } from '@/hooks/useElapsed';
+import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
+import { useNow } from '@/hooks/useNow';
 import { friendlyError } from '@/services/errorUtils';
+import { stalenessLevel, stalenessColor, formatAgo, STALE_MS } from '@/services/locationStatus';
 import {
-  openLobby, reopenSetup, startGame, endGame, updateGameConfig,
+  openLobby, reopenSetup, startGame, endGame, updateGameConfig, gameConfig,
   addCheckpoint, updateCheckpoint, deleteCheckpoint,
-  updateMemberRole, removePlayer, deleteGame, setGameArchived,
+  updateMemberRole, removePlayer, eliminatePlayer, clearSos, sendBroadcast,
+  deleteGame, setGameArchived,
 } from '@/services/gameService';
-import type { Checkpoint, GameMember, MapBoundary } from '@shared/types';
+import type { Checkpoint, GameMember, MapBoundary, PlayerLocation } from '@shared/types';
 
 const PHASE_LABEL: Record<string, string> = {
   setup: 'SETUP', lobby: 'LOBBY', play: 'IN PLAY', results: 'RESULTS',
@@ -26,7 +29,11 @@ export function GameScreen() {
   const [busy, setBusy] = useState(false);
   const [showCodes, setShowCodes] = useState(false);
   const [showPlayers, setShowPlayers] = useState(false);
+  const [showBroadcast, setShowBroadcast] = useState(false);
+  const [showConfig, setShowConfig] = useState(false);
   const elapsed = useElapsed(game?.startedAt, game?.endedAt);
+  const remaining = useRemaining(game?.startedAt, gameConfig(game).durationMinutes, game?.endedAt);
+  const now = useNow(10000);
 
   useEffect(() => {
     if (gameId) loadGame(gameId, 'gm');
@@ -66,6 +73,32 @@ export function GameScreen() {
 
   const players = members.filter((m) => m.role === 'player');
 
+  // Stale-fix tracking: Outdoor GM is the only tracker now (replaces Pingo), so a
+  // silent drop-off must be visible. userId → last fix (ms).
+  const lastFixByUser = new Map<string, number>();
+  for (const loc of playerLocations) {
+    const ms = loc.updatedAt?.toMillis?.();
+    if (ms) lastFixByUser.set(loc.userId, ms);
+  }
+  const notReporting = players.filter((p) => {
+    if (p.out) return false;
+    const ms = lastFixByUser.get(p.userId);
+    return ms == null || now - ms >= STALE_MS;
+  }).length;
+  const aliveCount = players.filter((p) => !p.out).length;
+  const deathMarkers: DeathMarker[] = members
+    .filter((m) => m.out && m.deathLocation)
+    .map((m) => ({
+      userId: m.userId,
+      displayName: m.displayName,
+      latitude: m.deathLocation!.latitude,
+      longitude: m.deathLocation!.longitude,
+    }));
+
+  async function broadcast(message: string, targetPlayerId?: string) {
+    await run(() => sendBroadcast(gameId!, message, targetPlayerId));
+  }
+
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <header
@@ -103,6 +136,7 @@ export function GameScreen() {
         {phase === 'setup' && (
           <SetupView gameId={gameId!} busy={busy} run={run}
             onOpenLobby={() => run(() => openLobby(gameId!))}
+            onEditSettings={() => setShowConfig(true)}
             onDelete={confirmDelete} />
         )}
         {phase === 'lobby' && (
@@ -117,14 +151,21 @@ export function GameScreen() {
         )}
         {phase === 'play' && (
           <PlayView
-            elapsed={elapsed}
+            remaining={remaining}
+            aliveCount={aliveCount}
             activeCount={playerLocations.length}
             arrivalsCount={arrivals.length}
+            notReporting={notReporting}
+            sosPlayers={players.filter((p) => p.sos)}
             checkpoints={checkpoints}
             playerLocations={playerLocations}
+            deathMarkers={deathMarkers}
             boundary={game?.boundary}
             arrivals={arrivals}
             busy={busy}
+            onBroadcast={() => setShowBroadcast(true)}
+            onClearSos={(userId) => run(() => clearSos(gameId!, userId))}
+            onOpenPlayers={() => setShowPlayers(true)}
             onEnd={() => {
               if (window.confirm('End the game? This stops play for everyone and shows results.')) {
                 run(() => endGame(gameId!));
@@ -153,7 +194,24 @@ export function GameScreen() {
         />
       )}
       {showPlayers && (
-        <PlayersModal gameId={gameId!} members={members} onClose={() => setShowPlayers(false)} />
+        <PlayersModal
+          gameId={gameId!}
+          members={members}
+          lastFixByUser={lastFixByUser}
+          now={now}
+          phase={phase}
+          onClose={() => setShowPlayers(false)}
+        />
+      )}
+      {showBroadcast && (
+        <BroadcastModal
+          aliveCount={aliveCount}
+          onSend={async (msg) => { await broadcast(msg); }}
+          onClose={() => setShowBroadcast(false)}
+        />
+      )}
+      {showConfig && (
+        <ConfigModal gameId={gameId!} initial={gameConfig(game)} onClose={() => setShowConfig(false)} />
       )}
     </div>
   );
@@ -162,12 +220,13 @@ export function GameScreen() {
 // --- Setup ---
 
 function SetupView({
-  gameId, busy, run, onOpenLobby, onDelete,
+  gameId, busy, run, onOpenLobby, onEditSettings, onDelete,
 }: {
   gameId: string;
   busy: boolean;
   run: (fn: () => Promise<void>) => Promise<void>;
   onOpenLobby: () => void;
+  onEditSettings: () => void;
   onDelete: () => void;
 }) {
   const { game, checkpoints } = useGame();
@@ -249,6 +308,14 @@ function SetupView({
             {game?.rules?.trim() ? 'Rules written ✓' : 'None yet — optional'}
           </span>
           <button className="btn btn--ghost" onClick={() => setShowRules(true)}>Edit rules</button>
+        </div>
+
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <strong>Game settings</strong>
+          <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+            {(gameConfig(game).durationMinutes / 60).toFixed(1).replace(/\.0$/, '')}h game · duration, winner, battery saver
+          </span>
+          <button className="btn btn--ghost" onClick={onEditSettings}>Edit settings</button>
         </div>
 
         <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -407,32 +474,66 @@ function LobbyView({
 // --- Play ---
 
 function PlayView({
-  elapsed, activeCount, arrivalsCount, checkpoints, playerLocations, boundary, arrivals, busy, onEnd,
+  remaining, aliveCount, activeCount, arrivalsCount, notReporting, sosPlayers,
+  checkpoints, playerLocations, deathMarkers, boundary, arrivals, busy,
+  onBroadcast, onClearSos, onOpenPlayers, onEnd,
 }: {
-  elapsed: number | null;
+  remaining: number | null;
+  aliveCount: number;
   activeCount: number;
   arrivalsCount: number;
+  notReporting: number;
+  sosPlayers: GameMember[];
   checkpoints: Checkpoint[];
-  playerLocations: any[];
+  playerLocations: PlayerLocation[];
+  deathMarkers: DeathMarker[];
   boundary?: MapBoundary | null;
   arrivals: any[];
   busy: boolean;
+  onBroadcast: () => void;
+  onClearSos: (userId: string) => void;
+  onOpenPlayers: () => void;
   onEnd: () => void;
 }) {
   return (
     <div style={{ height: '100%', display: 'flex' }}>
       <div style={{ flex: 1 }}>
-        <GameMap checkpoints={checkpoints} playerLocations={playerLocations} boundary={boundary} />
+        <GameMap checkpoints={checkpoints} playerLocations={playerLocations} deathMarkers={deathMarkers} boundary={boundary} />
       </div>
       <aside style={{
         width: 340, borderLeft: '1px solid var(--border)', padding: 20,
         display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto',
       }}>
         <div style={{ display: 'flex', gap: 12 }}>
-          <Stat label="Elapsed" value={elapsed != null ? formatDuration(elapsed) : '0:00'} />
+          <Stat label="Remaining" value={remaining != null ? formatDuration(remaining) : '—'} danger={remaining === 0} />
+          <Stat label="Alive" value={String(aliveCount)} />
           <Stat label="Active" value={String(activeCount)} />
           <Stat label="Arrivals" value={String(arrivalsCount)} />
         </div>
+
+        {/* Safety alerts — most urgent, surfaced first. */}
+        {sosPlayers.map((p) => (
+          <div key={p.userId} className="card" style={{ borderColor: 'var(--danger)', background: 'rgba(232,64,42,0.1)', display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 18 }}>🆘</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 700, color: 'var(--danger)' }}>{p.displayName} needs assistance</div>
+            </div>
+            <button className="btn btn--ghost" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => onClearSos(p.userId)}>Clear</button>
+          </div>
+        ))}
+
+        {notReporting > 0 && (
+          <button
+            className="card"
+            onClick={onOpenPlayers}
+            style={{ textAlign: 'left', cursor: 'pointer', borderColor: 'var(--danger)', background: 'rgba(232,64,42,0.08)', color: 'var(--danger)', fontWeight: 600 }}
+          >
+            ⚠ {notReporting} player{notReporting === 1 ? '' : 's'} not reporting — tap to check
+          </button>
+        )}
+
+        <button className="btn" onClick={onBroadcast} disabled={busy}>📢 Broadcast to players</button>
+
         <h3 style={{ margin: '4px 0 0' }}>Alerts</h3>
         <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
           <AlertFeed arrivals={arrivals} />
@@ -443,10 +544,10 @@ function PlayView({
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value, danger }: { label: string; value: string; danger?: boolean }) {
   return (
     <div className="card" style={{ flex: 1, textAlign: 'center', padding: 12 }}>
-      <div style={{ fontSize: 20, fontWeight: 800 }}>{value}</div>
+      <div style={{ fontSize: 20, fontWeight: 800, color: danger ? 'var(--danger)' : undefined }}>{value}</div>
       <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>{label}</div>
     </div>
   );
@@ -550,7 +651,16 @@ function CopyableCode({ code, big }: { code: string; big?: boolean }) {
   );
 }
 
-function PlayersModal({ gameId, members, onClose }: { gameId: string; members: GameMember[]; onClose: () => void }) {
+function PlayersModal({
+  gameId, members, lastFixByUser, now, phase, onClose,
+}: {
+  gameId: string;
+  members: GameMember[];
+  lastFixByUser: Map<string, number>;
+  now: number;
+  phase: string;
+  onClose: () => void;
+}) {
   async function toggleRole(m: GameMember) {
     const newRole = m.role === 'player' ? 'gm' : 'player';
     const label = newRole === 'gm' ? 'Promote to GM' : 'Demote to Player';
@@ -563,37 +673,172 @@ function PlayersModal({ gameId, members, onClose }: { gameId: string; members: G
     try { await removePlayer(gameId, m.userId); }
     catch (err) { window.alert(friendlyError(err)); }
   }
+  async function eliminate(m: GameMember) {
+    if (!window.confirm(`Eliminate ${m.displayName}? Everyone is notified, and if they're the last one standing the survivor wins.`)) return;
+    try { await eliminatePlayer(gameId, m.userId, 'gm-other'); }
+    catch (err) { window.alert(friendlyError(err)); }
+  }
+  async function dismissSos(m: GameMember) {
+    try { await clearSos(gameId, m.userId); }
+    catch (err) { window.alert(friendlyError(err)); }
+  }
   const gms = members.filter((m) => m.role === 'gm');
   const players = members.filter((m) => m.role === 'player');
+  const alive = players.filter((m) => !m.out).length;
   return (
     <Modal title={`Players (${members.length})`} onClose={onClose}>
       <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-        {gms.length} GM{gms.length !== 1 ? 's' : ''} · {players.length} player{players.length !== 1 ? 's' : ''}
+        {gms.length} GM{gms.length !== 1 ? 's' : ''} · {players.length} player{players.length !== 1 ? 's' : ''} · {alive} alive
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 380, overflowY: 'auto' }}>
         {members.length === 0 && <p style={{ color: 'var(--text-secondary)' }}>No members yet.</p>}
-        {[...gms, ...players].map((m) => (
-          <div key={m.userId} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px' }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 700 }}>{m.displayName}</div>
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{m.email}</div>
+        {[...gms, ...players].map((m) => {
+          const isGM = m.role === 'gm';
+          const isOut = !!m.out;
+          const showFix = !isGM && !isOut && phase === 'play';
+          const fixMs = lastFixByUser.get(m.userId) ?? null;
+          const level = showFix ? stalenessLevel(fixMs == null ? null : now - fixMs) : 'none';
+          return (
+            <div key={m.userId} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderColor: m.sos ? 'var(--danger)' : undefined, background: m.sos ? 'rgba(232,64,42,0.08)' : undefined }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, textDecoration: isOut ? 'line-through' : undefined, color: isOut ? 'var(--text-secondary)' : undefined }}>{m.displayName}</div>
+                {m.sos ? (
+                  <div style={{ fontSize: 12, color: 'var(--danger)', fontWeight: 600 }}>🆘 Needs assistance</div>
+                ) : showFix ? (
+                  <div style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, color: level === 'stale' ? 'var(--danger)' : 'var(--text-secondary)' }}>
+                    <span style={{ width: 8, height: 8, borderRadius: 4, background: stalenessColor(level), display: 'inline-block' }} />
+                    {fixMs == null ? 'No signal yet' : `Last fix ${formatAgo(now - fixMs)}`}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{m.email}</div>
+                )}
+              </div>
+              <span style={{
+                fontSize: 10, fontWeight: 800, letterSpacing: 0.5, padding: '3px 7px', borderRadius: 6,
+                background: isOut ? 'rgba(232,64,42,0.2)' : isGM ? 'rgba(90,126,78,0.2)' : 'rgba(212,137,63,0.15)',
+              }}>
+                {isOut ? 'DEAD' : isGM ? 'GM' : 'PLAYER'}
+              </span>
+              {m.sos && (
+                <button className="btn btn--ghost" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => dismissSos(m)}>Clear SOS</button>
+              )}
+              {!isGM && !isOut && (
+                <button className="btn btn--danger" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => eliminate(m)}>Eliminate</button>
+              )}
+              <button className="btn btn--ghost" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => toggleRole(m)}>
+                {isGM ? 'Demote' : 'Promote'}
+              </button>
+              <button className="btn btn--ghost" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => remove(m)}>
+                Remove
+              </button>
             </div>
-            <span style={{
-              fontSize: 10, fontWeight: 800, letterSpacing: 0.5, padding: '3px 7px', borderRadius: 6,
-              background: m.role === 'gm' ? 'rgba(90,126,78,0.2)' : 'rgba(212,137,63,0.15)',
-            }}>
-              {m.role === 'gm' ? 'GM' : 'PLAYER'}
-            </span>
-            <button className="btn btn--ghost" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => toggleRole(m)}>
-              {m.role === 'gm' ? 'Demote' : 'Promote'}
-            </button>
-            <button className="btn btn--danger" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => remove(m)}>
-              Remove
-            </button>
-          </div>
-        ))}
+          );
+        })}
       </div>
       <button className="btn btn--ghost btn--block" onClick={onClose}>Close</button>
     </Modal>
+  );
+}
+
+function BroadcastModal({
+  aliveCount, onSend, onClose,
+}: {
+  aliveCount: number;
+  onSend: (message: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  async function send(message: string) {
+    if (!message.trim()) return;
+    setBusy(true);
+    try { await onSend(message.trim()); onClose(); }
+    catch (err) { window.alert(friendlyError(err)); setBusy(false); }
+  }
+  return (
+    <Modal title="Broadcast to players" onClose={onClose}>
+      <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: 14 }}>
+        One-way message to every player (gear drops, updates, warnings). Players can't reply.
+      </p>
+      <textarea
+        className="input"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={4}
+        placeholder="e.g. Gear drop at the old oak — marked with your name."
+        style={{ resize: 'vertical' }}
+        autoFocus
+      />
+      <button
+        className="btn btn--ghost btn--block"
+        disabled={busy}
+        onClick={() => send(`${aliveCount} ${aliveCount === 1 ? 'tribute remains' : 'tributes remain'}.`)}
+      >
+        Send living-player count instead
+      </button>
+      <div style={{ display: 'flex', gap: 12 }}>
+        <button className="btn btn--ghost" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
+        <button className="btn" style={{ flex: 1 }} onClick={() => send(text)} disabled={busy}>Send</button>
+      </div>
+    </Modal>
+  );
+}
+
+function ConfigModal({
+  gameId, initial, onClose,
+}: {
+  gameId: string;
+  initial: ReturnType<typeof gameConfig>;
+  onClose: () => void;
+}) {
+  const [duration, setDuration] = useState(String(initial.durationMinutes));
+  const [playerCount, setPlayerCount] = useState(initial.playerCountBroadcast);
+  const [winner, setWinner] = useState(initial.winnerDetection);
+  const [battery, setBattery] = useState(initial.batterySaver);
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    const minutes = Math.max(5, Math.round(Number(duration) || initial.durationMinutes));
+    setBusy(true);
+    try {
+      await updateGameConfig(gameId, {
+        config: {
+          durationMinutes: minutes,
+          playerCountBroadcast: playerCount,
+          winnerDetection: winner,
+          batterySaver: battery,
+        },
+      });
+      onClose();
+    } catch (err) { window.alert(friendlyError(err)); setBusy(false); }
+  }
+
+  return (
+    <Modal title="Game settings" onClose={onClose}>
+      <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: 14 }}>
+        Tune the rules for this game. Defaults match the base game.
+      </p>
+      <div className="field">
+        <label>Game length (minutes)</label>
+        <input className="input" type="number" value={duration} onChange={(e) => setDuration(e.target.value)} />
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>210 = 3.5 hours</span>
+      </div>
+      <Toggle label="Auto player-count updates" checked={playerCount} onChange={setPlayerCount} />
+      <Toggle label="Declare a winner" checked={winner} onChange={setWinner} />
+      <Toggle label="Battery saver" checked={battery} onChange={setBattery} />
+      <div style={{ display: 'flex', gap: 12 }}>
+        <button className="btn btn--ghost" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
+        <button className="btn" style={{ flex: 1 }} onClick={save} disabled={busy}>Save</button>
+      </div>
+    </Modal>
+  );
+}
+
+function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '6px 0' }}>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <span>{label}</span>
+    </label>
   );
 }

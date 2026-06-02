@@ -4,9 +4,18 @@ import type { Checkpoint, PlayerLocation, MapBoundary } from '@shared/types';
 
 mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN ?? '';
 
+/** A spot where an eliminated player dropped their gear (Rules 19, 20). */
+export interface DeathMarker {
+  userId: string;
+  displayName: string;
+  latitude: number;
+  longitude: number;
+}
+
 interface GameMapProps {
   checkpoints: Checkpoint[];
   playerLocations: PlayerLocation[];
+  deathMarkers?: DeathMarker[];
   boundary?: MapBoundary | null;
   /** When true, clicking the map adds a checkpoint and a drag draws the boundary. */
   editMode?: boolean;
@@ -23,6 +32,7 @@ const COLORS = {
   primary: '#d4893f',
   secondary: '#5a7e4e',
   playerDot: '#4fc3f7',
+  danger: '#e8402a',
 };
 
 /** Build a GeoJSON polygon approximating a circle of `radiusM` meters. */
@@ -55,6 +65,7 @@ function emptyFc(): GeoJSON.FeatureCollection {
 export function GameMap({
   checkpoints,
   playerLocations,
+  deathMarkers = [],
   boundary,
   editMode = false,
   onMapClick,
@@ -66,6 +77,7 @@ export function GameMap({
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const readyRef = useRef(false);
   const playerMarkers = useRef<Record<string, mapboxgl.Marker>>({});
+  const deathMarkerEls = useRef<Record<string, mapboxgl.Marker>>({});
   const checkpointMarkers = useRef<mapboxgl.Marker[]>([]);
   const didFit = useRef(false);
   const fitToDataRef = useRef<() => boolean>(() => false);
@@ -200,6 +212,34 @@ export function GameMap({
 
     syncCheckpointMarkers();
     syncPlayerMarkers();
+    syncDeathMarkers();
+  }
+
+  function syncDeathMarkers() {
+    const map = mapRef.current;
+    if (!map) return;
+    const seen = new Set<string>();
+    for (const d of deathMarkers) {
+      seen.add(d.userId);
+      let marker = deathMarkerEls.current[d.userId];
+      if (!marker) {
+        const el = document.createElement('div');
+        el.style.cssText = `width:26px;height:26px;border-radius:50%;background:rgba(0,0,0,0.6);border:2px solid ${COLORS.danger};display:flex;align-items:center;justify-content:center;font-size:13px`;
+        el.textContent = '☠️';
+        marker = new mapboxgl.Marker({ element: el }).setLngLat([d.longitude, d.latitude]);
+        marker.setPopup(new mapboxgl.Popup({ offset: 18 }).setText(`${d.displayName} fell here — gear dropped`));
+        marker.addTo(map);
+        deathMarkerEls.current[d.userId] = marker;
+      } else {
+        marker.setLngLat([d.longitude, d.latitude]);
+      }
+    }
+    for (const id of Object.keys(deathMarkerEls.current)) {
+      if (!seen.has(id)) {
+        deathMarkerEls.current[id].remove();
+        delete deathMarkerEls.current[id];
+      }
+    }
   }
 
   function syncCheckpointMarkers() {
@@ -292,7 +332,7 @@ export function GameMap({
   useEffect(() => {
     syncSources();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checkpoints, playerLocations, boundary]);
+  }, [checkpoints, playerLocations, boundary, deathMarkers]);
 
   // Fit once when the first data arrives. Only mark the one-time fit as done if
   // it actually fit — if the data lands before the map's `load` event, fitToData
