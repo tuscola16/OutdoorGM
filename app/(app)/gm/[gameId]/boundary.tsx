@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, Alert, Modal, FlatList, ActivityIndicator,
+  View, Text, StyleSheet, TouchableOpacity, Alert, Modal, FlatList, ActivityIndicator, ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import MapView, { Marker, Circle, Polygon, UrlTile, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
+import firestore from '@react-native-firebase/firestore';
 import { useGame } from '@/context/GameContext';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -16,7 +17,7 @@ import {
   updateGameConfig, addCheckpoint, updateCheckpoint, deleteCheckpoint,
 } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
-import type { MapBoundary, Checkpoint } from '@/types';
+import type { MapBoundary, Checkpoint, CheckpointEvent, CheckpointKind, EventAudience } from '@/types';
 
 // Fractions of the screen the framing reticle insets from each edge. The saved
 // boundary is the area *inside* the reticle, so it matches what the GM frames.
@@ -25,6 +26,60 @@ const DEFAULT_RADIUS = 100;
 // Center-of-US fallback view, used only if we can't get the GM's location.
 const DEFAULT_REGION: Region = { latitude: 37.0902, longitude: -95.7129, latitudeDelta: 0.05, longitudeDelta: 0.05 };
 const USER_DELTA = 0.02;
+
+// Per-kind presentation: chip label/icon, map pin color, and a message placeholder.
+const KIND_META: Record<
+  CheckpointKind,
+  { label: string; icon: keyof typeof Ionicons.glyphMap; color: string; placeholder: string }
+> = {
+  hazard: {
+    label: 'Hazard', icon: 'warning', color: Colors.danger,
+    placeholder: 'e.g. A beast attacks! Defend or flee.',
+  },
+  boon: {
+    label: 'Boon', icon: 'sparkles', color: Colors.success,
+    placeholder: 'e.g. You found a hidden cache. Claim it.',
+  },
+  'player-notify': {
+    label: 'Notify', icon: 'megaphone', color: Colors.playerDot,
+    placeholder: 'e.g. The storm is closing in — head for high ground.',
+  },
+  'gm-only': {
+    label: 'GM only', icon: 'eye-off', color: Colors.textSecondary,
+    placeholder: '',
+  },
+};
+const KIND_ORDER: CheckpointKind[] = ['hazard', 'boon', 'player-notify', 'gm-only'];
+
+/** The kind that determines a checkpoint's map-pin color (single event, or first queued). */
+function checkpointKind(cp: Checkpoint): CheckpointKind {
+  return cp.event?.kind ?? cp.eventQueue?.[0]?.kind ?? 'gm-only';
+}
+
+/** #RRGGBB → rgba(...) with the given alpha, for translucent geofence circles. */
+function hexToRgba(hex: string, alpha: number): string {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/** Build a clean event with no undefined fields (Firestore rejects undefined). */
+function buildEvent(kind: CheckpointKind, message: string, audience: EventAudience): CheckpointEvent {
+  const e: CheckpointEvent = { kind };
+  if (kind !== 'gm-only' && message.trim()) e.message = message.trim();
+  if (kind === 'player-notify' && audience === 'all-players') e.audience = 'all-players';
+  return e;
+}
+
+/** "1st arriver", "2nd arriver", … for the arrival-order queue rows. */
+function ordinalLabel(i: number): string {
+  const n = i + 1;
+  const suffix =
+    n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] ?? 'th';
+  return `${n}${suffix} arriver`;
+}
 
 function regionToBoundary(r: Region): MapBoundary {
   const latSpan = r.latitudeDelta * (1 - RETICLE.vertical * 2);
@@ -44,6 +99,49 @@ function corners(b: MapBoundary) {
     { latitude: b.minLat, longitude: b.maxLng },
     { latitude: b.minLat, longitude: b.minLng },
   ];
+}
+
+/** Row of selectable kind chips (Hazard / Boon / Notify / GM only). */
+function KindChips({ value, onChange }: { value: CheckpointKind; onChange: (k: CheckpointKind) => void }) {
+  return (
+    <View style={styles.chips}>
+      {KIND_ORDER.map((k) => {
+        const meta = KIND_META[k];
+        const active = k === value;
+        return (
+          <TouchableOpacity
+            key={k}
+            onPress={() => onChange(k)}
+            style={[styles.chip, active && { borderColor: meta.color, backgroundColor: hexToRgba(meta.color, 0.15) }]}
+          >
+            <Ionicons name={meta.icon} size={14} color={active ? meta.color : Colors.textSecondary} />
+            <Text style={[styles.chipText, active && { color: meta.color }]}>{meta.label}</Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
+
+/** Crossing-player vs all-players toggle (player-notify only). */
+function AudienceToggle({ value, onChange }: { value: EventAudience; onChange: (a: EventAudience) => void }) {
+  const opts: { v: EventAudience; label: string }[] = [
+    { v: 'crossing-player', label: 'Crossing player' },
+    { v: 'all-players', label: 'All players' },
+  ];
+  return (
+    <View style={styles.segment}>
+      {opts.map((o) => (
+        <TouchableOpacity
+          key={o.v}
+          onPress={() => onChange(o.v)}
+          style={[styles.segBtn, value === o.v && styles.segBtnActive]}
+        >
+          <Text style={[styles.segText, value === o.v && styles.segTextActive]}>{o.label}</Text>
+        </TouchableOpacity>
+      ))}
+    </View>
+  );
 }
 
 export default function PlayAreaScreen() {
@@ -90,6 +188,13 @@ export default function PlayAreaScreen() {
   const [cpName, setCpName] = useState('');
   const [cpRadius, setCpRadius] = useState(String(DEFAULT_RADIUS));
   const [savingCp, setSavingCp] = useState(false);
+  // What the checkpoint does. Single mode edits cpKind/cpMessage/cpAudience; queue mode
+  // edits cpQueue (one event per arrival ordinal).
+  const [cpMode, setCpMode] = useState<'single' | 'queue'>('single');
+  const [cpKind, setCpKind] = useState<CheckpointKind>('gm-only');
+  const [cpMessage, setCpMessage] = useState('');
+  const [cpAudience, setCpAudience] = useState<EventAudience>('crossing-player');
+  const [cpQueue, setCpQueue] = useState<CheckpointEvent[]>([]);
 
   // Keep the shared game subscription alive (no clearGame on unmount — the GM
   // screen underneath relies on the same singleton context).
@@ -193,11 +298,20 @@ export default function PlayAreaScreen() {
     }
   }
 
+  function resetEventFields() {
+    setCpMode('single');
+    setCpKind('gm-only');
+    setCpMessage('');
+    setCpAudience('crossing-player');
+    setCpQueue([]);
+  }
+
   function openAddCheckpoint(coord: { latitude: number; longitude: number }) {
     setPendingCoord(coord);
     setEditTarget(null);
     setCpName(`Checkpoint ${checkpoints.length + 1}`);
     setCpRadius(String(DEFAULT_RADIUS));
+    resetEventFields();
     setShowCpModal(true);
   }
 
@@ -206,7 +320,32 @@ export default function PlayAreaScreen() {
     setPendingCoord({ latitude: cp.latitude, longitude: cp.longitude });
     setCpName(cp.name);
     setCpRadius(String(cp.radius));
+    if (cp.eventQueue && cp.eventQueue.length > 0) {
+      setCpMode('queue');
+      setCpQueue(cp.eventQueue);
+      setCpKind('gm-only');
+      setCpMessage('');
+      setCpAudience('crossing-player');
+    } else {
+      setCpMode('single');
+      const e = cp.event;
+      setCpKind(e?.kind ?? 'gm-only');
+      setCpMessage(e?.message ?? '');
+      setCpAudience(e?.audience ?? 'crossing-player');
+      setCpQueue([]);
+    }
     setShowCpModal(true);
+  }
+
+  // Arrival-order queue editing
+  function updateQueueItem(index: number, patch: Partial<CheckpointEvent>) {
+    setCpQueue((q) => q.map((e, i) => (i === index ? { ...e, ...patch } : e)));
+  }
+  function addQueueItem() {
+    setCpQueue((q) => [...q, { kind: 'hazard' }]);
+  }
+  function removeQueueItem(index: number) {
+    setCpQueue((q) => q.filter((_, i) => i !== index));
   }
 
   async function handleSaveCheckpoint() {
@@ -215,16 +354,39 @@ export default function PlayAreaScreen() {
     if (isNaN(radius) || radius < 10) { Alert.alert('Enter a valid radius (minimum 10m)'); return; }
     if (!pendingCoord || !gameId) return;
 
+    // Resolve what the checkpoint does into either a single `event` or an `eventQueue`.
+    let event: CheckpointEvent | undefined;
+    let eventQueue: CheckpointEvent[] | undefined;
+    if (cpMode === 'queue') {
+      const cleaned = cpQueue.map((e) =>
+        buildEvent(e.kind, e.message ?? '', e.audience ?? 'crossing-player')
+      );
+      if (cleaned.length === 0) {
+        Alert.alert('Add at least one step, or switch to “Same for everyone”.');
+        return;
+      }
+      eventQueue = cleaned;
+    } else {
+      event = buildEvent(cpKind, cpMessage, cpAudience);
+    }
+
     setSavingCp(true);
     try {
       if (editTarget) {
-        await updateCheckpoint(gameId, editTarget.id, { name: cpName.trim(), radius });
+        // Clear whichever payload field isn't in use so a checkpoint never carries both.
+        await updateCheckpoint(gameId, editTarget.id, {
+          name: cpName.trim(),
+          radius,
+          event: (eventQueue ? firestore.FieldValue.delete() : event) as never,
+          eventQueue: (eventQueue ?? firestore.FieldValue.delete()) as never,
+        });
       } else {
         await addCheckpoint(gameId, {
           name: cpName.trim(),
           latitude: pendingCoord.latitude,
           longitude: pendingCoord.longitude,
           radius,
+          ...(eventQueue ? { eventQueue } : { event }),
         });
       }
       setShowCpModal(false);
@@ -296,13 +458,17 @@ export default function PlayAreaScreen() {
                 </Text>
               ) : null
             }
-            renderItem={({ item }) => (
+            renderItem={({ item }) => {
+              const kind = checkpointKind(item);
+              const meta = KIND_META[kind];
+              const steps = item.eventQueue?.length ?? 0;
+              return (
               <View style={styles.checkpointRow}>
-                <Ionicons name="location" size={20} color={Colors.primary} style={{ marginRight: 10 }} />
+                <Ionicons name={meta.icon} size={20} color={meta.color} style={{ marginRight: 10 }} />
                 <View style={styles.cpInfo}>
                   <Text style={styles.cpName}>{item.name}</Text>
                   <Text style={styles.cpSub}>
-                    {item.latitude.toFixed(5)}, {item.longitude.toFixed(5)} · {item.radius}m radius
+                    {meta.label}{steps > 1 ? ` · ${steps} steps` : ''} · {item.radius}m radius
                   </Text>
                 </View>
                 <TouchableOpacity onPress={() => openEditCheckpoint(item)} style={styles.iconBtn}>
@@ -312,7 +478,8 @@ export default function PlayAreaScreen() {
                   <Ionicons name="trash-outline" size={18} color={Colors.danger} />
                 </TouchableOpacity>
               </View>
-            )}
+              );
+            }}
             ListEmptyComponent={
               <View style={styles.empty}>
                 <Ionicons name="location-outline" size={40} color={Colors.textMuted} />
@@ -376,23 +543,26 @@ export default function PlayAreaScreen() {
             />
           )}
 
-          {checkpoints.map((cp) => (
-            <Circle
-              key={`c-${cp.id}`}
-              center={{ latitude: cp.latitude, longitude: cp.longitude }}
-              radius={cp.radius}
-              fillColor="rgba(232, 64, 42, 0.15)"
-              strokeColor={Colors.primary}
-              strokeWidth={2}
-            />
-          ))}
+          {checkpoints.map((cp) => {
+            const color = KIND_META[checkpointKind(cp)].color;
+            return (
+              <Circle
+                key={`c-${cp.id}`}
+                center={{ latitude: cp.latitude, longitude: cp.longitude }}
+                radius={cp.radius}
+                fillColor={hexToRgba(color, 0.15)}
+                strokeColor={color}
+                strokeWidth={2}
+              />
+            );
+          })}
           {checkpoints.map((cp) => (
             <Marker
               key={`m-${cp.id}`}
               coordinate={{ latitude: cp.latitude, longitude: cp.longitude }}
               title={cp.name}
-              description={`Radius: ${cp.radius}m — tap to edit`}
-              pinColor={Colors.secondary}
+              description={`${KIND_META[checkpointKind(cp)].label} · ${cp.radius}m — tap to edit`}
+              pinColor={KIND_META[checkpointKind(cp)].color}
               onPress={() => openEditCheckpoint(cp)}
             />
           ))}
@@ -434,7 +604,8 @@ export default function PlayAreaScreen() {
       {/* Add / edit checkpoint modal */}
       <Modal visible={showCpModal} transparent animationType="slide" onRequestClose={() => setShowCpModal(false)}>
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
+          <View style={styles.modalSheet}>
+            <ScrollView contentContainerStyle={styles.modalContent} keyboardShouldPersistTaps="handled">
             <Text style={styles.modalTitle}>{editTarget ? 'Edit Checkpoint' : 'New Checkpoint'}</Text>
             {pendingCoord && (
               <Text style={styles.coords}>
@@ -446,7 +617,6 @@ export default function PlayAreaScreen() {
               value={cpName}
               onChangeText={setCpName}
               placeholder="e.g. Cornucopia"
-              autoFocus
             />
             <Input
               label="Detection Radius (meters)"
@@ -455,6 +625,80 @@ export default function PlayAreaScreen() {
               keyboardType="number-pad"
               placeholder="100"
             />
+
+            {/* What the checkpoint does when a player crosses it */}
+            <Text style={styles.sectionLabel}>What happens here?</Text>
+            <View style={styles.segment}>
+              <TouchableOpacity
+                onPress={() => setCpMode('single')}
+                style={[styles.segBtn, cpMode === 'single' && styles.segBtnActive]}
+              >
+                <Text style={[styles.segText, cpMode === 'single' && styles.segTextActive]}>Same for everyone</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => setCpMode('queue')}
+                style={[styles.segBtn, cpMode === 'queue' && styles.segBtnActive]}
+              >
+                <Text style={[styles.segText, cpMode === 'queue' && styles.segTextActive]}>By arrival order</Text>
+              </TouchableOpacity>
+            </View>
+
+            {cpMode === 'single' ? (
+              <>
+                <KindChips value={cpKind} onChange={setCpKind} />
+                {cpKind !== 'gm-only' && (
+                  <Input
+                    label="Message"
+                    value={cpMessage}
+                    onChangeText={setCpMessage}
+                    placeholder={KIND_META[cpKind].placeholder}
+                    multiline
+                    style={styles.messageInput}
+                  />
+                )}
+                {cpKind === 'player-notify' && <AudienceToggle value={cpAudience} onChange={setCpAudience} />}
+                {cpKind === 'gm-only' && (
+                  <Text style={styles.hintSmall}>Only you (the GM) are alerted. The player sees nothing.</Text>
+                )}
+              </>
+            ) : (
+              <>
+                <Text style={styles.hintSmall}>
+                  Each arriver, in order, triggers the next step. Once the steps run out, later arrivers just ping you.
+                </Text>
+                {cpQueue.map((e, i) => (
+                  <View key={i} style={styles.queueRow}>
+                    <View style={styles.queueRowHead}>
+                      <Text style={styles.queueLabel}>{ordinalLabel(i)}</Text>
+                      <TouchableOpacity onPress={() => removeQueueItem(i)} hitSlop={8}>
+                        <Ionicons name="close-circle" size={20} color={Colors.textMuted} />
+                      </TouchableOpacity>
+                    </View>
+                    <KindChips value={e.kind} onChange={(k) => updateQueueItem(i, { kind: k })} />
+                    {e.kind !== 'gm-only' && (
+                      <Input
+                        value={e.message ?? ''}
+                        onChangeText={(t) => updateQueueItem(i, { message: t })}
+                        placeholder={KIND_META[e.kind].placeholder}
+                        multiline
+                        style={styles.messageInput}
+                      />
+                    )}
+                    {e.kind === 'player-notify' && (
+                      <AudienceToggle
+                        value={e.audience ?? 'crossing-player'}
+                        onChange={(a) => updateQueueItem(i, { audience: a })}
+                      />
+                    )}
+                  </View>
+                ))}
+                <TouchableOpacity onPress={addQueueItem} style={styles.addStep}>
+                  <Ionicons name="add-circle-outline" size={18} color={Colors.primary} />
+                  <Text style={styles.addStepText}>Add step</Text>
+                </TouchableOpacity>
+              </>
+            )}
+
             <View style={styles.modalActions}>
               <Button title="Cancel" onPress={() => setShowCpModal(false)} variant="ghost" fullWidth={false} style={{ flex: 1 }} />
               <Button title={editTarget ? 'Save' : 'Add'} onPress={handleSaveCheckpoint} loading={savingCp} fullWidth={false} style={{ flex: 1 }} />
@@ -465,6 +709,7 @@ export default function PlayAreaScreen() {
                 <Text style={styles.deleteText}>Delete checkpoint</Text>
               </TouchableOpacity>
             )}
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -532,13 +777,45 @@ const styles = StyleSheet.create({
   hint: { color: Colors.textSecondary, fontSize: 13, lineHeight: 19, textAlign: 'center' },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
-  modalContent: {
+  modalSheet: {
     backgroundColor: Colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    padding: 24, paddingBottom: 40, gap: 12,
+    maxHeight: '88%',
   },
+  modalContent: { padding: 24, paddingBottom: 40, gap: 12 },
   modalTitle: { fontSize: 20, fontWeight: '800', color: Colors.text },
   coords: { fontSize: 12, color: Colors.textSecondary },
   modalActions: { flexDirection: 'row', gap: 12, marginTop: 4 },
   deleteRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingTop: 4 },
   deleteText: { color: Colors.danger, fontSize: 14, fontWeight: '600' },
+
+  // Checkpoint event editor
+  sectionLabel: {
+    color: Colors.textSecondary, fontSize: 13, fontWeight: '500',
+    textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 4,
+  },
+  segment: {
+    flexDirection: 'row', backgroundColor: Colors.surfaceElevated, borderRadius: 10,
+    borderWidth: 1, borderColor: Colors.border, overflow: 'hidden',
+  },
+  segBtn: { flex: 1, paddingVertical: 10, alignItems: 'center' },
+  segBtnActive: { backgroundColor: Colors.primary },
+  segText: { color: Colors.textSecondary, fontSize: 13, fontWeight: '600' },
+  segTextActive: { color: Colors.white },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  chip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingVertical: 8, paddingHorizontal: 12, borderRadius: 20,
+    borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.surfaceElevated,
+  },
+  chipText: { color: Colors.textSecondary, fontSize: 13, fontWeight: '600' },
+  messageInput: { minHeight: 70, paddingTop: 12, textAlignVertical: 'top' },
+  hintSmall: { color: Colors.textMuted, fontSize: 12, lineHeight: 17 },
+  queueRow: {
+    backgroundColor: Colors.surfaceElevated, borderRadius: 12, padding: 12, gap: 10,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  queueRowHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  queueLabel: { color: Colors.text, fontSize: 14, fontWeight: '700' },
+  addStep: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 6 },
+  addStepText: { color: Colors.primary, fontSize: 14, fontWeight: '600' },
 });

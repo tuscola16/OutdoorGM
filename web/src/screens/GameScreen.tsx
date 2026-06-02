@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useGame } from '@/context/GameContext';
 import { useAuth } from '@/context/AuthContext';
 import { GameMap, type DeathMarker } from '@/components/GameMap';
-import { AlertFeed } from '@/components/AlertFeed';
+import { NotificationFeed } from '@/components/NotificationFeed';
 import { Modal } from '@/components/Modal';
 import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
 import { useNow } from '@/hooks/useNow';
@@ -15,7 +15,11 @@ import {
   updateMemberRole, removePlayer, eliminatePlayer, clearSos, sendBroadcast,
   deleteGame, setGameArchived,
 } from '@/services/gameService';
-import type { Checkpoint, GameMember, MapBoundary, PlayerLocation } from '@shared/types';
+import { KIND_META, KIND_ORDER, checkpointKind, buildEvent } from '@/services/checkpointKinds';
+import { deleteField } from 'firebase/firestore';
+import type {
+  Arrival, Checkpoint, CheckpointEvent, CheckpointKind, EventAudience, GameMember, MapBoundary, PlayerLocation,
+} from '@shared/types';
 
 const PHASE_LABEL: Record<string, string> = {
   setup: 'SETUP', lobby: 'LOBBY', play: 'IN PLAY', results: 'RESULTS',
@@ -162,6 +166,7 @@ export function GameScreen() {
             deathMarkers={deathMarkers}
             boundary={game?.boundary}
             arrivals={arrivals}
+            members={players}
             busy={busy}
             onBroadcast={() => setShowBroadcast(true)}
             onClearSos={(userId) => run(() => clearSos(gameId!, userId))}
@@ -289,17 +294,26 @@ function SetupView({
           <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
             Click anywhere on the map to add one.
           </span>
-          {checkpoints.map((cp) => (
-            <button
-              key={cp.id}
-              className="btn btn--ghost"
-              style={{ justifyContent: 'space-between', padding: '8px 12px' }}
-              onClick={() => setCpModal({ coord: { latitude: cp.latitude, longitude: cp.longitude }, edit: cp })}
-            >
-              <span>{cp.name}</span>
-              <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{cp.radius}m</span>
-            </button>
-          ))}
+          {checkpoints.map((cp) => {
+            const meta = KIND_META[checkpointKind(cp)];
+            const steps = cp.eventQueue?.length ?? 0;
+            return (
+              <button
+                key={cp.id}
+                className="btn btn--ghost"
+                style={{ justifyContent: 'space-between', padding: '8px 12px' }}
+                onClick={() => setCpModal({ coord: { latitude: cp.latitude, longitude: cp.longitude }, edit: cp })}
+              >
+                <span>
+                  <span style={{ color: meta.color, marginRight: 6 }}>{meta.emoji}</span>
+                  {cp.name}
+                </span>
+                <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                  {meta.label}{steps > 1 ? ` · ${steps} steps` : ''} · {cp.radius}m
+                </span>
+              </button>
+            );
+          })}
         </div>
 
         <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -349,6 +363,57 @@ function SetupView({
   );
 }
 
+/** Row of selectable kind chips (Hazard / Boon / Notify / GM only). */
+function KindChips({ value, onChange }: { value: CheckpointKind; onChange: (k: CheckpointKind) => void }) {
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+      {KIND_ORDER.map((k) => {
+        const meta = KIND_META[k];
+        const active = k === value;
+        return (
+          <button
+            key={k}
+            type="button"
+            onClick={() => onChange(k)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 20,
+              cursor: 'pointer', fontSize: 13, fontWeight: 600,
+              border: `1px solid ${active ? meta.color : 'var(--border)'}`,
+              background: active ? `${meta.color}26` : 'transparent',
+              color: active ? meta.color : 'var(--text-secondary)',
+            }}
+          >
+            <span>{meta.emoji}</span>{meta.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Crossing-player vs all-players toggle (player-notify only). */
+function AudienceToggle({ value, onChange }: { value: EventAudience; onChange: (a: EventAudience) => void }) {
+  const opts: { v: EventAudience; label: string }[] = [
+    { v: 'crossing-player', label: 'Crossing player' },
+    { v: 'all-players', label: 'All players' },
+  ];
+  return (
+    <div style={{ display: 'flex', gap: 8 }}>
+      {opts.map((o) => (
+        <button
+          key={o.v}
+          type="button"
+          className={value === o.v ? 'btn' : 'btn btn--ghost'}
+          style={{ flex: 1, padding: '8px 12px' }}
+          onClick={() => onChange(o.v)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function CheckpointModal({
   gameId, coord, edit, existingCount, onClose,
 }: {
@@ -362,14 +427,53 @@ function CheckpointModal({
   const [radius, setRadius] = useState(String(edit?.radius ?? 100));
   const [busy, setBusy] = useState(false);
 
+  // What the checkpoint does. Single mode edits kind/message/audience; queue mode edits
+  // an ordered list (one event per arrival ordinal).
+  const hasQueue = (edit?.eventQueue?.length ?? 0) > 0;
+  const [mode, setMode] = useState<'single' | 'queue'>(hasQueue ? 'queue' : 'single');
+  const [kind, setKind] = useState<CheckpointKind>(edit?.event?.kind ?? 'gm-only');
+  const [message, setMessage] = useState(edit?.event?.message ?? '');
+  const [audience, setAudience] = useState<EventAudience>(edit?.event?.audience ?? 'crossing-player');
+  const [queue, setQueue] = useState<CheckpointEvent[]>(edit?.eventQueue ?? []);
+
+  const updateQueueItem = (i: number, patch: Partial<CheckpointEvent>) =>
+    setQueue((q) => q.map((e, idx) => (idx === i ? { ...e, ...patch } : e)));
+  const addQueueItem = () => setQueue((q) => [...q, { kind: 'hazard' }]);
+  const removeQueueItem = (i: number) => setQueue((q) => q.filter((_, idx) => idx !== i));
+
   async function save() {
     if (!name.trim()) { window.alert('Enter a checkpoint name'); return; }
     const r = parseInt(radius, 10);
     if (isNaN(r) || r < 10) { window.alert('Enter a valid radius (minimum 10m)'); return; }
+
+    let event: CheckpointEvent | undefined;
+    let eventQueue: CheckpointEvent[] | undefined;
+    if (mode === 'queue') {
+      if (queue.length === 0) {
+        window.alert('Add at least one step, or switch to “Same for everyone”.');
+        return;
+      }
+      eventQueue = queue.map((e) => buildEvent(e.kind, e.message ?? '', e.audience ?? 'crossing-player'));
+    } else {
+      event = buildEvent(kind, message, audience);
+    }
+
     setBusy(true);
     try {
-      if (edit) await updateCheckpoint(gameId, edit.id, { name: name.trim(), radius: r });
-      else await addCheckpoint(gameId, { name: name.trim(), latitude: coord.latitude, longitude: coord.longitude, radius: r });
+      if (edit) {
+        // Clear whichever payload field isn't in use so a checkpoint never carries both.
+        await updateCheckpoint(gameId, edit.id, {
+          name: name.trim(),
+          radius: r,
+          event: (eventQueue ? deleteField() : event) as never,
+          eventQueue: (eventQueue ?? deleteField()) as never,
+        });
+      } else {
+        await addCheckpoint(gameId, {
+          name: name.trim(), latitude: coord.latitude, longitude: coord.longitude, radius: r,
+          ...(eventQueue ? { eventQueue } : { event }),
+        });
+      }
       onClose();
     } catch (err) { window.alert(friendlyError(err)); setBusy(false); }
   }
@@ -381,6 +485,8 @@ function CheckpointModal({
     try { await deleteCheckpoint(gameId, edit.id); onClose(); }
     catch (err) { window.alert(friendlyError(err)); setBusy(false); }
   }
+
+  const labelStyle = { fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: 0.5 } as const;
 
   return (
     <Modal title={edit ? 'Edit Checkpoint' : 'New Checkpoint'} onClose={onClose}>
@@ -395,6 +501,92 @@ function CheckpointModal({
         <label>Detection Radius (meters)</label>
         <input className="input" type="number" value={radius} onChange={(e) => setRadius(e.target.value)} />
       </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <span style={labelStyle}>What happens here?</span>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            type="button"
+            className={mode === 'single' ? 'btn' : 'btn btn--ghost'}
+            style={{ flex: 1, padding: '8px 12px' }}
+            onClick={() => setMode('single')}
+          >
+            Same for everyone
+          </button>
+          <button
+            type="button"
+            className={mode === 'queue' ? 'btn' : 'btn btn--ghost'}
+            style={{ flex: 1, padding: '8px 12px' }}
+            onClick={() => setMode('queue')}
+          >
+            By arrival order
+          </button>
+        </div>
+
+        {mode === 'single' ? (
+          <>
+            <KindChips value={kind} onChange={setKind} />
+            {kind !== 'gm-only' && (
+              <textarea
+                className="input"
+                rows={2}
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                placeholder={KIND_META[kind].placeholder}
+                style={{ resize: 'vertical' }}
+              />
+            )}
+            {kind === 'player-notify' && <AudienceToggle value={audience} onChange={setAudience} />}
+            {kind === 'gm-only' && (
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                Only you (the GM) are alerted. The player sees nothing.
+              </span>
+            )}
+          </>
+        ) : (
+          <>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              Each arriver, in order, triggers the next step. Once the steps run out, later arrivers just ping you.
+            </span>
+            {queue.map((e, i) => (
+              <div
+                key={i}
+                style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 12, borderRadius: 10, border: '1px solid var(--border)' }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <strong style={{ fontSize: 13 }}>{ordinalLabel(i)}</strong>
+                  <button
+                    type="button"
+                    onClick={() => removeQueueItem(i)}
+                    style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 18 }}
+                  >
+                    ✕
+                  </button>
+                </div>
+                <KindChips value={e.kind} onChange={(k) => updateQueueItem(i, { kind: k })} />
+                {e.kind !== 'gm-only' && (
+                  <textarea
+                    className="input"
+                    rows={2}
+                    value={e.message ?? ''}
+                    onChange={(ev) => updateQueueItem(i, { message: ev.target.value })}
+                    placeholder={KIND_META[e.kind].placeholder}
+                    style={{ resize: 'vertical' }}
+                  />
+                )}
+                {e.kind === 'player-notify' && (
+                  <AudienceToggle
+                    value={e.audience ?? 'crossing-player'}
+                    onChange={(a) => updateQueueItem(i, { audience: a })}
+                  />
+                )}
+              </div>
+            ))}
+            <button type="button" className="btn btn--ghost" onClick={addQueueItem}>+ Add step</button>
+          </>
+        )}
+      </div>
+
       <div style={{ display: 'flex', gap: 12 }}>
         <button className="btn btn--ghost" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
         <button className="btn" style={{ flex: 1 }} onClick={save} disabled={busy}>{edit ? 'Save' : 'Add'}</button>
@@ -404,6 +596,13 @@ function CheckpointModal({
       )}
     </Modal>
   );
+}
+
+/** "1st arriver", "2nd arriver", … for the arrival-order queue rows. */
+function ordinalLabel(i: number): string {
+  const n = i + 1;
+  const suffix = n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] ?? 'th';
+  return `${n}${suffix} arriver`;
 }
 
 function RulesModal({ gameId, initial, onClose }: { gameId: string; initial: string; onClose: () => void }) {
@@ -475,7 +674,7 @@ function LobbyView({
 
 function PlayView({
   remaining, aliveCount, activeCount, arrivalsCount, notReporting, sosPlayers,
-  checkpoints, playerLocations, deathMarkers, boundary, arrivals, busy,
+  checkpoints, playerLocations, deathMarkers, boundary, arrivals, members, busy,
   onBroadcast, onClearSos, onOpenPlayers, onEnd,
 }: {
   remaining: number | null;
@@ -488,7 +687,8 @@ function PlayView({
   playerLocations: PlayerLocation[];
   deathMarkers: DeathMarker[];
   boundary?: MapBoundary | null;
-  arrivals: any[];
+  arrivals: Arrival[];
+  members: GameMember[];
   busy: boolean;
   onBroadcast: () => void;
   onClearSos: (userId: string) => void;
@@ -534,9 +734,9 @@ function PlayView({
 
         <button className="btn" onClick={onBroadcast} disabled={busy}>📢 Broadcast to players</button>
 
-        <h3 style={{ margin: '4px 0 0' }}>Alerts</h3>
-        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
-          <AlertFeed arrivals={arrivals} />
+        <h3 style={{ margin: '4px 0 0' }}>Notifications</h3>
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <NotificationFeed arrivals={arrivals} checkpoints={checkpoints} members={members} />
         </div>
         <button className="btn btn--danger" onClick={onEnd} disabled={busy}>End Game</button>
       </aside>

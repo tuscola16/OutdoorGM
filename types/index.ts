@@ -102,25 +102,30 @@ export const BASE_GAME_CONFIG: GameConfig = {
   batterySaver: true,
 };
 
-export type CheckpointEventType =
-  | 'arrival-alert' // current behavior: notify GM only
-  | 'beast-attack' // push a hazard prompt to the crossing player
-  | 'gear-drop' // sponsor/gear drop reveal (Rules 31, 32)
-  | 'announcement' // GM-authored message
-  | 'silent-alert'; // GM sees it; player gets nothing
+/**
+ * The four things a checkpoint can do when a player crosses it:
+ * - `hazard`       — a danger (beast attack, poison, …); themed push to the crossing player.
+ * - `boon`         — a positive find; themed push to the crossing player.
+ * - `player-notify`— a plain message to the crossing player, or to all players.
+ * - `gm-only`      — only the GM is alerted; the player sees nothing (the default ping).
+ */
+export type CheckpointKind = 'hazard' | 'boon' | 'player-notify' | 'gm-only';
 
 export type EventAudience = 'crossing-player' | 'all-players' | 'gm-only';
 
-/** What firing a checkpoint geofence does. */
+/** What firing a checkpoint geofence does for one crossing. */
 export interface CheckpointEvent {
-  type: CheckpointEventType;
+  kind: CheckpointKind;
   /** Body shown in the push/broadcast, e.g. "A beast attacks! Defend or flee." */
   message?: string;
-  audience: EventAudience;
-  /** Fire only the first time (anyone, or this player) enters. Default true. */
-  once?: boolean;
-  /** Gear-drop only: the player this drop is marked for (Rule 32). */
-  recipientPlayerId?: string;
+  /**
+   * Who sees it. Only meaningful for `player-notify` (crossing-player | all-players).
+   * `hazard`/`boon` imply `crossing-player`; `gm-only` implies `gm-only`. Resolved per
+   * kind when omitted.
+   */
+  audience?: EventAudience;
+  // Reserved for a future "snap a photo of the gear" gate (rations-style). Not used yet.
+  // requirePhoto?: boolean;
 }
 
 export interface Checkpoint {
@@ -131,8 +136,17 @@ export interface Checkpoint {
   longitude: number;
   radius: number; // meters
   order?: number;
-  /** What entering this geofence does. Absent → behaves as 'arrival-alert'. */
+  /**
+   * Single event fired for EVERY distinct arriver (same event each time). Absent →
+   * a GM-only arrival ping (today's default). Mutually exclusive with `eventQueue`.
+   */
   event?: CheckpointEvent;
+  /**
+   * Arrival-order queue: the Nth distinct arriver (0-based) gets `eventQueue[N]`. When
+   * the queue is exhausted, no player event fires (the GM is still pinged). Used for
+   * "different by arrival number" checkpoints (traps). Mutually exclusive with `event`.
+   */
+  eventQueue?: CheckpointEvent[];
 }
 
 export interface GameMember {
@@ -201,6 +215,8 @@ export interface Broadcast {
   message: string;
   /** Omitted = all players. Set = targeted to one player (Rule 32 drops). */
   targetPlayerId?: string;
+  /** For `kind: 'checkpoint-event'` — the checkpoint kind, so the feed can theme it. */
+  eventKind?: CheckpointKind;
   createdAt: FsTimestamp;
 }
 

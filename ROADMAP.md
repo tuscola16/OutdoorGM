@@ -66,6 +66,26 @@ just free text. Add a structured **`game.config`** object so the base rules are
 auto/manual, which checkpoints fire which events, broadcast cadence, etc. The
 "base game rules" remain the seed values for a new game.
 
+## Cross-cutting theme: the game runs on a clock
+
+A real event (see the run-of-show below) is a **timeline of timed actions**: voucher
+sites open and close at set times, gear drops land at named locations on schedule, the
+living-player count goes out every interval, and the GM gets reminders to physically move
+between sites. Last year this was a paper/spreadsheet schedule run by hand. Two structural
+consequences for the data model:
+
+- Checkpoints/voucher sites need an optional **active window** (`opensAt`/`closesAt`) — a
+  geofence crossing only fires while the site is live.
+- A **scheduled-events engine** (#11) fires broadcasts, opens/closes windows, and pings the
+  GM at clock times — the in-app replacement for the spreadsheet.
+
+## Cross-cutting theme: tributes belong to districts
+
+The base game pairs players into **districts** (two tributes each). Several rules key off
+this — most concretely the trap rule *"do not give a trap if both tributes from the same
+district arrive together."* District is a first-class member attribute (#10), surfaced on
+the GM roster and consumed by the checkpoint/trap logic (#5).
+
 ---
 
 ## P0 — Blockers (core loop & win condition)
@@ -118,19 +138,52 @@ do **not** build player chat).
 - New `games/{id}/broadcasts` collection; players see a read-only message feed (replaces
   the dead "waiting" screen).
 
-### 5. Checkpoint-triggered events
+### 5. Checkpoint-triggered events & traps
 The geofence Cloud Function already fires on checkpoint entry. Extend an arrival to fire a
 **GM-authored event** instead of just an alert.
 
-- Per-checkpoint config: event type (`beast-attack`, `gear-drop`, `announcement`,
+- Per-checkpoint config: event type (`beast-attack`, `gear-drop`, `trap`, `announcement`,
   `silent-alert`), payload text, and audience (the crossing player, all players, GM-only).
 - Checkpoints here are often **hazards**, not objectives — a crossing may push
   "A beast attacks! Defend or flee" to that player and notify the GM.
+- **Traps are assigned by arrival order.** A site holds an **ordered queue** of distinct
+  traps; the *Nth tribute to arrive* gets the Nth trap (last year: Orenda Cabin handed out
+  three different traps to the 1st/5th/6th arrivers). So a checkpoint needs a **list** of
+  events consumed by arrival ordinal, not a single payload. The geofence function must rank
+  arrivals per checkpoint to pick the right entry.
+- **Same-district suppression** (the explicit trap rule): if two tributes from the **same
+  district** arrive at a site together (within a short co-arrival window), the trap is
+  **withheld**. Requires district (#10) + a time-window check in the geofence function.
+- **Time-gated** (#12): a site only fires while it is live (`opensAt`/`closesAt`), so
+  voucher windows and trap sites can open and close on the schedule.
 
 ### 6. Game clock & ration-window countdown
 **Rules 5–7.** Replace the count-up elapsed timer with a **3.5-hour countdown** plus a
 **rolling 30-min ration-window indicator** ("eat within 7:42"). GM gets the same clock
 plus per-player window status. Configurable duration/interval.
+
+### 10. District / tribute identity
+The base game pairs tributes into **districts**. Add a `district` attribute to each member
+(set by the GM when seeding players, or chosen on join with GM confirmation). Surface it on
+the GM roster (group/sort by district, show the pairing) and expose it to Cloud Functions so
+the trap co-arrival rule (#5) and any district-aware broadcasts can use it. Foundational for
+#5; cheap on its own.
+
+### 11. Scheduled-events engine (the run-sheet)
+The whole event is a **timed script** (open Orenda voucher site at 12:45, close 12:55; Drop
+1 → Trestle Bridge 13:00; push "N remaining" every interval; remind the GM to walk to the
+next site). Build an in-app **run-sheet**: a list of scheduled actions on the game doc, each
+with a fire time (absolute clock time or offset from `startedAt`) and an action:
+
+- `broadcast` (free text or templated, e.g. living-player count),
+- `open-site` / `close-site` (toggle a checkpoint's active window, #12),
+- `gear-drop` reveal (announce a drop location),
+- `gm-reminder` (GM-only nudge: "send Aaron to The Dock now").
+
+A scheduled Cloud Function (or a foreground GM-side timer with a server backstop) fires due
+actions. The GM authors the run-sheet in setup; firing one is idempotent (dedupe on a
+`firedAt` stamp). This is the concrete replacement for last year's spreadsheet and the
+unifying home for voucher windows (#13), timed drops, and the per-interval count push (#4).
 
 ---
 
@@ -149,16 +202,36 @@ zone doesn't equal a missed ration (= wrongful starvation death).
 pack/weapons so the GM can recover it; show these pins on the GM map. Cheap given the
 location infrastructure already exists.
 
+### 12. Timed checkpoint / site windows
+Add optional `opensAt`/`closesAt` to a checkpoint so a site is only **live** during its
+window. The geofence function ignores crossings outside the window; the player map can show
+"opens at 12:45 / closing soon." Drives voucher sites and time-gated trap sites, and is the
+toggle the run-sheet (#11) flips with `open-site`/`close-site`.
+
+### 13. Voucher sites & sponsor-gear redemption
+Promoted from the old P3 "sponsorship" bucket — last year ran **five live voucher windows**.
+A voucher site is a time-windowed checkpoint (#12); arriving while it's live grants a voucher
+/ sponsor-gear claim. Track redemptions (`games/{id}/vouchers` or a claim on the arrival) so
+the GM sees who claimed what and a player can't double-claim a closed site. Pairs with the
+timed gear drops (Drop 1/Drop 2) the run-sheet announces.
+
 ---
 
 ## P3 — Polish & admin
 
 - **Per-GM config screen** — surface all the knobs above (the cross-cutting theme made
   concrete).
+- **End-game phase** — the schedule has a distinct **end-game** block (last year 15:00–15:30)
+  before the game formally concludes. Add an `endgame` phase between `play` and `results`
+  (e.g. a final convergence / sudden-death window) the GM triggers, so the app models that
+  step instead of jumping straight to results.
 - **Custom arena map overlay** (Rule 33) — let the GM upload the arena map image as a map
   overlay instead of relying only on generic tiles + a rectangle boundary.
-- **Sponsorship / prize-pool tracking** (Rules 3, 30–32) — mostly admin/out-of-app; low
-  app priority.
+- **Pre-game ops checklist** — the schedule front-loads manual ops (alarm, car departures,
+  briefing, bandanas, seed sponsor gear, pre-place ration bags). A short GM run-up checklist
+  + a player onboarding screen (install, "Always" location, join code) covers it; ties to the
+  Pingo-onboarding note below. A roaming helper ("send Aaron to X") is just a `gm-reminder`
+  in the run-sheet (#11) — no separate role needed unless we want a distinct GM-helper seat.
 - ~~Reconcile the Pingo redundancy~~ — **DECIDED: Outdoor GM replaces "Find My Kids by
   Pingo".** Only one location app runs. Rule 26 should be rewritten to onboard Outdoor GM
   the night before instead of Pingo. See the consequence note below.
@@ -189,6 +262,10 @@ to "must ship before a real game" rather than "nice to have."
 ## Suggested build order
 
 `3` (safety, cheap) → `2` (elimination/broadcast plumbing) → `1` (ration loop, reuses 2's
-broadcast) → `4` → `6` → `5` → P2 → P3.
+broadcast) → `4` → `6` → `10` (district, cheap, unblocks traps) → `12` (site windows) →
+`5` (checkpoint events/traps — needs 10 + 12) → `11` (run-sheet — drives 4/12/13) →
+`13` (vouchers) → rest of P2 → P3.
 
 Items **2** and **4** share the broadcast pipeline, so build them adjacently to save work.
+Items **10 → 12 → 5** are a dependency chain for the trap mechanic; **11** is the scheduler
+that everything timed (4, 12, 13, drops) hangs off, so land it once site windows exist.

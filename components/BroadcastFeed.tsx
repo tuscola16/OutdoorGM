@@ -8,8 +8,8 @@ import { Colors } from '@/constants/colors';
 import type { Broadcast } from '@/types';
 
 /**
- * Player-facing feed of GM→player messages (Rule 24 player-count updates, gear-drop
- * reveals, death/winner announcements, checkpoint events). Self-subscribing so it can
+ * Player-facing feed of GM→player messages (Rule 24 player-count updates, checkpoint
+ * events — hazards/boons/notifications, death/winner announcements). Self-subscribing so it can
  * drop into any player screen. Players see global messages (targetPlayerId == null)
  * plus ones targeted at them; Firestore can't OR those, so we run two listeners.
  */
@@ -81,7 +81,16 @@ function iconFor(b: Broadcast): keyof typeof Ionicons.glyphMap {
     case 'player-count':
       return 'people-outline';
     case 'checkpoint-event':
-      return 'flash-outline';
+      switch (b.eventKind) {
+        case 'hazard':
+          return 'warning-outline';
+        case 'boon':
+          return 'sparkles-outline';
+        case 'player-notify':
+          return 'megaphone-outline';
+        default:
+          return 'flash-outline';
+      }
     default:
       return 'megaphone-outline';
   }
@@ -93,6 +102,15 @@ function colorFor(b: Broadcast): string {
       return Colors.danger;
     case 'winner':
       return Colors.primary;
+    case 'checkpoint-event':
+      switch (b.eventKind) {
+        case 'hazard':
+          return Colors.danger;
+        case 'boon':
+          return Colors.success;
+        default:
+          return Colors.textSecondary;
+      }
     default:
       return Colors.textSecondary;
   }

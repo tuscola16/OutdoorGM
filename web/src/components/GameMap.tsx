@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import mapboxgl from 'mapbox-gl';
 import type { Checkpoint, PlayerLocation, MapBoundary } from '@shared/types';
+import { KIND_META, checkpointKind } from '@/services/checkpointKinds';
 
 mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN ?? '';
 
@@ -128,13 +129,13 @@ export function GameMap({
         id: 'checkpoint-circles-fill',
         type: 'fill',
         source: 'checkpoint-circles',
-        paint: { 'fill-color': COLORS.primary, 'fill-opacity': 0.15 },
+        paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.15 },
       });
       map.addLayer({
         id: 'checkpoint-circles-line',
         type: 'line',
         source: 'checkpoint-circles',
-        paint: { 'line-color': COLORS.primary, 'line-width': 2 },
+        paint: { 'line-color': ['get', 'color'], 'line-width': 2 },
       });
 
       map.addSource('draft-boundary', { type: 'geojson', data: emptyFc() });
@@ -202,7 +203,7 @@ export function GameMap({
 
     const circleFeatures: GeoJSON.Feature[] = checkpoints.map((cp) => ({
       type: 'Feature',
-      properties: {},
+      properties: { color: KIND_META[checkpointKind(cp)].color },
       geometry: { type: 'Polygon', coordinates: [circlePolygon(cp.longitude, cp.latitude, cp.radius)] },
     }));
     (map.getSource('checkpoint-circles') as mapboxgl.GeoJSONSource | undefined)?.setData({
@@ -249,8 +250,9 @@ export function GameMap({
     checkpointMarkers.current = checkpoints.map((cp) => {
       const el = document.createElement('div');
       el.style.cssText = `display:flex;flex-direction:column;align-items:center;cursor:pointer;`;
+      const cpColor = KIND_META[checkpointKind(cp)].color;
       el.innerHTML = `
-        <div style="width:16px;height:16px;border-radius:50%;background:${COLORS.primary};border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.5)"></div>
+        <div style="width:16px;height:16px;border-radius:50%;background:${cpColor};border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.5)"></div>
         <div style="margin-top:2px;font-size:11px;font-weight:700;color:#fff;text-shadow:0 1px 2px #000;white-space:nowrap">${escapeHtml(cp.name)}</div>`;
       el.addEventListener('click', (ev) => {
         ev.stopPropagation();

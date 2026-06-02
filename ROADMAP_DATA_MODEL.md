@@ -82,15 +82,20 @@ given `startedAt` and `rationIntervalMinutes = M`, the current interval index is
 
 ---
 
-## 2. Checkpoint-triggered events (ROADMAP #5)
+## 2. Checkpoint-triggered events, traps & site windows (ROADMAP #5, #12)
 
-Checkpoints become **event triggers**, not just alert beacons. Extend `Checkpoint`:
+Checkpoints become **event triggers**, not just alert beacons. A checkpoint can hold a
+single event *or* an **ordered queue** of events consumed by arrival order (the trap
+pattern: the Nth tribute to arrive gets the Nth entry). It can also be **time-gated** to an
+active window. Extend `Checkpoint`:
 
 ```ts
 export type CheckpointEventType =
   | 'arrival-alert'   // current behavior: notify GM only
   | 'beast-attack'    // push a hazard prompt to the crossing player
+  | 'trap'            // assigned-by-arrival-order hazard (ROADMAP #5)
   | 'gear-drop'       // sponsor/gear drop reveal (Rules 31, 32)
+  | 'voucher'         // time-windowed sponsor-gear claim (§9)
   | 'announcement'    // GM-authored message
   | 'silent-alert';   // GM sees it; player gets nothing
 
@@ -100,6 +105,8 @@ export interface CheckpointEvent {
   type: CheckpointEventType;
   /** Body shown in the push/broadcast, e.g. "A beast attacks! Defend or flee." */
   message?: string;
+  /** Trap/voucher display name, e.g. "Tracker Jackers". */
+  name?: string;
   audience: EventAudience;
   /** Fire only the first time anyone (or this player) enters. Default true. */
   once?: boolean;
@@ -109,17 +116,44 @@ export interface CheckpointEvent {
 
 export interface Checkpoint {
   // ...existing fields...
-  /** What firing this geofence does. Absent → behaves as 'arrival-alert'. */
+  /** Single event fired on every qualifying crossing. Absent → 'arrival-alert'. */
   event?: CheckpointEvent;
+  /**
+   * Ordered queue consumed by arrival ordinal: the Nth distinct tribute to arrive
+   * gets queue[N-1]. Used for traps (ROADMAP #5). Mutually exclusive with `event`.
+   * Entries are consumed once; the geofence fn ranks arrivals to index this.
+   */
+  eventQueue?: CheckpointEvent[];
+  /**
+   * Active window (ROADMAP #12). Crossings outside [opensAt, closesAt] don't fire.
+   * Either bound may be absent (open-ended). Toggled by the run-sheet (§6).
+   */
+  opensAt?: FsTimestamp | null;
+  closesAt?: FsTimestamp | null;
 }
 ```
 
 **Trigger pipeline** — extend the existing geofence Cloud Function
 (`functions/src/geofence.ts`). On entry it already creates an `Arrival` and notifies GMs.
-Add: read `checkpoint.event`, honor `once` (dedupe against `arrivals` for that
-checkpoint/player), then route by `audience` — write a `Broadcast` (§3) and/or send push.
-A `gear-drop` with `recipientPlayerId` only notifies that one player; a non-recipient
-crossing is logged GM-only (supports Rule 32's "don't take someone else's drop").
+Add, in order:
+
+1. **Window gate (#12):** if `opensAt`/`closesAt` are set and `now` is outside the window,
+   record the arrival but fire nothing.
+2. **Co-arrival / same-district suppression (§7 traps):** look back over recent arrivals at
+   this checkpoint within a short window (e.g. 60–90s, configurable). If another tribute
+   from the **same district** (`member.district`) arrived in that window, **withhold** the
+   trap for both and log it GM-only ("District N pair arrived together — trap withheld").
+3. **Pick the payload:** for `eventQueue`, compute this player's **arrival ordinal** at the
+   checkpoint (count of prior distinct, non-suppressed arrivers) and select
+   `eventQueue[ordinal]`; if the queue is exhausted, no event. For a single `event`, honor
+   `once` (dedupe against `arrivals` for that checkpoint/player).
+4. **Route by `audience`:** write a `Broadcast` (§3) and/or send push. A `gear-drop`/
+   `voucher` with `recipientPlayerId` only notifies that one player; a non-recipient
+   crossing is logged GM-only (Rule 32's "don't take someone else's drop"). A `voucher`
+   crossing also writes a redemption row (§7).
+
+The arrival ordinal and same-district check need each member's `district` (§5 above) and an
+index on `arrivals` by (`checkpointId`, `timestamp`).
 
 ---
 
@@ -208,6 +242,13 @@ export interface GameMember {
   /** Where they dropped pack/weapons on death (Rules 19, 20). */
   deathLocation?: { latitude: number; longitude: number } | null;
 
+  /**
+   * District / tribute pairing (ROADMAP #10). Two tributes share a district.
+   * Set by the GM when seeding, or on join + GM confirm. Read by the geofence fn
+   * for the same-district trap-suppression rule (§2). Absent on solo/legacy games.
+   */
+  district?: string | number;
+
   // --- Safety SOS (Rules 22, 27, 28) ---
   sos?: boolean;
   sosAt?: FsTimestamp | null;
@@ -225,7 +266,72 @@ export interface GameMember {
 
 ---
 
-## 6. `Collections` additions
+## 6. New collection: `scheduledEvents` — the run-sheet (ROADMAP #11)
+
+Path: `games/{gameId}/scheduledEvents/{eventId}`. A GM-authored timeline of timed actions
+(the in-app replacement for the spreadsheet). A scheduled Cloud Function (or a GM-side timer
+with a server backstop) sweeps for due, unfired actions and executes them.
+
+```ts
+export type ScheduledActionType =
+  | 'broadcast'    // write a Broadcast (§3); free text or templated
+  | 'open-site'    // set a checkpoint's opensAt window live (§2 #12)
+  | 'close-site'   // close a checkpoint's window
+  | 'gear-drop'    // announce a drop location (broadcast)
+  | 'gm-reminder'; // GM-only nudge ("send Aaron to The Dock")
+
+export interface ScheduledEvent {
+  id: string;
+  type: ScheduledActionType;
+  /** Absolute fire time, OR offsetMinutes from game.startedAt (exactly one set). */
+  fireAt?: FsTimestamp | null;
+  offsetMinutes?: number | null;
+  /** Target checkpoint for open-site/close-site. */
+  checkpointId?: string;
+  /** Message body for broadcast / gear-drop / gm-reminder. */
+  message?: string;
+  /** Broadcast audience; gm-reminder is implicitly GM-only. */
+  audience?: EventAudience;
+  /** Templated payloads, e.g. 'player-count' fills in the living count. */
+  template?: 'player-count' | null;
+  /** Set when executed → idempotent; the sweep skips fired rows. */
+  firedAt?: FsTimestamp | null;
+}
+```
+
+- The sweep resolves `fireAt` (or `startedAt + offsetMinutes`); when `now >= fireAt` and
+  `firedAt == null`, it runs the action and stamps `firedAt` in a transaction (dedupe).
+- `open-site`/`close-site` write `opensAt`/`closesAt` on the target checkpoint (§2).
+- `broadcast`/`gear-drop` write a `Broadcast` (§3); `template: 'player-count'` fills the
+  living-tribute count (reuses ROADMAP #4's count).
+- `gm-reminder` pushes only to GM tokens.
+
+## 7. New collection: `vouchers` — sponsor-gear redemption (ROADMAP #13)
+
+Path: `games/{gameId}/vouchers/{playerId}_{checkpointId}` (deterministic ID → one claim per
+player per site, idempotent). Written by the geofence function when a player crosses a live
+`voucher` checkpoint (§2).
+
+```ts
+export interface VoucherClaim {
+  id: string;            // `${playerId}_${checkpointId}`
+  playerId: string;
+  playerName: string;
+  checkpointId: string;
+  checkpointName: string;
+  /** Display name of the gear/voucher granted. */
+  voucherName?: string;
+  claimedAt: FsTimestamp;
+}
+```
+
+- A claim is only created while the site is within its `[opensAt, closesAt]` window (§2 #1);
+  a crossing after close is logged GM-only ("site closed"). The deterministic ID stops a
+  player double-claiming.
+- GM sees a redemption feed (who claimed which site). Pairs with the timed gear drops the
+  run-sheet (§6) announces.
+
+## 8. `Collections` additions
 
 In [services/firebase.ts](services/firebase.ts):
 
@@ -234,26 +340,52 @@ export const Collections = {
   // ...existing...
   BROADCASTS: 'broadcasts',
   RATIONS: 'rations',
+  SCHEDULED_EVENTS: 'scheduledEvents',
+  VOUCHERS: 'vouchers',
 } as const;
 ```
 
 ---
 
-## 7. Firestore rules & indexes — checklist
+## 9. Firestore rules & indexes — checklist
 
 - `broadcasts`: members read; GM/functions write.
 - `rations`: a player writes only their own submission; GM reads all + updates `status`.
+- `scheduledEvents`: GM read/write (authoring the run-sheet); functions write `firedAt`.
+  Players don't read it (they see only its *output* broadcasts).
+- `vouchers`: members read; **functions only** write (server-authoritative redemption, like
+  `arrivals`) — a client must not be able to mint its own claim.
 - Member self-writes already allow `out`/`archived`; extend the allowed-field set to
   `cause`, `deathLocation`, `sos*` (player may set their own `sos`/self `cause`; GM may set
-  any member's `cause`).
+  any member's `cause`). `district` is **GM-only** to write (so tributes can't reassign their
+  own pairing).
 - New composite indexes likely needed: `broadcasts` by `createdAt`; `rations` by
-  (`intervalIndex`, `status`) for the GM feed and the starvation sweep.
+  (`intervalIndex`, `status`) for the GM feed and the starvation sweep; `arrivals` by
+  (`checkpointId`, `timestamp`) for the per-checkpoint arrival ordinal + co-arrival window
+  (§2); `scheduledEvents` by `fireAt` for the sweep.
 
 ---
 
-## 8. Build order recap
+## 10. End-game phase (ROADMAP P3)
+
+The schedule has a distinct **end-game** block before the game concludes. Add `'endgame'` to
+the phase union between `'play'` and `'results'`:
+
+```ts
+phase?: 'setup' | 'lobby' | 'play' | 'endgame' | 'results';
+```
+
+GM-triggered (a new `startEndgame()` helper alongside `startGame`/`endGame` in
+`gameService.ts`); `gamePhase(game)` keeps defaulting legacy games to `play`/`results`.
+Players see an "end-game" banner (e.g. final-convergence / sudden-death instructions); the
+ration loop can be auto-disabled in this phase. No new collection — just one phase value and
+the transition helper.
+
+## 11. Build order recap
 
 Schema-wise the dependency chain is: **`game.config` (§1)** and **`broadcasts` (§3)** are
-foundational — land them first, since elimination (§5), rations (§4), and checkpoint
-events (§2) all emit broadcasts and read config. Then §5 → §4 → §2, matching the
-ROADMAP build order (3 → 2 → 1 → 4 → 6 → 5).
+foundational — land them first, since elimination (§5), rations (§4), checkpoint events (§2),
+the run-sheet (§6) and vouchers (§7) all emit broadcasts and read config. Then
+§5 → §4 → **`district` (in §5)** → **site windows (in §2)** → checkpoint events/traps (§2) →
+run-sheet (§6) → vouchers (§7), matching the ROADMAP build order
+(3 → 2 → 1 → 4 → 6 → 10 → 12 → 5 → 11 → 13).
