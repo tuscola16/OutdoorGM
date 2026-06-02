@@ -25,10 +25,15 @@ export function Modal({
       <div
         onClick={(e) => e.stopPropagation()}
         className="card"
-        style={{ width: '100%', maxWidth: 420, display: 'flex', flexDirection: 'column', gap: 16 }}
+        style={{
+          width: '100%', maxWidth: 420, display: 'flex', flexDirection: 'column', gap: 16,
+          maxHeight: 'calc(100vh - 48px)',
+        }}
       >
-        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 800 }}>{title}</h2>
-        {children}
+        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 800, flexShrink: 0 }}>{title}</h2>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto', minHeight: 0 }}>
+          {children}
+        </div>
       </div>
     </div>
   );
