@@ -52,6 +52,9 @@ interface GameMapProps {
   onCheckpointPress?: (checkpoint: Checkpoint) => void;
   editMode?: boolean;
   initialRegion?: Region;
+  /** Draw the device's own blue location dot. On for the player's own map (they
+   * see only themselves); off for the GM map, which plots everyone via markers. */
+  showsUserLocation?: boolean;
 }
 
 /** The four corners of a rectangular boundary, for a map Polygon. */
@@ -128,6 +131,7 @@ export function GameMap({
   onCheckpointPress,
   editMode = false,
   initialRegion,
+  showsUserLocation = false,
 }: GameMapProps) {
   const mapRef = useRef<MapView>(null);
 
@@ -178,7 +182,7 @@ export function GameMap({
       onLongPress={
         onMapLongPress ? (e) => onMapLongPress(e.nativeEvent.coordinate) : undefined
       }
-      showsUserLocation={false}
+      showsUserLocation={showsUserLocation}
       showsMyLocationButton={false}
     >
       {/* Outdoors basemap (trails + terrain) in place of satellite imagery */}

@@ -5,6 +5,7 @@ import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firest
 import auth from '@react-native-firebase/auth';
 import { Collections } from '@/services/firebase';
 import { Colors } from '@/constants/colors';
+import { iconFor, colorFor } from '@/components/broadcastVisuals';
 import type { Broadcast } from '@/types';
 
 /**
@@ -70,50 +71,6 @@ export function BroadcastFeed({ gameId, max = 30 }: { gameId: string; max?: numb
       ))}
     </ScrollView>
   );
-}
-
-function iconFor(b: Broadcast): keyof typeof Ionicons.glyphMap {
-  switch (b.kind) {
-    case 'death':
-      return 'skull-outline';
-    case 'winner':
-      return 'trophy-outline';
-    case 'player-count':
-      return 'people-outline';
-    case 'checkpoint-event':
-      switch (b.eventKind) {
-        case 'hazard':
-          return 'warning-outline';
-        case 'boon':
-          return 'sparkles-outline';
-        case 'player-notify':
-          return 'megaphone-outline';
-        default:
-          return 'flash-outline';
-      }
-    default:
-      return 'megaphone-outline';
-  }
-}
-
-function colorFor(b: Broadcast): string {
-  switch (b.kind) {
-    case 'death':
-      return Colors.danger;
-    case 'winner':
-      return Colors.primary;
-    case 'checkpoint-event':
-      switch (b.eventKind) {
-        case 'hazard':
-          return Colors.danger;
-        case 'boon':
-          return Colors.success;
-        default:
-          return Colors.textSecondary;
-      }
-    default:
-      return Colors.textSecondary;
-  }
 }
 
 const styles = StyleSheet.create({

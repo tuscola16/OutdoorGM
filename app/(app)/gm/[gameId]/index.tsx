@@ -8,6 +8,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
+import * as Location from 'expo-location';
 import { useGame } from '@/context/GameContext';
 import { useAuth } from '@/context/AuthContext';
 import { GameMap } from '@/components/GameMap';
@@ -49,6 +50,7 @@ export default function GMGameScreen() {
   const [cfgBattery, setCfgBattery] = useState(true);
   const [cfgRations, setCfgRations] = useState(true);
   const [cfgRationInterval, setCfgRationInterval] = useState('');
+  const [cfgRationWindow, setCfgRationWindow] = useState('');
   const [cfgUniqueCards, setCfgUniqueCards] = useState(true);
   const [newAlertCount, setNewAlertCount] = useState(0);
   const [lastSeenArrivals, setLastSeenArrivals] = useState(0);
@@ -63,6 +65,25 @@ export default function GMGameScreen() {
     if (gameId) loadGame(gameId, 'gm');
     return () => clearGame();
   }, [gameId]);
+
+  // Warm the GM's location before they open the Play Area editor (#16): with no
+  // boundary set yet, resolve a fix now so the map opens centered on them instantly
+  // instead of spinning while it waits on GPS after the tap. Best-effort — the
+  // boundary screen still resolves location itself; this just primes the OS cache.
+  useEffect(() => {
+    if (phase !== 'setup' || game?.boundary) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (cancelled || status !== 'granted') return;
+        await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      } catch {
+        /* location unavailable — boundary editor will handle it */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [phase, game?.boundary]);
 
   // Haptic feedback + unseen badge on new arrivals
   useEffect(() => {
@@ -114,14 +135,19 @@ export default function GMGameScreen() {
   }
 
   function confirmStart() {
-    Alert.alert(
-      'Start the game?',
-      'Players will see their timer begin. You can end the game at any time.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Start', onPress: () => runPhaseAction(() => startGame(gameId!)) },
-      ]
-    );
+    // Readiness check (#16): warn if some joined players aren't on the map yet, so the
+    // GM can choose to wait for stragglers' first fix rather than starting blind.
+    const roster = members.filter((m) => m.role === 'player');
+    const located = roster.filter((p) => playerLocations.some((l) => l.userId === p.userId)).length;
+    const missing = roster.length - located;
+    const message =
+      missing > 0
+        ? `Only ${located}/${roster.length} players are on your map — ${missing} ${missing === 1 ? "hasn't" : "haven't"} reported a location yet (they may need a moment, or to open the app). Start anyway?`
+        : 'Players will see their timer begin. You can end the game at any time.';
+    Alert.alert('Start the game?', message, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Start', onPress: () => runPhaseAction(() => startGame(gameId!)) },
+    ]);
   }
 
   function handleEndGame() {
@@ -183,6 +209,7 @@ export default function GMGameScreen() {
     setCfgBattery(cfg.batterySaver);
     setCfgRations(cfg.rationsEnabled);
     setCfgRationInterval(String(cfg.rationIntervalMinutes));
+    setCfgRationWindow(String(cfg.rationWindowMinutes));
     setCfgUniqueCards(cfg.enforceUniqueRationCards);
     setShowConfig(true);
   }
@@ -190,6 +217,11 @@ export default function GMGameScreen() {
   async function saveConfig() {
     const minutes = Math.max(5, Math.round(Number(cfgDuration) || gameConfig(game).durationMinutes));
     const rationMins = Math.max(1, Math.round(Number(cfgRationInterval) || gameConfig(game).rationIntervalMinutes));
+    // Open window can't exceed the interval (clamped) — a 0/blank value falls back to the default.
+    const rationWindowMins = Math.min(
+      rationMins,
+      Math.max(1, Math.round(Number(cfgRationWindow) || gameConfig(game).rationWindowMinutes))
+    );
     await runPhaseAction(() =>
       updateGameConfig(gameId!, {
         config: {
@@ -199,6 +231,7 @@ export default function GMGameScreen() {
           batterySaver: cfgBattery,
           rationsEnabled: cfgRations,
           rationIntervalMinutes: rationMins,
+          rationWindowMinutes: rationWindowMins,
           enforceUniqueRationCards: cfgUniqueCards,
         },
       })
@@ -224,6 +257,9 @@ export default function GMGameScreen() {
 
   const players = members.filter((m) => m.role === 'player');
   const pendingRations = rations.filter((r) => r.status === 'pending').length;
+  // Players we already have a location fix for (lobby readiness, #16). Used to show the
+  // GM "N/N located" so they can wait to start until everyone is on the map.
+  const locatedIds = new Set(playerLocations.map((l) => l.userId));
 
   // Players who have silently dropped off the map (no fix, or none in 2 min). Since
   // Outdoor GM replaces Pingo as the only tracker, the GM must see this immediately.
@@ -256,6 +292,11 @@ export default function GMGameScreen() {
           </View>
         </View>
         <View style={styles.headerActions}>
+          {game?.isTest && (
+            <TouchableOpacity onPress={() => router.push(`/(app)/gm/${gameId}/test`)} style={styles.headerBtn}>
+              <Ionicons name="flask-outline" size={22} color={Colors.primary} />
+            </TouchableOpacity>
+          )}
           {(phase === 'lobby' || phase === 'play') && (
             <TouchableOpacity onPress={() => setShowBroadcast(true)} style={styles.headerBtn}>
               <Ionicons name="megaphone-outline" size={22} color={Colors.text} />
@@ -303,6 +344,7 @@ export default function GMGameScreen() {
       {phase === 'lobby' && (
         <LobbyView
           players={players}
+          locatedIds={locatedIds}
           playerCode={game?.playerCode ?? '…'}
           onCopyCode={() => handleCopyCode(game?.playerCode ?? '', 'player')}
           copied={copiedCode === 'player'}
@@ -542,7 +584,7 @@ export default function GMGameScreen() {
             />
             {cfgRations && (
               <>
-                <Text style={styles.codeLabel}>RATION WINDOW (MINUTES)</Text>
+                <Text style={styles.codeLabel}>RATION INTERVAL (MINUTES)</Text>
                 <TextInput
                   style={styles.durationInput}
                   value={cfgRationInterval}
@@ -552,6 +594,19 @@ export default function GMGameScreen() {
                   placeholderTextColor={Colors.textMuted}
                 />
                 <Text style={styles.settingHint}>How often players must submit a ration card</Text>
+                <Text style={styles.codeLabel}>OPEN WINDOW (MINUTES)</Text>
+                <TextInput
+                  style={styles.durationInput}
+                  value={cfgRationWindow}
+                  onChangeText={setCfgRationWindow}
+                  keyboardType="number-pad"
+                  placeholder="10"
+                  placeholderTextColor={Colors.textMuted}
+                />
+                <Text style={styles.settingHint}>
+                  How long the card window stays open before each interval ends. Players are alerted
+                  when it opens; the panel is hidden until then. Capped at the interval length.
+                </Text>
                 <ConfigToggle
                   label="Unique ration cards"
                   hint="Flag a card number that's been used before so you can reject it"
@@ -684,9 +739,10 @@ function ChecklistRow({
 }
 
 function LobbyView({
-  players, playerCode, onCopyCode, copied, onStart, onBack, onDelete, busy,
+  players, locatedIds, playerCode, onCopyCode, copied, onStart, onBack, onDelete, busy,
 }: {
   players: GameMember[];
+  locatedIds: Set<string>;
   playerCode: string;
   onCopyCode: () => void;
   copied: boolean;
@@ -695,6 +751,7 @@ function LobbyView({
   onDelete: () => void;
   busy: boolean;
 }) {
+  const locatedCount = players.filter((p) => locatedIds.has(p.userId)).length;
   return (
     <View style={styles.flex}>
       <View style={styles.lobbyCodeCard}>
@@ -705,19 +762,35 @@ function LobbyView({
         </TouchableOpacity>
       </View>
 
-      <Text style={styles.lobbyHeading}>
-        {players.length} player{players.length === 1 ? '' : 's'} joined
-      </Text>
+      <View style={styles.lobbyHeadingRow}>
+        <Text style={styles.lobbyHeading}>
+          {players.length} player{players.length === 1 ? '' : 's'} joined
+        </Text>
+        {players.length > 0 && (
+          <Text style={[styles.lobbyReady, locatedCount === players.length && styles.lobbyReadyAll]}>
+            {locatedCount}/{players.length} on the map
+          </Text>
+        )}
+      </View>
       <FlatList
         data={players}
         keyExtractor={(p) => p.userId}
         contentContainerStyle={styles.lobbyList}
-        renderItem={({ item }) => (
-          <View style={styles.lobbyRow}>
-            <Ionicons name="person-circle-outline" size={26} color={Colors.playerDot} />
-            <Text style={styles.lobbyName}>{item.displayName}</Text>
-          </View>
-        )}
+        renderItem={({ item }) => {
+          const located = locatedIds.has(item.userId);
+          return (
+            <View style={styles.lobbyRow}>
+              <Ionicons name="person-circle-outline" size={26} color={Colors.playerDot} />
+              <Text style={styles.lobbyName}>{item.displayName}</Text>
+              <View style={styles.lobbyStatus}>
+                <View style={[styles.statusDot, located ? styles.activeDot : styles.inactiveDot]} />
+                <Text style={[styles.lobbyStatusText, located && { color: Colors.success }]}>
+                  {located ? 'On map' : 'Locating…'}
+                </Text>
+              </View>
+            </View>
+          );
+        }}
         ListEmptyComponent={
           <Text style={styles.lobbyEmpty}>Waiting for players to join with the code above…</Text>
         }
@@ -889,13 +962,24 @@ const styles = StyleSheet.create({
     marginHorizontal: 16, marginTop: 4, backgroundColor: Colors.surface,
     borderRadius: 12, padding: 16, borderWidth: 1, borderColor: Colors.border,
   },
-  lobbyHeading: { fontSize: 14, fontWeight: '700', color: Colors.text, marginHorizontal: 16, marginTop: 16 },
+  lobbyHeadingRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    marginHorizontal: 16, marginTop: 16,
+  },
+  lobbyHeading: { fontSize: 14, fontWeight: '700', color: Colors.text },
+  lobbyReady: { fontSize: 13, fontWeight: '700', color: Colors.textSecondary },
+  lobbyReadyAll: { color: Colors.success },
   lobbyList: { paddingHorizontal: 16, paddingTop: 8 },
   lobbyRow: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.border,
   },
-  lobbyName: { fontSize: 15, color: Colors.text, fontWeight: '600' },
+  lobbyName: { fontSize: 15, color: Colors.text, fontWeight: '600', flex: 1 },
+  lobbyStatus: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  lobbyStatusText: { fontSize: 12, color: Colors.textSecondary, fontWeight: '600' },
+  statusDot: { width: 10, height: 10, borderRadius: 5 },
+  activeDot: { backgroundColor: Colors.success },
+  inactiveDot: { backgroundColor: Colors.textMuted },
   lobbyEmpty: { color: Colors.textSecondary, fontSize: 14, paddingHorizontal: 16, paddingTop: 12, lineHeight: 20 },
   linkBtn: { alignSelf: 'center', paddingVertical: 6 },
   linkBtnText: { color: Colors.textSecondary, fontSize: 14, fontWeight: '600' },

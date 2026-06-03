@@ -30,12 +30,20 @@ import {
 } from '@shared/types';
 
 /** Ration eat-window math (Rules 6–9). Ported from the mobile gameService: given
- * a started game and "now", which 0-based interval we're in, how many total, and
- * when the current window closes. */
+ * a started game and "now", which 0-based interval we're in, how many total, the
+ * interval deadline, and when/whether the eat-window is open (#21 — the last
+ * `rationWindowMinutes` of each interval). */
 export function rationInterval(
   game: Game | null | undefined,
   now: number = Date.now()
-): { index: number; total: number; windowEndsAt: number; isPlaying: boolean } | null {
+): {
+  index: number;
+  total: number;
+  windowStartsAt: number;
+  windowEndsAt: number;
+  isPlaying: boolean;
+  isOpen: boolean;
+} | null {
   const cfg = gameConfig(game);
   const startedMs = game?.startedAt?.toMillis?.();
   if (!startedMs) return null;
@@ -44,7 +52,11 @@ export function rationInterval(
   const elapsed = now - startedMs;
   const index = Math.floor(elapsed / windowMs);
   const windowEndsAt = startedMs + (index + 1) * windowMs;
-  return { index, total, windowEndsAt, isPlaying: index >= 0 && index < total };
+  const openMs = Math.min(Math.max(cfg.rationWindowMinutes, 0), cfg.rationIntervalMinutes) * 60_000;
+  const windowStartsAt = windowEndsAt - openMs;
+  const isPlaying = index >= 0 && index < total;
+  const isOpen = isPlaying && now >= windowStartsAt && now < windowEndsAt;
+  return { index, total, windowStartsAt, windowEndsAt, isPlaying, isOpen };
 }
 
 /** GM marks a submitted ration valid or rejected (web mirror of the mobile

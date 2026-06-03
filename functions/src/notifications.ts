@@ -13,19 +13,33 @@ export async function sendPushToTokens(
   const message: admin.messaging.MulticastMessage = {
     notification: { title, body },
     android: {
+      // `priority: high` wakes a Dozing/backgrounded device to deliver now rather
+      // than batching to the next maintenance window — checkpoint/GM alerts are
+      // time-critical. TTL caps how stale a queued alert may get (1h) so a brief
+      // dead zone doesn't drop it, but an hours-late alert is never shown.
+      priority: 'high',
+      ttl: 60 * 60 * 1000,
       notification: {
         sound: 'default',
-        priority: 'high',
         channelId,
+        // Heads-up banner + full content on the lock screen (pre-O devices read
+        // `priority`; O+ devices read the channel importance, set MAX in _layout).
+        priority: 'max',
+        visibility: 'public',
+        defaultVibrateTimings: true,
       },
-      priority: 'high',
     },
     apns: {
+      headers: {
+        // priority 10 = deliver immediately (not throttled like a background push);
+        // push-type `alert` so iOS shows it on the lock screen without opening the app.
+        'apns-priority': '10',
+        'apns-push-type': 'alert',
+      },
       payload: {
         aps: {
           sound: 'default',
           badge: 1,
-          contentAvailable: true,
         },
       },
     },

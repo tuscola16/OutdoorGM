@@ -62,6 +62,16 @@ export const onLocationUpdate = functions.firestore
       accuracy?: number;
     };
 
+    // Only fire checkpoint arrivals while the game is actually in play. Players now
+    // upload location during the lobby too (#16) so they're already on the GM's map at
+    // kickoff — but a lobby/setup/results fix must never trigger a checkpoint. Mirror the
+    // gamePhase() resolver: legacy games (no `phase`) are `play` while active.
+    const gameSnap = await admin.firestore().collection('games').doc(gameId).get();
+    const gameData = gameSnap.data();
+    if (!gameData) return;
+    const phase = gameData.phase ?? (gameData.status === 'ended' ? 'results' : 'play');
+    if (phase !== 'play') return;
+
     // GPS is only accurate to ~10–30m, so a strict "distance <= radius" test
     // misses real arrivals at tight radii. Allow the reported accuracy as slack
     // (capped so a wildly inaccurate fix can't trigger everything), i.e. count an

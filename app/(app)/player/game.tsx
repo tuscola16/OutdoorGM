@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, Alert, TouchableOpacity, Linking,
+  View, Text, StyleSheet, Alert, TouchableOpacity, Linking, AppState,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -11,11 +11,11 @@ import { Colors } from '@/constants/colors';
 import { Button } from '@/components/ui/Button';
 import { GameMap } from '@/components/GameMap';
 import { BroadcastFeed } from '@/components/BroadcastFeed';
+import { AlertOverlay } from '@/components/AlertOverlay';
 import { RationPanel } from '@/components/RationPanel';
 import { Tutorial } from '@/components/Tutorial';
 import * as Location from 'expo-location';
 import { startLocationTracking, stopLocationTracking, getTrackingDiagnostics } from '@/services/locationTask';
-import { onForegroundMessage } from '@/services/notificationService';
 import { eliminatePlayer, raiseSos, setDeathLocation, gamePhase, gameConfig } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
 import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
@@ -50,6 +50,9 @@ export default function PlayerGameScreen() {
   const [error, setError] = useState('');
   const [permissionDenied, setPermissionDenied] = useState(false);
   const [showTutorial, setShowTutorial] = useState(false);
+  // Play screen has two views — a full-screen Map and a Stats view — because the
+  // map was unusably small when crammed in with everything else (#20).
+  const [playTab, setPlayTab] = useState<'map' | 'stats'>('map');
 
   // Tracking diagnostics — polled from the location service so a player (e.g. one
   // stuck on "Starting tracking…") can tap the status card to see exactly where
@@ -138,10 +141,13 @@ export default function PlayerGameScreen() {
     if (gameId) AsyncStorage.setItem(`tutorial_seen_${gameId}`, '1').catch(() => {});
   }
 
-  // Track location only while actively playing and not out.
+  // Track location while in the lobby *and* during play (and not out). Starting in the
+  // lobby (#16) means a player who's been waiting a few minutes already has a fix on the
+  // GM's map at kickoff, instead of popping in minutes after the game starts. Lobby fixes
+  // don't trigger checkpoints — the geofence function only fires arrivals during `play`.
   useEffect(() => {
     if (!gameId) return;
-    const shouldTrack = phase === 'play' && !out;
+    const shouldTrack = (phase === 'lobby' || phase === 'play') && !out;
     if (!shouldTrack) {
       setTracking(false);
       stopLocationTracking().catch(() => {});
@@ -167,9 +173,26 @@ export default function PlayerGameScreen() {
     return () => { if (started) stopLocationTracking().catch(console.error); };
   }, [gameId, displayName, phase, out, batterySaver]);
 
+  // Re-assert tracking every time the app returns to the foreground. Two reasons:
+  // (1) if the player granted "Always" in Settings since we started, this upgrades
+  // them from the foreground-only watcher to the always-on background service; and
+  // (2) it restarts a background service the OS may have killed — so a player who
+  // locks their phone keeps reporting and never silently drops off the GM's map.
   useEffect(() => {
-    return onForegroundMessage((title, body) => Alert.alert(title, body));
-  }, []);
+    if (!gameId) return;
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active' || (phase !== 'play' && phase !== 'lobby') || out) return;
+      const trackName = displayName || user?.email || 'Player';
+      startLocationTracking(gameId, trackName, { batterySaver })
+        .then(() => setTracking(true))
+        .catch(() => {});
+    });
+    return () => sub.remove();
+  }, [gameId, phase, out, displayName, batterySaver, user?.email]);
+
+  // Foreground alerts surface via <AlertOverlay> (driven by the broadcasts feed),
+  // which pops over the app instead of the easily-missed list. FCM heads-up
+  // notifications cover the backgrounded/locked case.
 
   function handleLeave() {
     Alert.alert('Leave Game?', 'Your location will stop being tracked.', [
@@ -261,6 +284,14 @@ export default function PlayerGameScreen() {
         <Text style={styles.waitSub}>
           Waiting for your Game Master to start the game. Keep this screen open.
         </Text>
+        {phase === 'lobby' && (
+          <View style={styles.locReadyRow}>
+            <View style={[styles.statusDot, tracking ? styles.activeDot : styles.inactiveDot]} />
+            <Text style={styles.locReadyText}>
+              {tracking ? "Location ready — you're on your GM's map" : 'Getting your location ready…'}
+            </Text>
+          </View>
+        )}
         <TouchableOpacity style={styles.howToBtn} onPress={() => setShowTutorial(true)}>
           <Ionicons name="help-circle-outline" size={18} color={Colors.primary} />
           <Text style={styles.howToText}>How to play</Text>
@@ -275,79 +306,40 @@ export default function PlayerGameScreen() {
   }
 
   function renderPlay() {
+    // Tracking is "active" but only via the foreground watcher → the player drops
+    // off the GM's map when their screen locks. Worth a loud, fixable warning.
+    const fgOnly = tracking && diag.path === 'foreground-watch';
     return (
       <>
-        <View style={styles.timerCard}>
-          <Text style={styles.timerLabel}>TIME LEFT</Text>
-          <Text style={[styles.timerValue, remaining === 0 && styles.timerValueDanger]}>
-            {remaining != null ? formatDuration(remaining) : '—'}
-          </Text>
-          <Text style={styles.timerSub}>
-            You've played {elapsed != null ? formatDuration(elapsed) : '0:00'}
-          </Text>
+        {/* Tab bar: a full-screen Map view vs. a Stats view (#20). */}
+        <View style={styles.tabBar}>
+          <TouchableOpacity style={[styles.tab, playTab === 'map' && styles.activeTab]} onPress={() => setPlayTab('map')}>
+            <Ionicons name="map" size={18} color={playTab === 'map' ? Colors.primary : Colors.textSecondary} />
+            <Text style={[styles.tabText, playTab === 'map' && styles.activeTabText]}>Map</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.tab, playTab === 'stats' && styles.activeTab]} onPress={() => setPlayTab('stats')}>
+            <Ionicons name="stats-chart" size={18} color={playTab === 'stats' ? Colors.primary : Colors.textSecondary} />
+            <Text style={[styles.tabText, playTab === 'stats' && styles.activeTabText]}>Stats</Text>
+          </TouchableOpacity>
         </View>
 
-        {config.rationsEnabled && !out && user && (
-          <RationPanel
-            gameId={gameId!}
-            player={{ userId: user.uid, displayName: displayName || 'Player' }}
-            startedAt={startedAt}
-            config={config}
-          />
-        )}
-
-        <View style={styles.mapContainer}>
-          {boundary ? (
-            // Players see the play area and trails, but never their own position.
-            <GameMap checkpoints={[]} playerLocations={[]} boundary={boundary} />
-          ) : (
-            <View style={[styles.map, styles.mapPlaceholder]}>
-              <Ionicons name="map-outline" size={40} color={Colors.textMuted} />
-              <Text style={styles.locatingText}>Your Game Master hasn't set a play area.</Text>
-            </View>
-          )}
-        </View>
-
-        <BroadcastFeed gameId={gameId!} />
-
-        {out ? (
-          <View style={[styles.statusCard, { borderColor: Colors.danger }]}>
-            <View style={[styles.statusDot, styles.inactiveDot]} />
+        {/* Foreground-only warning + tracking error stay pinned above both tabs —
+            they're safety-relevant and shouldn't hide behind the Stats tab. */}
+        {!out && fgOnly && (
+          <View style={styles.warnBanner}>
+            <Ionicons name="warning" size={20} color={Colors.warning} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.statusTitle}>You're out</Text>
-              <Text style={styles.statusSub}>
-                Wave your red bandana overhead as you exit the arena (Rule 2).
+              <Text style={styles.warnTitle}>You'll vanish from the map when your screen locks</Text>
+              <Text style={styles.warnSub}>
+                Location is only shared while this app is open. Set location to “Allow all the
+                time” so your Game Master can always see you.
               </Text>
             </View>
-          </View>
-        ) : (
-          <>
-            <TouchableOpacity style={styles.statusCard} activeOpacity={0.7} onPress={() => setShowDiag((v) => !v)}>
-              <View style={[styles.statusDot, tracking ? styles.activeDot : styles.inactiveDot]} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.statusTitle}>{tracking ? 'Location Sharing Active' : 'Starting tracking…'}</Text>
-                <Text style={styles.statusSub}>
-                  {tracking ? 'Your Game Master can see you in real time.' : 'Requesting location permission…'}
-                </Text>
-              </View>
-              <Ionicons name={showDiag ? 'chevron-up' : 'chevron-down'} size={18} color={Colors.textMuted} />
+            <TouchableOpacity onPress={() => Linking.openSettings()} style={styles.warnBtn}>
+              <Text style={styles.warnBtnText}>Fix</Text>
             </TouchableOpacity>
-            {showDiag && (
-              <View style={styles.diagCard}>
-                <Text style={styles.diagRow}>Foreground permission: <Text style={styles.diagVal}>{diag.foreground}</Text></Text>
-                <Text style={styles.diagRow}>Background permission: <Text style={styles.diagVal}>{diag.background}</Text></Text>
-                <Text style={styles.diagRow}>Source: <Text style={styles.diagVal}>{diag.path}</Text></Text>
-                <Text style={styles.diagRow}>
-                  Last upload: <Text style={styles.diagVal}>
-                    {diag.lastUploadAt ? `${Math.round((Date.now() - diag.lastUploadAt) / 1000)}s ago` : 'never'}
-                  </Text>
-                </Text>
-                <Text style={styles.diagRow}>Last error: <Text style={styles.diagVal}>{diag.lastError ?? 'none'}</Text></Text>
-              </View>
-            )}
-          </>
+          </View>
         )}
-
         {error ? (
           <View style={styles.errorBanner}>
             <Text style={styles.errorText}>{error}</Text>
@@ -359,7 +351,99 @@ export default function PlayerGameScreen() {
           </View>
         ) : null}
 
-        {!out && (
+        <View style={styles.playContent}>
+          {playTab === 'map' ? (
+            <View style={styles.mapFull}>
+              {boundary ? (
+                // Players see the play area + their own blue dot — never other players.
+                <GameMap checkpoints={[]} playerLocations={[]} boundary={boundary} showsUserLocation />
+              ) : (
+                <View style={[styles.map, styles.mapPlaceholder]}>
+                  <Ionicons name="map-outline" size={40} color={Colors.textMuted} />
+                  <Text style={styles.locatingText}>Your Game Master hasn't set a play area.</Text>
+                </View>
+              )}
+              {/* Always-visible clock pill so the player keeps the timer on the map. */}
+              <View style={styles.mapTimePill}>
+                <Ionicons name="time-outline" size={15} color={remaining === 0 ? Colors.danger : Colors.text} />
+                <Text style={[styles.mapTimeText, remaining === 0 && styles.timerValueDanger]}>
+                  {remaining != null ? formatDuration(remaining) : '—'}
+                </Text>
+              </View>
+            </View>
+          ) : (
+            <View style={styles.statsBody}>
+              <View style={styles.timerCard}>
+                <Text style={styles.timerLabel}>TIME LEFT</Text>
+                <Text style={[styles.timerValue, remaining === 0 && styles.timerValueDanger]}>
+                  {remaining != null ? formatDuration(remaining) : '—'}
+                </Text>
+                <Text style={styles.timerSub}>
+                  You've played {elapsed != null ? formatDuration(elapsed) : '0:00'}
+                </Text>
+              </View>
+
+              {config.rationsEnabled && !out && user && (
+                <RationPanel
+                  gameId={gameId!}
+                  player={{ userId: user.uid, displayName: displayName || 'Player' }}
+                  startedAt={startedAt}
+                  config={config}
+                />
+              )}
+
+              {!out && (
+                <>
+                  <TouchableOpacity style={styles.statusCard} activeOpacity={0.7} onPress={() => setShowDiag((v) => !v)}>
+                    <View style={[styles.statusDot, !tracking ? styles.inactiveDot : fgOnly ? styles.warnDot : styles.activeDot]} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.statusTitle}>
+                        {!tracking ? 'Starting tracking…' : fgOnly ? 'Sharing only while app is open' : 'Location Sharing Active'}
+                      </Text>
+                      <Text style={styles.statusSub}>
+                        {!tracking
+                          ? 'Requesting location permission…'
+                          : fgOnly
+                            ? 'Your Game Master loses you when your screen locks. Tap Fix above.'
+                            : 'Your Game Master can see you — even when your screen is locked.'}
+                      </Text>
+                    </View>
+                    <Ionicons name={showDiag ? 'chevron-up' : 'chevron-down'} size={18} color={Colors.textMuted} />
+                  </TouchableOpacity>
+                  {showDiag && (
+                    <View style={styles.diagCard}>
+                      <Text style={styles.diagRow}>Foreground permission: <Text style={styles.diagVal}>{diag.foreground}</Text></Text>
+                      <Text style={styles.diagRow}>Background permission: <Text style={styles.diagVal}>{diag.background}</Text></Text>
+                      <Text style={styles.diagRow}>Source: <Text style={styles.diagVal}>{diag.path}</Text></Text>
+                      <Text style={styles.diagRow}>
+                        Last upload: <Text style={styles.diagVal}>
+                          {diag.lastUploadAt ? `${Math.round((Date.now() - diag.lastUploadAt) / 1000)}s ago` : 'never'}
+                        </Text>
+                      </Text>
+                      <Text style={styles.diagRow}>Last error: <Text style={styles.diagVal}>{diag.lastError ?? 'none'}</Text></Text>
+                    </View>
+                  )}
+                </>
+              )}
+
+              <Text style={styles.feedHeading}>Messages</Text>
+              <BroadcastFeed gameId={gameId!} />
+            </View>
+          )}
+        </View>
+
+        {/* Pinned action bar — always reachable from either tab. */}
+        {out ? (
+          <View style={[styles.statusCard, styles.outCard]}>
+            <View style={[styles.statusDot, styles.inactiveDot]} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.statusTitle}>You're out</Text>
+              <Text style={styles.statusSub}>
+                Wave your red bandana overhead as you exit the arena (Rule 2).
+              </Text>
+            </View>
+          </View>
+        ) : (
           <View style={styles.outBtnWrap}>
             <Button title="I've been killed" onPress={handleMarkOut} variant="danger" />
             <TouchableOpacity style={styles.sosBtn} onPress={handleSos}>
@@ -408,6 +492,7 @@ export default function PlayerGameScreen() {
       {phase === 'play' && renderPlay()}
       {phase === 'results' && renderResults()}
 
+      {gameId && phase !== 'results' && <AlertOverlay gameId={gameId} />}
       <Tutorial visible={showTutorial} onDone={dismissTutorial} rules={rules} />
     </SafeAreaView>
   );
@@ -437,6 +522,8 @@ const styles = StyleSheet.create({
   waitTitle: { fontSize: 22, fontWeight: '800', color: Colors.text, textAlign: 'center' },
   waitSub: { fontSize: 15, color: Colors.textSecondary, textAlign: 'center', lineHeight: 22 },
   waitFeed: { alignSelf: 'stretch', marginTop: 16 },
+  locReadyRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
+  locReadyText: { color: Colors.textSecondary, fontSize: 13 },
   howToBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 12, padding: 8 },
   howToText: { color: Colors.primary, fontSize: 15, fontWeight: '600' },
   resultLabel: { color: Colors.textSecondary, fontWeight: '800', letterSpacing: 2, fontSize: 12, marginTop: 8 },
@@ -453,7 +540,27 @@ const styles = StyleSheet.create({
   timerValueDanger: { color: Colors.danger },
   timerSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
 
-  mapContainer: { flex: 1, margin: 16, borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: Colors.border },
+  // Map / Stats tabs (#20)
+  tabBar: {
+    flexDirection: 'row', marginHorizontal: 16, marginTop: 4, marginBottom: 8,
+    backgroundColor: Colors.surface, borderRadius: 10, borderWidth: 1, borderColor: Colors.border,
+    overflow: 'hidden',
+  },
+  tab: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10 },
+  activeTab: { backgroundColor: Colors.surfaceElevated },
+  tabText: { fontSize: 14, fontWeight: '700', color: Colors.textSecondary },
+  activeTabText: { color: Colors.primary },
+  playContent: { flex: 1 },
+  statsBody: { flex: 1 },
+  feedHeading: { fontSize: 11, color: Colors.textSecondary, fontWeight: '700', letterSpacing: 1.5, marginHorizontal: 16, marginBottom: 6 },
+
+  mapFull: { flex: 1, marginHorizontal: 16, marginBottom: 8, borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: Colors.border },
+  mapTimePill: {
+    position: 'absolute', top: 12, left: 12, flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: Colors.surface + 'E6', borderRadius: 20, paddingVertical: 6, paddingHorizontal: 12,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  mapTimeText: { fontSize: 16, fontWeight: '800', color: Colors.text, fontVariant: ['tabular-nums'] },
   map: { flex: 1 },
   mapPlaceholder: { backgroundColor: Colors.surface, alignItems: 'center', justifyContent: 'center', gap: 8 },
   locatingText: { color: Colors.textMuted, fontSize: 14, textAlign: 'center', paddingHorizontal: 16 },
@@ -462,9 +569,24 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: 16, marginBottom: 12,
     backgroundColor: Colors.surface, borderRadius: 12, padding: 16, borderWidth: 1, borderColor: Colors.border,
   },
+  outCard: { borderColor: Colors.danger, marginTop: 4 },
   statusDot: { width: 14, height: 14, borderRadius: 7 },
   activeDot: { backgroundColor: Colors.success },
   inactiveDot: { backgroundColor: Colors.textMuted },
+  warnDot: { backgroundColor: Colors.warning },
+  warnBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    marginHorizontal: 16, marginBottom: 12,
+    backgroundColor: Colors.warning + '22', borderRadius: 12, padding: 14,
+    borderWidth: 1, borderColor: Colors.warning,
+  },
+  warnTitle: { fontSize: 14, fontWeight: '800', color: Colors.text },
+  warnSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 3, lineHeight: 17 },
+  warnBtn: {
+    paddingHorizontal: 16, paddingVertical: 9, borderRadius: 8,
+    backgroundColor: Colors.warning,
+  },
+  warnBtnText: { color: Colors.black, fontSize: 14, fontWeight: '800' },
   statusTitle: { fontSize: 15, fontWeight: '700', color: Colors.text },
   statusSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
   diagCard: {

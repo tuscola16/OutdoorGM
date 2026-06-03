@@ -30,11 +30,25 @@ export function gameConfig(game: { config?: Partial<GameConfig> } | null | undef
 }
 
 /** Ration eat-window math (Rules 6–9). Given a started game and "now", which
- * 0-based interval are we in, how many total intervals, and the window's end. */
+ * 0-based interval are we in, how many total intervals, the interval deadline, and
+ * when/whether the *eat-window* is open (#21). The eat-window is the last
+ * `rationWindowMinutes` of each interval, ending at the interval boundary
+ * (`windowEndsAt`) — the panel is hidden and no card is expected before it opens. */
 export function rationInterval(
   game: Game | null | undefined,
   now: number = Date.now()
-): { index: number; total: number; windowEndsAt: number; isPlaying: boolean } | null {
+): {
+  index: number;
+  total: number;
+  /** When the eat-window opens (card capture becomes available). */
+  windowStartsAt: number;
+  /** The interval deadline — eat by now or risk starvation. */
+  windowEndsAt: number;
+  /** In a valid interval of the game. */
+  isPlaying: boolean;
+  /** The eat-window is currently open (capture allowed / expected). */
+  isOpen: boolean;
+} | null {
   const cfg = gameConfig(game);
   const startedMs = game?.startedAt?.toMillis?.();
   if (!startedMs) return null;
@@ -43,7 +57,12 @@ export function rationInterval(
   const elapsed = now - startedMs;
   const index = Math.floor(elapsed / windowMs);
   const windowEndsAt = startedMs + (index + 1) * windowMs;
-  return { index, total, windowEndsAt, isPlaying: index >= 0 && index < total };
+  // Open window = last `rationWindowMinutes` of the interval (clamped to the interval).
+  const openMs = Math.min(Math.max(cfg.rationWindowMinutes, 0), cfg.rationIntervalMinutes) * 60_000;
+  const windowStartsAt = windowEndsAt - openMs;
+  const isPlaying = index >= 0 && index < total;
+  const isOpen = isPlaying && now >= windowStartsAt && now < windowEndsAt;
+  return { index, total, windowStartsAt, windowEndsAt, isPlaying, isOpen };
 }
 
 /**
@@ -54,11 +73,29 @@ export function rationInterval(
 export async function createGame(
   name: string,
   displayName: string,
-  fcmToken?: string
+  fcmToken?: string,
+  isTest = false
 ): Promise<{ id: string }> {
   const callable = functions().httpsCallable('createGame');
-  const res = await callable({ name, displayName, fcmToken: fcmToken ?? null });
+  const res = await callable({ name, displayName, fcmToken: fcmToken ?? null, isTest });
   return { id: (res.data as { gameId: string }).gameId };
+}
+
+/** Persist the GM's position in the Test Runner walkthrough (a resumable cursor). */
+export async function setTestStep(gameId: string, index: number): Promise<void> {
+  await firestore().collection(Collections.GAMES).doc(gameId).update({ testStepIndex: index });
+}
+
+/** Re-arm a Test Event checkpoint so the GM can walk its arrival-order queue with a
+ * small group: rewrites the player's arrival doc to a consumed marker (server-side) so
+ * the queue ordinal advances while the player can cross again. See functions/src/rearm.ts. */
+export async function rearmCheckpoint(
+  gameId: string,
+  playerId: string,
+  checkpointId: string
+): Promise<void> {
+  const callable = functions().httpsCallable('rearmCheckpoint');
+  await callable({ gameId, playerId, checkpointId });
 }
 
 // --- Phase transitions ---

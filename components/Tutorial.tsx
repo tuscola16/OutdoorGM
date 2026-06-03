@@ -16,19 +16,34 @@ interface Slide {
 
 const SLIDES: Slide[] = [
   {
-    icon: 'map-outline',
-    title: 'Your mini-map',
-    body: "You'll see only your own location on the map. Your Game Master sees everyone — but other players can't see you.",
+    icon: 'navigate-outline',
+    title: 'Welcome to the arena',
+    body: "You're a tribute in a last-one-standing survival game. You see only your own dot on the map; your Game Master sees everyone. Stay inside the play area and outlast the field.",
   },
   {
-    icon: 'time-outline',
-    title: 'When the game starts',
-    body: 'The GM starts the round. A timer shows how long you have been playing. Reach checkpoints to alert your GM.',
+    icon: 'people-outline',
+    title: 'You have a district',
+    body: 'You and your district partner are a pair. Some events treat you as a team — for example, a trap may be held back if you and your partner arrive at a site together.',
   },
   {
-    icon: 'flag-outline',
-    title: "Tapping out",
-    body: "Done early, or caught? Hit “I’m Out” to stop and lock in your time. When the game ends you'll see how you did.",
+    icon: 'warning-outline',
+    title: 'Events in the field',
+    body: 'Reaching certain locations triggers something: a hazard to survive, a boon to grab, or a message. Some sites only go live at set times — when one fires for you, an alert pops up over your screen.',
+  },
+  {
+    icon: 'restaurant-outline',
+    title: 'Eat or starve',
+    body: 'Every so often a ration window opens and you’ll be alerted. Before it closes, photograph your numbered ration card with the camera to prove you ate. Miss the window and you risk starving out.',
+  },
+  {
+    icon: 'notifications-outline',
+    title: "Don't miss an alert",
+    body: 'Your GM sends announcements and event alerts that pop up over the app — tap to dismiss. Keep notifications on and your location set to “Allow all the time” so alerts reach you and you stay on the map even when your screen is locked.',
+  },
+  {
+    icon: 'alert-circle-outline',
+    title: "If you're out — or in trouble",
+    body: 'Struck or caught? Tap “I’ve been killed” to bow out and lock in your time, then wave your red bandana as you leave the arena. Feel unsafe, injured, or too cold? Hit the Safety alert — your GM is notified instantly and can see exactly where you are.',
   },
 ];
 

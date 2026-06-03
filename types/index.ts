@@ -57,6 +57,18 @@ export interface Game {
   endedAt?: FsTimestamp | null;
   /** GM-tunable parameters; absent on legacy games (resolve with BASE_GAME_CONFIG). */
   config?: Partial<GameConfig>;
+  /**
+   * This is a guided Test Event (created from the "This is a test" checkbox). It's a
+   * real, auto-configured game whose GM is walked through verifying every feature in a
+   * tight space. Set server-side by the createGame Cloud Function.
+   */
+  isTest?: boolean;
+  /**
+   * The GM's current position in the Test Runner walkthrough (a resumable cursor). Only
+   * meaningful when `isTest`. Most step progress is derived live from Firestore; this just
+   * survives an app restart. See app/(app)/gm/[gameId]/test.tsx.
+   */
+  testStepIndex?: number;
   createdAt: FsTimestamp;
 }
 
@@ -70,8 +82,17 @@ export interface GameConfig {
 
   // --- Ration / starvation loop (Rules 6–9) ---
   rationsEnabled: boolean;
-  /** Length of each eat window in minutes. Rule 6/7 → 30. */
+  /** Length of each ration interval in minutes — the cadence of "eat or starve". Rule 6/7 → 30. */
   rationIntervalMinutes: number;
+  /**
+   * How long the eat-window stays *open* at the end of each interval, in minutes. The
+   * capture panel is hidden until this window opens (so a player isn't pestered for a
+   * card 5 minutes in) and the player is alerted when it opens. Clamped to ≤
+   * `rationIntervalMinutes`; setting it ≥ the interval keeps the panel open all interval
+   * (the legacy behavior). With a 30-min interval and a 10-min window the panel opens at
+   * the 20-min mark and the deadline is the 30-min interval boundary.
+   */
+  rationWindowMinutes: number;
   /** What happens when a player misses a window. */
   starvationMode: 'auto' | 'gm-confirmed';
   /** Reject a ration photo whose card number was already used (Rule 6). */
@@ -95,6 +116,7 @@ export const BASE_GAME_CONFIG: GameConfig = {
   durationMinutes: 210,
   rationsEnabled: true,
   rationIntervalMinutes: 30,
+  rationWindowMinutes: 10,
   starvationMode: 'gm-confirmed',
   enforceUniqueRationCards: true,
   playerCountBroadcast: true,

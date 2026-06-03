@@ -24,8 +24,11 @@ export interface GameConfig {
 
   // --- Ration / starvation loop (Rules 6–9) ---
   rationsEnabled: boolean;
-  /** Length of each eat window in minutes. Rule 6/7 → 30. */
+  /** Length of each ration interval in minutes — the eat-or-starve cadence. Rule 6/7 → 30. */
   rationIntervalMinutes: number;
+  /** How long the eat-window is *open* at the end of each interval, in minutes (#21).
+   *  Capture is hidden until then; the player is alerted on open. Clamped to ≤ the interval. */
+  rationWindowMinutes: number;
   /** What happens when a player misses a window. */
   starvationMode: 'auto' | 'gm-confirmed';
   /** Reject a ration photo whose card number was already used (Rule 6). */
@@ -49,6 +52,7 @@ export const BASE_GAME_CONFIG: GameConfig = {
   durationMinutes: 210,
   rationsEnabled: true,
   rationIntervalMinutes: 30,
+  rationWindowMinutes: 10,
   starvationMode: 'gm-confirmed',
   enforceUniqueRationCards: true,
   playerCountBroadcast: true,
@@ -78,7 +82,11 @@ export const gameConfig = (game: Game): GameConfig => ({
 
 **Interval math** (used by ration UI, the scheduled starvation function, and the clock):
 given `startedAt` and `rationIntervalMinutes = M`, the current interval index is
-`floor((now - startedAt) / (M * 60_000))`; total intervals = `durationMinutes / M`.
+`floor((now - startedAt) / (M * 60_000))`; total intervals = `durationMinutes / M`. The
+**eat-window** for interval `i` is the last `rationWindowMinutes` (≤ M) before that interval's
+boundary: open over `[boundary − window, boundary)`. `rationInterval(game, now)` returns
+`windowStartsAt` / `windowEndsAt` / `isOpen` so the panel hides until open and players are
+alerted (a scheduled local notification) the moment it opens (#21).
 
 ---
 

@@ -74,6 +74,7 @@ export const createGame = functions.https.onCall(async (data, context) => {
   const name = cleanName(data?.name);
   const displayName = cleanName(data?.displayName);
   const fcmToken = typeof data?.fcmToken === 'string' && data.fcmToken ? data.fcmToken : undefined;
+  const isTest = data?.isTest === true;
 
   if (!name) {
     throw new functions.https.HttpsError('invalid-argument', 'A game name is required.');
@@ -98,8 +99,7 @@ export const createGame = functions.https.onCall(async (data, context) => {
   };
   if (fcmToken) member.fcmToken = fcmToken;
 
-  const batch = db.batch();
-  batch.set(gameRef, {
+  const game: Record<string, unknown> = {
     name,
     playerCode,
     gmCode,
@@ -109,7 +109,44 @@ export const createGame = functions.https.onCall(async (data, context) => {
     startedAt: null,
     endedAt: null,
     createdAt: now,
-  });
+  };
+
+  const batch = db.batch();
+  if (isTest) {
+    // A guided Test Event: short everything, defensive against premature ending
+    // (eliminations in the walkthrough must not auto-declare a winner), and one
+    // pre-authored checkpoint whose arrival-order queue demonstrates all event kinds.
+    game.isTest = true;
+    game.testStepIndex = 0;
+    game.config = {
+      durationMinutes: 30,
+      rationsEnabled: true,
+      rationIntervalMinutes: 2,
+      starvationMode: 'gm-confirmed',
+      enforceUniqueRationCards: false,
+      playerCountBroadcast: false,
+      winnerDetection: false,
+      batterySaver: false,
+    };
+    // Sentinel location (0,0) → the Test Runner detects when the GM relocates it.
+    const cpRef = gameRef.collection('checkpoints').doc();
+    batch.set(cpRef, {
+      name: 'Test Checkpoint',
+      latitude: 0,
+      longitude: 0,
+      radius: 25,
+      order: 0,
+      eventQueue: [
+        { kind: 'hazard', message: 'A beast attacks! (test hazard)' },
+        { kind: 'boon', message: 'You found a cache. (test boon)' },
+        { kind: 'player-notify', message: 'Message to the crossing player (test)', audience: 'crossing-player' },
+        { kind: 'player-notify', message: 'Message to ALL players (test)', audience: 'all-players' },
+        { kind: 'gm-only' },
+      ],
+    });
+  }
+
+  batch.set(gameRef, game);
   batch.set(memberRef, member);
   await batch.commit();
 

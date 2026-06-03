@@ -180,6 +180,169 @@ open/close/announce run-sheet rows.)
 
 ---
 
+## Field-test findings — 2026-06-03 playtest
+
+First real device-to-device run (Shannon as player). These are observed defects and UX gaps
+from playing through a game, not derived-from-ruleset features. Several break the core loop
+or the alert mechanic and should be treated as **must-fix before a real game** despite living
+below the P0 ruleset items. New stable numbers continue the #-series.
+
+### 16. Eager location capture — start in the lobby, not on the play screen *(observed: ~3–4 min lag — built)*
+On the playtest a player's location did **not** appear for the GM until ~3–4 minutes in (checked
+at 30s: absent; checked 4 min later: present). Tracking only starts when the player reaches the
+play screen. Fix: begin acquiring/uploading player locations **while they wait in the lobby**, so
+that by the time the GM is ready to start, every player already has a fix.
+
+- **GM lobby readiness list** — show the GM, per player, whether we have a location yet (a "N/N
+  players located" glance), so the GM can wait to **Start Game** until all players are reporting.
+  Pairs with the Start-Game preflight invariant and the #15 readiness view.
+- **Pre-fetch GM location before "Set Boundary."** If a game has no `boundary`, start resolving
+  the GM's location *before* they tap **Set Boundary**, so the map is already centered on them
+  when the editor opens instead of making them wait.
+
+> **Built.**
+> - **Lobby tracking** (`app/(app)/player/game.tsx`): the tracking effect (and the resume
+>   re-assert) now run in `lobby` as well as `play`, so a waiting player is uploading location
+>   before kickoff. The lobby waiting screen shows a "Location ready — you're on your GM's map" /
+>   "Getting your location ready…" indicator.
+> - **Geofence phase guard** (`functions/src/geofence.ts`): the function now reads the game doc
+>   and returns unless `phase === 'play'`, so lobby/setup fixes appear on the GM map but **never**
+>   fire a checkpoint prematurely (mirrors the `gamePhase()` legacy default).
+> - **GM readiness list** (`app/(app)/gm/[gameId]/index.tsx`): the lobby roster shows a per-player
+>   On map / Locating… dot and an "N/N on the map" header (from `playerLocations`); **Start Game**
+>   now warns when some joined players haven't reported a fix yet, so the GM can wait for stragglers.
+> - **Pre-fetch GM location**: in `setup` with no boundary, the GM screen warms a fix (permission +
+>   `getCurrentPositionAsync`) so the Play Area editor — which reads `getLastKnownPositionAsync`
+>   first — opens centered instantly instead of spinning.
+
+### 17. GM/event alerts must surface over the app — and the triggering player gets the hazard text *(two bugs — client fix built)*
+Two distinct problems seen when a player crossed a checkpoint:
+- **Wrong audience/content for the triggering player.** Shannon (the *player* who crossed) got a
+  GM-style "Shannon hit an event" notification. The player who trips a hazard checkpoint should
+  instead see the **hazard/event text alert surfaced over their own screen** (the trap/event
+  payload), not a third-person "X hit an event" push meant for the GM. (Server already targets the
+  crossing player with the event payload via a `targetPlayerId` broadcast; the GM third-person line
+  is GM-only — a player-only account never gets it. The remaining gap was *surfacing* the player's
+  payload prominently.)
+- **Alerts are too easy to miss.** GM-sent alerts (and event/hazard alerts) currently only land
+  in the in-app **alert section**, which is invisible if the player is looking at the map or
+  anything else. They must come up as a **heads-up / full-screen alert over the front of the
+  app** (foreground in-app modal/banner + high-importance heads-up notification), not just append
+  to a list. This is the alert mechanic the game runs on — it can't be passively missed.
+
+> **Built (client):** `components/AlertOverlay.tsx` — a heads-up modal that pops **over the app**
+> the instant a new broadcast lands (hazard/boon/message/death/winner/count), themed by kind, with
+> haptics; hazards/deaths require a tap to clear, the rest auto-dismiss. Driven by the same
+> global+targeted broadcast query as the feed, so the crossing player sees the hazard text over
+> their screen. Backlog present at mount is ignored (no replay on re-entry). Shared theming
+> extracted to `components/broadcastVisuals.ts` (feed + overlay stay in sync). Added the missing
+> **MAX-importance `broadcasts` Android channel** in `app/_layout.tsx` so backgrounded/locked
+> pushes are heads-up, and dropped the old easily-missed `Alert.alert` foreground handler.
+> **Still open:** reliable background *delivery* of those pushes is #18; the GM-side heads-up
+> already exists (local notification + haptic + unseen badge).
+
+### 18. Background push delivery is unreliable *(observed: missed until app opened — FCM hardened; root cause is the upload gap)*
+Phone locked, player crossed the **second** checkpoint, **no notification arrived** until ~4 min
+later when the app was manually opened — then it fired.
+
+> **Root-cause finding.** The geofence Cloud Function only runs when the crossing player's
+> **location doc is written**, and that write only happens while the screen is locked if the
+> **background** location service is running. A player on the *foreground-only* watcher
+> (`watchPositionAsync`, used when "Always" wasn't granted or the Android 14 foreground service
+> couldn't start) **stops uploading the moment the phone locks** — so the geofence never fires
+> until the app is reopened and the watcher resumes. The alert arriving *exactly* on app-open (not
+> during a Doze maintenance window) is the tell: the **trigger** was delayed, not the push.
+
+> **Built (keep tracking while locked).** The trigger gap is now closed:
+> - **Background service hardened** (`services/locationTask.ts`): `killServiceOnDestroy: false` so
+>   the Android location foreground service (and uploads) survive the app being swiped away;
+>   `activityType: Fitness` + `pausesUpdatesAutomatically: false` so iOS doesn't suspend updates
+>   when it thinks the player is still. With "Always" granted, the player keeps reporting while
+>   locked → the geofence keeps firing → checkpoint/GM alerts land in real time.
+> - **Background-permission check fixed** (field test, 2026-06, observed on Android): the startup
+>   flow called `requestBackgroundPermissionsAsync()` behind an 8s timeout, which wedges *even when
+>   "Allow all the time" is already granted* (Android sits behind the Settings redirect on 11+; iOS
+>   can hang) — the timeout then logged `Background permission: error` and flipped a
+>   fully-permissioned player to the foreground-only watcher (the "you'll vanish when locked"
+>   warning despite granted perms). Now we read the current grant via
+>   `getBackgroundPermissionsAsync()` first (instant, no prompt) and only request when genuinely
+>   needed, falling back to the read grant if the request hangs.
+> - **Resume re-assert** (`player/game.tsx`): on every app foreground we re-run
+>   `startLocationTracking`, which restarts a service the OS may have killed and *upgrades* a
+>   foreground-only player to the background service if they granted "Always" in Settings since.
+> - **Tracking-stopped self-alarm (the safety net):** when only the foreground watcher is running,
+>   the player now sees a loud "**You'll vanish from the map when your screen locks**" banner with a
+>   one-tap **Fix → Settings**, and the status card no longer falsely claims "Location Sharing
+>   Active." OS-level constraint remains: if the player refuses "Always," no app can track them
+>   while locked — so the honest fix is to surface it, not hide it.
+>
+> Still tracked elsewhere: **#16** (start tracking eagerly in the lobby) and **#8** (offline
+> queue-and-flush) are complementary, not required for the locked-screen case above.
+
+> **Built (FCM hardening, `functions/src/notifications.ts`).** Independent of the trigger gap, the
+> push itself is now hardened so that once generated it reaches a locked device immediately instead
+> of being batched/throttled: Android `priority: high` + a 1h TTL + lock-screen heads-up
+> (`notification.priority: 'max'`, `visibility: 'public'`, default vibrate) routed to the
+> MAX-importance channels (#17); iOS `apns-priority: 10` + `apns-push-type: alert`, and **removed
+> the `content-available` flag** that was demoting each alert to a throttle-able background push.
+> All push call sites funnel through this one function. Pairs with the Start-Game preflight
+> (valid FCM token) invariant so there's a live token to deliver to.
+
+### 19. Player intro/tutorial screen is out of date *(built)*
+The player intro (`components/Tutorial.tsx`) still shows a much older version of the game intro.
+Rewrite it to reflect the current ruleset/decisions (districts, traps, timed windows, the ration
+loop, SOS, run-sheet-driven events) so onboarding matches the game players actually play.
+
+> **Built.** Replaced the 3 stale slides (generic mini-map / "reach checkpoints" / "I'm Out") with
+> a 6-slide deck matching the real game: the arena & own-dot map, **districts** (partner pairing +
+> same-district trap behavior), **field events** (hazard/boon/message + timed sites + over-the-app
+> alerts), the **ration eat-or-starve** loop (windowed, camera capture), **don't-miss-alerts**
+> (keep notifications + "Allow all the time" location so alerts land when locked — ties to #17/#18),
+> and **out/in-trouble** (the real "I've been killed" + red-bandana honor rule, and the SOS safety
+> alert). The GM's free-text rules still append as a final slide.
+
+### 20. Player screen — split map view and stats view *(map unusably small — built)*
+On a phone the embedded map is too small to be useful. Give the player screen **two switchable
+views**: a **map view** (full-screen map of their own location + relevant context) and a **stats
+view** (timer, ration window/countdown, district, alive count, status). A toggle/tabs between them
+instead of cramming both into one cramped screen.
+
+> **Built.** `app/(app)/player/game.tsx` play screen now has **Map / Stats tabs**. The **Map** tab
+> is the full-screen `GameMap` (boundary + the player's own blue dot — `GameMap` gained an opt-in
+> `showsUserLocation` prop, off for the GM) with an always-visible time-left pill overlay. The
+> **Stats** tab holds the timer card, the ration panel, the tracking-status card (+ diagnostics),
+> and the messages feed. The foreground-only warning and tracking-error banners stay **pinned above
+> both tabs**, and the safety action bar ("I've been killed" + SOS, or the "you're out" card when
+> eliminated) is **pinned at the bottom** so it's reachable from either view.
+
+### 21. Ration mechanic — gate to its open window + alert on open; fix the broken capture button *(two bugs — built)*
+- **Window-gate the ration panel.** The ration capture UI is currently open at all times. Players
+  shouldn't (and won't) show a card 10 minutes in — only during the configured interval window
+  (e.g. ~30 min in, per `rationIntervalMinutes`). Only **open the ration card window during its
+  active interval** and **alert the player when the window opens** (and ideally a closing warning),
+  rather than presenting the panel constantly. Pairs with the timed-window engine (#11/#12).
+- **Camera-capture button doesn't work.** Tapping "take a picture of a ration card" did nothing;
+  after three taps it finally surfaced the camera-permission prompt, but **even after granting
+  permission and tapping again the camera never opened**. Fix the `expo-image-picker`
+  `launchCameraAsync` flow in `components/RationPanel.tsx`: request permission *up front* (await the
+  result before launching), then reliably open the live camera on the first tap. This blocks the
+  entire Rules 6–9 ration loop — nothing can be submitted if the camera won't open.
+
+> **Built.** New `config.rationWindowMinutes` knob (default 10, clamped ≤ interval) on the shared
+> `GameConfig`/`BASE_GAME_CONFIG`; `rationInterval()` (mobile + web) now returns
+> `windowStartsAt`/`isOpen` — the eat-window is the **last `rationWindowMinutes` of each interval**,
+> ending at the boundary. `RationPanel.tsx` hides the capture UI until open (showing a muted
+> "opens in …" countdown) and **schedules local notifications** (deterministic ids, MAX
+> `broadcasts` channel) at each future window-open so the player is alerted even backgrounded/locked.
+> **Camera root cause:** `setBusy(true)` ran only *after* the camera returned, so the button stayed
+> live through the permission prompt + launch and rapid taps fired **concurrent** `launchCameraAsync`
+> calls that wedged the picker. Fixed with a synchronous re-entry guard (`launchingRef`) +
+> permission-first flow (`getCameraPermissionsAsync` → ask only if `canAskAgain` → Settings link when
+> hard-denied) + surfaced launch errors. GM config editors (mobile + web) expose the new
+> open-window field (interval field relabeled). Needs device verification of the camera launch.
+
+---
+
 ## Consequence of replacing Pingo (sole location & safety tool)
 
 Outdoor GM has **replaced "Find My Kids by Pingo"** as the only location & safety tool — so
@@ -276,10 +439,20 @@ Pingo consequence above.
 
 The trap/clock chain is **done**: #10 (district), #12 (site windows), #5 (traps +
 same-district suppression), and #11 (run-sheet) are all built; #13 (vouchers) now needs no
-code. What remains, roughly in order: the **safety-critical** hardening `3` (SOS→SMS fallback)
-+ `8` (offline resilience) — these are the "must ship before the August game" items — then
-`1` (auto-starvation sweep), the `4` auto-count sliver, and **P3** (end-game phase, post-game
-media #14, arena overlay, and the #15 night-before test game).
+code.
+
+**The 2026-06-03 playtest regressions are all cleared** (`16`–`21` built): ration window-gate +
+camera fix (`21`), alerts over the app + triggering-player hazard text (`17`), FCM hardening +
+keep-tracking-while-locked (`18`), lobby location capture + GM readiness + geofence phase guard
+(`16`), refreshed player intro (`19`), and the player Map/Stats split (`20`). **All six still need
+on-device verification from a build** — especially the camera launch (`21`) and the locked-screen
+tracking/alert path (`16`/`18`).
+
+With the playtest batch done, what remains is the pre-existing tier list, roughly in order: the
+**safety-critical** hardening `3` (SOS→SMS fallback) + `8` (offline resilience) — these are the
+"must ship before the August game" items — then `1` (auto-starvation sweep), the `4` auto-count
+sliver, and **P3** (end-game phase, post-game media #14, arena overlay, and the #15 night-before
+test game).
 
 The **safety nets & invariants** land *alongside the features they protect* — the integrity
 invariants are cheap rules/guards; the safety-critical welfare nets ride the `3` / `8` /

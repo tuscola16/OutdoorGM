@@ -13,6 +13,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Location**: Background GPS tracking (expo-location + expo-task-manager)
 - **Notifications**: Push (FCM) and SMS (Twilio, optional)
 
+## Roadmap
+
+When the user refers to **"the roadmap,"** they mean this pair of files at the repo root —
+always consult both:
+
+- **[ROADMAP.md](ROADMAP.md)** — the enhancement roadmap: outstanding work only, organized
+  by criticality tier (P0–P3) plus a "Safety nets & invariants" section and a dated
+  **"Field-test findings"** section for playtest defects. Items carry **stable numbers**
+  (`#1`–`#N`); landed items are removed but their numbers are never reused. When an item is
+  built, mark it (a `> **Built:**` note or move it to the "built and removed" callouts) rather
+  than deleting the context.
+- **[ROADMAP_DATA_MODEL.md](ROADMAP_DATA_MODEL.md)** — the **roadmap schema**: implementation-ready
+  data-model/Firestore-schema detail for each roadmap item, keyed by the same stable `#`/`§`
+  numbers. It extends `types/index.ts` and the `Collections` map in `services/firebase.ts`; new
+  fields are optional so legacy games keep working.
+
+Companion context: [COMPETITIVE_ANALYSIS.md](COMPETITIVE_ANALYSIS.md) explains the prioritization.
+Keep the two roadmap files in sync — a roadmap item and its schema share one number.
+
 ## Quick Commands
 
 > **Starting the app:** see [RUNNING.md](RUNNING.md) for the full local-dev guide
@@ -195,12 +214,16 @@ The survival "heartbeat": every `config.rationIntervalMinutes` window each playe
 photographs a numbered ration card so the GM can verify they ate, or they risk
 starvation.
 
-- **Player** (`components/RationPanel.tsx`, in the play screen): a per-window countdown,
-  a **live camera-only** capture (`expo-image-picker` → no library picks, anti-cheat), an
-  optional/required card-number field, and the submission status. The photo uploads to
-  **Firebase Storage** (`services/storage.ts`, `@react-native-firebase/storage`) at
-  `games/{gameId}/rations/{playerId}/{intervalIndex}.jpg`; `submitRation()` then writes the
-  `rations/{playerId}_{intervalIndex}` doc (deterministic id → idempotent re-submit).
+- **Player** (`components/RationPanel.tsx`, in the play screen): the capture UI is **gated to
+  the eat-window** — only the last `config.rationWindowMinutes` of each interval (#21). Before
+  then it shows a muted "opens in …" countdown; the player gets a **scheduled local
+  notification** the moment the window opens (fires even backgrounded/locked). When open: a
+  **live camera-only** capture (`expo-image-picker` → no library picks, anti-cheat; a
+  re-entry-guarded permission→launch flow), an optional/required card-number field, and the
+  submission status. The photo uploads to **Firebase Storage** (`services/storage.ts`,
+  `@react-native-firebase/storage`) at `games/{gameId}/rations/{playerId}/{intervalIndex}.jpg`;
+  `submitRation()` then writes the `rations/{playerId}_{intervalIndex}` doc (deterministic id →
+  idempotent re-submit).
 - **GM review feed**: mobile `app/(app)/gm/[gameId]/rations.tsx` (header button + pending
   badge) and the web `RationsModal`. Photo thumbnails + lightbox, valid/reject
   (`reviewRation()`), a "who hasn't eaten this window" glance, and a reused-card-number

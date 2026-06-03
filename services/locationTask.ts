@@ -141,16 +141,31 @@ export async function startLocationTracking(
   // watcher that works with just "While Using" (uploads while the app is open).
   let bgGranted = false;
   try {
-    // Time-box the background-permission request: on some Android builds it can
-    // wedge (or sit behind a settings redirect) and would otherwise block the
-    // foreground fallback below, leaving the player invisible to the GM.
-    const { status: bgStatus } = await withTimeout(
-      Location.requestBackgroundPermissionsAsync(),
-      8000,
-      'requestBackgroundPermissions'
-    );
-    bgGranted = bgStatus === 'granted';
-    setDiag({ background: bgStatus });
+    // Check the *current* background ("Allow all the time") grant first — this is instant and
+    // never prompts. If the player already granted it, trust it and skip
+    // requestBackgroundPermissionsAsync(): that request can wedge for ~seconds (on Android it
+    // sits behind the Settings redirect on 11+; on iOS it can hang even when already granted),
+    // and the old code's 8s timeout was wrongly flipping a fully-permissioned player to the
+    // foreground-only watcher ("you'll vanish when locked" despite "Allow all the time").
+    let bg = await Location.getBackgroundPermissionsAsync();
+    if (!bg.granted && bg.canAskAgain) {
+      // Not granted yet but we may ask — time-box the prompt (on Android it can wedge behind
+      // the settings redirect and would otherwise block the foreground fallback).
+      try {
+        bg = await withTimeout(
+          Location.requestBackgroundPermissionsAsync(),
+          8000,
+          'requestBackgroundPermissions'
+        );
+      } catch (err) {
+        // The prompt hung/threw — fall back to the current grant so an already-"Always"
+        // player (whose request hangs) still ends up on the background service.
+        setDiag({ lastError: `bg permission request: ${errMsg(err)}` });
+        bg = await Location.getBackgroundPermissionsAsync().catch(() => bg);
+      }
+    }
+    bgGranted = bg.status === 'granted';
+    setDiag({ background: bg.status });
   } catch (err) {
     bgGranted = false;
     setDiag({ background: 'error', lastError: `bg permission: ${errMsg(err)}` });
@@ -173,13 +188,20 @@ export async function startLocationTracking(
             accuracy,
             timeInterval,             // 5s normally, 15s in battery saver
             distanceInterval,         // 10m normally, 30m in battery saver
+            // Fitness activity + never auto-pause: iOS otherwise suspends updates
+            // when it thinks the player is stationary, dropping them off the map.
+            activityType: Location.ActivityType.Fitness,
+            pausesUpdatesAutomatically: false,
+            showsBackgroundLocationIndicator: true,
             foregroundService: {
               notificationTitle: 'Outdoor GM',
               notificationBody: 'Your location is being shared with your Game Master.',
               notificationColor: '#D4893F',
+              // Keep the location service (and uploads) alive even if the player
+              // swipes the app away — they must stay on the GM's map until they
+              // actually leave the game, not just while the app is foregrounded.
+              killServiceOnDestroy: false,
             },
-            showsBackgroundLocationIndicator: true,
-            pausesUpdatesAutomatically: false,
           }),
           10000,
           'startLocationUpdatesAsync'

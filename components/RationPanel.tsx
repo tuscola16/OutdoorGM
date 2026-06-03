@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, TextInput, Alert, ActivityIndicator } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { View, Text, StyleSheet, TextInput, Alert, ActivityIndicator, Linking } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import * as Notifications from 'expo-notifications';
 import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
 import { Collections } from '@/services/firebase';
 import { submitRation, rationInterval } from '@/services/gameService';
@@ -16,11 +17,12 @@ import type { GameConfig, RationStatus } from '@/types';
 type Ts = FirebaseFirestoreTypes.Timestamp | null;
 
 /**
- * Player-facing ration-card capture for the current eat window (Rules 6–9). Shows
- * a countdown to the window's close, the submission status, and — when nothing
- * valid is in for this window — a "photograph your card" flow. The photo is taken
- * live with the camera (anti-cheat: no library picks), uploaded to Storage, then
- * recorded via submitRation(). The GM reviews and marks it valid/rejected.
+ * Player-facing ration-card capture (Rules 6–9). The eat-window is only **open** for
+ * the last `rationWindowMinutes` of each interval (#21) — before that the panel shows a
+ * muted "opens in …" countdown rather than nagging for a card, and the player gets a
+ * scheduled local notification the moment the window opens (fires even backgrounded /
+ * locked). When open, the player photographs their numbered card live (anti-cheat: no
+ * library picks); it uploads to Storage and is recorded via submitRation() for GM review.
  */
 export function RationPanel({
   gameId,
@@ -42,6 +44,10 @@ export function RationPanel({
   const [cardNumber, setCardNumber] = useState('');
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<RationStatus | null>(null);
+  // Synchronous re-entry guard: the camera permission prompt + launch are async, and
+  // without this a second tap before the camera opens fires a *concurrent*
+  // launchCameraAsync, which wedges the picker so it never opens (the field-test bug).
+  const launchingRef = useRef(false);
 
   const intervalIndex = interval?.index ?? null;
 
@@ -64,25 +70,110 @@ export function RationPanel({
       );
   }, [gameId, player.userId, intervalIndex]);
 
+  // Alert the player the moment each future eat-window opens — scheduled as local
+  // notifications so they fire even when the app is backgrounded or the phone is locked.
+  // Deterministic ids (`ration-<game>-<i>`) so a remount/relaunch replaces rather than
+  // duplicates; we cancel them when the panel unmounts (player out / game over / leave).
+  const startedMs = startedAt?.toMillis?.() ?? null;
+  useEffect(() => {
+    if (!gameId || !startedMs || !config.rationsEnabled) return;
+    let cancelled = false;
+    const scheduled: string[] = [];
+    (async () => {
+      const windowMs = config.rationIntervalMinutes * 60_000;
+      const total = Math.ceil(config.durationMinutes / config.rationIntervalMinutes);
+      const openMs =
+        Math.min(Math.max(config.rationWindowMinutes, 0), config.rationIntervalMinutes) * 60_000;
+      const nowMs = Date.now();
+      for (let i = 0; i < total; i++) {
+        const opensAt = startedMs + (i + 1) * windowMs - openMs;
+        if (opensAt <= nowMs + 1000) continue; // already open or past — skip
+        try {
+          const id = await Notifications.scheduleNotificationAsync({
+            identifier: `ration-${gameId}-${i}`,
+            content: {
+              title: '🍖 Ration window open',
+              body: 'Photograph your ration card before the window closes — or you starve.',
+              sound: true,
+            },
+            trigger: { date: new Date(opensAt), channelId: 'broadcasts' },
+          });
+          if (cancelled) {
+            Notifications.cancelScheduledNotificationAsync(id).catch(() => {});
+            return;
+          }
+          scheduled.push(id);
+        } catch {
+          /* best effort — a failed schedule shouldn't break the panel */
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      scheduled.forEach((id) => Notifications.cancelScheduledNotificationAsync(id).catch(() => {}));
+    };
+  }, [
+    gameId,
+    startedMs,
+    config.rationsEnabled,
+    config.rationIntervalMinutes,
+    config.rationWindowMinutes,
+    config.durationMinutes,
+  ]);
+
   if (!interval || !interval.isPlaying || intervalIndex == null) return null;
 
-  const remainingSecs = Math.max(0, Math.floor((interval.windowEndsAt - now) / 1000));
   const requireCard = config.enforceUniqueRationCards;
 
+  // Before the eat-window opens: a muted, non-actionable heads-up so the player knows
+  // a ration check is coming — not the capture UI (the panel isn't "open at all times").
+  if (!interval.isOpen) {
+    const opensInSecs = Math.max(0, Math.floor((interval.windowStartsAt - now) / 1000));
+    return (
+      <View style={[styles.card, styles.cardClosed]}>
+        <View style={styles.headerRow}>
+          <Ionicons name="restaurant-outline" size={18} color={Colors.textSecondary} />
+          <Text style={styles.titleMuted}>Ration check</Text>
+          <View style={{ flex: 1 }} />
+          <Text style={styles.countdown}>opens in {formatDuration(opensInSecs)}</Text>
+        </View>
+        <Text style={styles.hint}>
+          No card needed yet. When the window opens you'll be alerted to photograph your ration card.
+        </Text>
+      </View>
+    );
+  }
+
+  const remainingSecs = Math.max(0, Math.floor((interval.windowEndsAt - now) / 1000));
+
   async function handleSubmit() {
+    if (launchingRef.current || busy) return; // already capturing/uploading
     if (requireCard && !cardNumber.trim()) {
       Alert.alert('Card number required', 'Enter the number printed on your ration card before submitting.');
       return;
     }
+    launchingRef.current = true;
     try {
-      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      // Resolve permission deterministically before launching: check current state,
+      // ask only if we still can, and route to Settings if it's been hard-denied —
+      // rather than re-prompting on every tap.
+      let perm = await ImagePicker.getCameraPermissionsAsync();
+      if (!perm.granted && perm.canAskAgain) {
+        perm = await ImagePicker.requestCameraPermissionsAsync();
+      }
       if (!perm.granted) {
         Alert.alert(
-          'Camera needed',
-          'Outdoor GM needs camera access to photograph your ration card. Enable it in Settings.'
+          'Camera access needed',
+          perm.canAskAgain
+            ? 'Outdoor GM needs the camera to photograph your ration card.'
+            : 'Camera access is blocked. Enable it in Settings to photograph your ration card.',
+          perm.canAskAgain
+            ? [{ text: 'OK' }]
+            : [{ text: 'Cancel', style: 'cancel' }, { text: 'Open Settings', onPress: () => Linking.openSettings() }]
         );
         return;
       }
+
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         quality: 0.6,
@@ -103,6 +194,7 @@ export function RationPanel({
     } catch (err) {
       Alert.alert('Could not submit', friendlyError(err));
     } finally {
+      launchingRef.current = false;
       setBusy(false);
     }
   }
@@ -173,8 +265,10 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   cardDanger: { borderColor: Colors.danger },
+  cardClosed: { opacity: 0.85 },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   title: { fontSize: 15, fontWeight: '700', color: Colors.text },
+  titleMuted: { fontSize: 15, fontWeight: '700', color: Colors.textSecondary },
   countdown: { fontSize: 13, fontWeight: '700', color: Colors.textSecondary, fontVariant: ['tabular-nums'] },
   countdownDanger: { color: Colors.danger },
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },

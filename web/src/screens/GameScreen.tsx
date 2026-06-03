@@ -1268,12 +1268,18 @@ function ConfigModal({
   const [battery, setBattery] = useState(initial.batterySaver);
   const [rations, setRations] = useState(initial.rationsEnabled);
   const [rationMinutes, setRationMinutes] = useState(String(initial.rationIntervalMinutes));
+  const [rationWindow, setRationWindow] = useState(String(initial.rationWindowMinutes));
   const [uniqueCards, setUniqueCards] = useState(initial.enforceUniqueRationCards);
   const [busy, setBusy] = useState(false);
 
   async function save() {
     const minutes = Math.max(5, Math.round(Number(duration) || initial.durationMinutes));
     const rationMins = Math.max(1, Math.round(Number(rationMinutes) || initial.rationIntervalMinutes));
+    // Open window can't exceed the interval (clamped); blank/0 falls back to the default.
+    const rationWindowMins = Math.min(
+      rationMins,
+      Math.max(1, Math.round(Number(rationWindow) || initial.rationWindowMinutes))
+    );
     setBusy(true);
     try {
       await updateGameConfig(gameId, {
@@ -1284,6 +1290,7 @@ function ConfigModal({
           batterySaver: battery,
           rationsEnabled: rations,
           rationIntervalMinutes: rationMins,
+          rationWindowMinutes: rationWindowMins,
           enforceUniqueRationCards: uniqueCards,
         },
       });
@@ -1308,9 +1315,17 @@ function ConfigModal({
       {rations && (
         <>
           <div className="field">
-            <label>Ration window (minutes)</label>
+            <label>Ration interval (minutes)</label>
             <input className="input" type="number" value={rationMinutes} onChange={(e) => setRationMinutes(e.target.value)} />
             <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>How often players must submit a ration card</span>
+          </div>
+          <div className="field">
+            <label>Open window (minutes)</label>
+            <input className="input" type="number" value={rationWindow} onChange={(e) => setRationWindow(e.target.value)} />
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              How long the card window stays open before each interval ends — players are alerted when
+              it opens. Capped at the interval length.
+            </span>
           </div>
           <Toggle label="Unique ration cards" checked={uniqueCards} onChange={setUniqueCards} />
         </>

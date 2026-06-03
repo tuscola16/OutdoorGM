@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert
+  View, Text, StyleSheet, TouchableOpacity, ScrollView, Switch
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -17,6 +17,7 @@ export default function CreateGameScreen() {
   const { user, profile } = useAuth();
   const [gameName, setGameName] = useState('');
   const [displayName, setDisplayName] = useState(profile?.displayName ?? '');
+  const [isTest, setIsTest] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -29,8 +30,8 @@ export default function CreateGameScreen() {
     setLoading(true);
     try {
       const fcmToken = await getFcmToken();
-      const game = await createGame(gameName.trim(), displayName.trim(), fcmToken ?? undefined);
-      router.replace(`/(app)/gm/${game.id}`);
+      const game = await createGame(gameName.trim(), displayName.trim(), fcmToken ?? undefined, isTest);
+      router.replace(isTest ? `/(app)/gm/${game.id}/test` : `/(app)/gm/${game.id}`);
     } catch (err) {
       setError(friendlyError(err));
     } finally {
@@ -51,8 +52,24 @@ export default function CreateGameScreen() {
         <View style={styles.form}>
           <Input label="Game Name" value={gameName} onChangeText={setGameName} placeholder="e.g. Arena 2025" autoFocus />
           <Input label="Your GM Name" value={displayName} onChangeText={setDisplayName} placeholder="e.g. Gamemaker Snow" maxLength={32} />
+
+          <View style={styles.testRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.testLabel}>This is a test</Text>
+              <Text style={styles.testHint}>
+                Auto-configures a short game that walks you through verifying every feature.
+              </Text>
+            </View>
+            <Switch
+              value={isTest}
+              onValueChange={setIsTest}
+              trackColor={{ false: Colors.border, true: Colors.primary }}
+              thumbColor={Colors.white}
+            />
+          </View>
+
           {error ? <Text style={styles.error}>{error}</Text> : null}
-          <Button title="Create Game" onPress={handleCreate} loading={loading} />
+          <Button title={isTest ? 'Create Test Event' : 'Create Game'} onPress={handleCreate} loading={loading} />
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -67,5 +84,12 @@ const styles = StyleSheet.create({
   title: { fontSize: 28, fontWeight: '800', color: Colors.text, marginBottom: 8 },
   subtitle: { fontSize: 15, color: Colors.textSecondary, marginBottom: 32, lineHeight: 22 },
   form: { gap: 16 },
+  testRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: Colors.surface, borderRadius: 12, padding: 16,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  testLabel: { fontSize: 15, fontWeight: '700', color: Colors.text },
+  testHint: { fontSize: 12, color: Colors.textSecondary, marginTop: 2, lineHeight: 17 },
   error: { color: Colors.danger, fontSize: 14, textAlign: 'center' },
 });

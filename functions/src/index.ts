@@ -6,3 +6,4 @@ export { onMemberWrite } from './members';
 export { createGame, joinGameByCode, deleteGame } from './games';
 export { cleanupRationPhotosOnGameEnd } from './cleanup';
 export { runScheduledEvents } from './runsheet';
+export { rearmCheckpoint } from './rearm';

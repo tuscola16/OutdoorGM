@@ -54,7 +54,7 @@ service cloud.firestore {
       // and creatorId are protected because changing them isn't permitted here).
       allow update: if isGameGM(gameId)
         && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['name', 'phase', 'status', 'rules', 'boundary', 'config', 'startedAt', 'endedAt']);
+             .hasOnly(['name', 'phase', 'status', 'rules', 'boundary', 'config', 'startedAt', 'endedAt', 'isTest', 'testStepIndex']);
 
       // Checkpoints — GM only. Players intentionally cannot see checkpoint
       // locations (it would reveal the objectives), so reads are GM-scoped too.
