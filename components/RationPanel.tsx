@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TextInput, Alert, ActivityIndicator, Linking } from 'react-native';
+import { View, Text, StyleSheet, TextInput, Alert, ActivityIndicator, Linking, Keyboard } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as Notifications from 'expo-notifications';
@@ -44,6 +44,10 @@ export function RationPanel({
   const [cardNumber, setCardNumber] = useState('');
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<RationStatus | null>(null);
+  // On-screen diagnostics so a field tester can see what the camera + reminder
+  // scheduling actually did, without needing a logcat. Surfaced as muted lines.
+  const [camDebug, setCamDebug] = useState('');
+  const [notifDebug, setNotifDebug] = useState('');
   // Synchronous re-entry guard: the camera permission prompt + launch are async, and
   // without this a second tap before the camera opens fires a *concurrent*
   // launchCameraAsync, which wedges the picker so it never opens (the field-test bug).
@@ -80,11 +84,20 @@ export function RationPanel({
     let cancelled = false;
     const scheduled: string[] = [];
     (async () => {
+      // Reminders are useless without notification permission — make sure we have it
+      // (the app asks on launch, but a denial would silently swallow every alert).
+      let perm = await Notifications.getPermissionsAsync();
+      if (!perm.granted && perm.canAskAgain) perm = await Notifications.requestPermissionsAsync();
+      if (!perm.granted) {
+        if (!cancelled) setNotifDebug('Ration alerts OFF — enable notifications in Settings');
+        return;
+      }
       const windowMs = config.rationIntervalMinutes * 60_000;
       const total = Math.ceil(config.durationMinutes / config.rationIntervalMinutes);
       const openMs =
         Math.min(Math.max(config.rationWindowMinutes, 0), config.rationIntervalMinutes) * 60_000;
       const nowMs = Date.now();
+      let nextOpensAt: number | null = null;
       for (let i = 0; i < total; i++) {
         const opensAt = startedMs + (i + 1) * windowMs - openMs;
         if (opensAt <= nowMs + 1000) continue; // already open or past — skip
@@ -103,9 +116,18 @@ export function RationPanel({
             return;
           }
           scheduled.push(id);
-        } catch {
-          /* best effort — a failed schedule shouldn't break the panel */
+          if (nextOpensAt == null) nextOpensAt = opensAt;
+        } catch (err) {
+          if (!cancelled) setNotifDebug(`alert scheduling failed: ${err instanceof Error ? err.message : String(err)}`);
         }
+      }
+      if (!cancelled) {
+        setNotifDebug(
+          scheduled.length === 0
+            ? 'No upcoming ration alerts to schedule'
+            : `🔔 ${scheduled.length} ration alert${scheduled.length === 1 ? '' : 's'} set` +
+                (nextOpensAt ? ` · next ${new Date(nextOpensAt).toLocaleTimeString()}` : '')
+        );
       }
     })();
     return () => {
@@ -140,6 +162,7 @@ export function RationPanel({
         <Text style={styles.hint}>
           No card needed yet. When the window opens you'll be alerted to photograph your ration card.
         </Text>
+        {notifDebug ? <Text style={styles.debug}>{notifDebug}</Text> : null}
       </View>
     );
   }
@@ -153,15 +176,23 @@ export function RationPanel({
       return;
     }
     launchingRef.current = true;
+    setCamDebug('preparing…');
     try {
+      // Dismiss the keyboard BEFORE launching the camera. Launching the camera
+      // activity while the soft keyboard is still up makes Android open and then
+      // immediately cancel it (the "brief dim/flash, then nothing" field-test bug) —
+      // give the window a moment to settle after the keyboard closes.
+      Keyboard.dismiss();
+      await new Promise((r) => setTimeout(r, 350));
+
       // Resolve permission deterministically before launching: check current state,
-      // ask only if we still can, and route to Settings if it's been hard-denied —
-      // rather than re-prompting on every tap.
+      // ask only if we still can, and route to Settings if it's been hard-denied.
       let perm = await ImagePicker.getCameraPermissionsAsync();
       if (!perm.granted && perm.canAskAgain) {
         perm = await ImagePicker.requestCameraPermissionsAsync();
       }
       if (!perm.granted) {
+        setCamDebug(`camera permission: ${perm.status}`);
         Alert.alert(
           'Camera access needed',
           perm.canAskAgain
@@ -174,15 +205,18 @@ export function RationPanel({
         return;
       }
 
+      setCamDebug('opening camera…');
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         quality: 0.6,
-        allowsEditing: false,
       });
-      if (result.canceled || !result.assets?.[0]?.uri) return;
+      if (result.canceled) { setCamDebug('camera canceled (no photo taken)'); return; }
+      const uri = result.assets?.[0]?.uri;
+      if (!uri) { setCamDebug('camera returned no image'); return; }
 
       setBusy(true);
-      const url = await uploadRationPhoto(gameId, player.userId, intervalIndex!, result.assets[0].uri);
+      setCamDebug('uploading…');
+      const url = await uploadRationPhoto(gameId, player.userId, intervalIndex!, uri);
       await submitRation(
         gameId,
         player,
@@ -191,7 +225,9 @@ export function RationPanel({
         requireCard ? cardNumber.trim() : cardNumber.trim() || undefined
       );
       setCardNumber('');
+      setCamDebug('submitted ✓');
     } catch (err) {
+      setCamDebug(`error: ${err instanceof Error ? err.message : String(err)}`);
       Alert.alert('Could not submit', friendlyError(err));
     } finally {
       launchingRef.current = false;
@@ -247,6 +283,8 @@ export function RationPanel({
             onPress={handleSubmit}
             loading={busy}
           />
+          {camDebug ? <Text style={styles.debug}>camera: {camDebug}</Text> : null}
+          {notifDebug ? <Text style={styles.debug}>{notifDebug}</Text> : null}
         </>
       )}
     </View>
@@ -276,6 +314,7 @@ const styles = StyleSheet.create({
   statusPending: { color: Colors.textSecondary, fontSize: 14, flex: 1 },
   rejected: { color: Colors.danger, fontSize: 13, fontWeight: '600' },
   hint: { color: Colors.textSecondary, fontSize: 13, lineHeight: 18 },
+  debug: { color: Colors.textMuted, fontSize: 11, fontStyle: 'italic' },
   input: {
     backgroundColor: Colors.surfaceElevated,
     borderRadius: 10,

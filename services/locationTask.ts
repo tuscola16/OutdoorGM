@@ -129,7 +129,12 @@ export async function startLocationTracking(
   // Tracking cadence: tighter when accuracy matters, looser to save battery.
   const accuracy = options.batterySaver ? Location.Accuracy.Balanced : Location.Accuracy.High;
   const timeInterval = options.batterySaver ? 15000 : 5000;
-  const distanceInterval = options.batterySaver ? 30 : 10;
+  // distanceInterval MUST be 0 (purely time-based updates). A non-zero displacement
+  // filter means the OS delivers nothing while the player stands still — so a player
+  // waiting at a checkpoint (or just standing) stops uploading: the geofence never gets
+  // a write inside the radius (no event), and the GM sees them go stale within ~2 min.
+  // Time-based updates keep them reporting and fire checkpoints even when stationary/locked.
+  const distanceInterval = 0;
 
   await AsyncStorage.setItem(ACTIVE_GAME_KEY, gameId);
   await AsyncStorage.setItem(DISPLAY_NAME_KEY, displayName);
@@ -228,7 +233,8 @@ export async function startLocationTracking(
     if (foregroundSub) { foregroundSub.remove(); foregroundSub = null; }
     foregroundSub = await withTimeout(
       Location.watchPositionAsync(
-        { accuracy, timeInterval, distanceInterval: options.batterySaver ? 20 : 5 },
+        // distanceInterval 0 → time-based updates even while stationary (see above).
+        { accuracy, timeInterval, distanceInterval: 0 },
         async (pos) => {
           const user = auth().currentUser;
           if (!user) return;

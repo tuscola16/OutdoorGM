@@ -205,6 +205,11 @@ that by the time the GM is ready to start, every player already has a fix.
 >   re-assert) now run in `lobby` as well as `play`, so a waiting player is uploading location
 >   before kickoff. The lobby waiting screen shows a "Location ready — you're on your GM's map" /
 >   "Getting your location ready…" indicator.
+> - **Up-front permission priming** (`components/LobbyPermissions.tsx`, `services/permissions.ts`):
+>   the lobby waiting screen requests *all* player permissions at once — location "Allow all the
+>   time", notifications, and camera (when rations are on) — instead of prompting mid-game when each
+>   feature first fires. Shows a live checklist with a per-item **Allow / Settings** fix and
+>   re-checks on return from Settings.
 > - **Geofence phase guard** (`functions/src/geofence.ts`): the function now reads the game doc
 >   and returns unless `phase === 'play'`, so lobby/setup fixes appear on the GM map but **never**
 >   fire a checkpoint prematurely (mirrors the `gamePhase()` legacy default).

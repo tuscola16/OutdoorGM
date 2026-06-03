@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, Alert, TouchableOpacity, Linking, AppState,
+  View, Text, StyleSheet, Alert, TouchableOpacity, Linking, AppState, ScrollView, Keyboard,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/Button';
 import { GameMap } from '@/components/GameMap';
 import { BroadcastFeed } from '@/components/BroadcastFeed';
 import { AlertOverlay } from '@/components/AlertOverlay';
+import { LobbyPermissions } from '@/components/LobbyPermissions';
 import { RationPanel } from '@/components/RationPanel';
 import { Tutorial } from '@/components/Tutorial';
 import * as Location from 'expo-location';
@@ -53,6 +54,15 @@ export default function PlayerGameScreen() {
   // Play screen has two views — a full-screen Map and a Stats view — because the
   // map was unusably small when crammed in with everything else (#20).
   const [playTab, setPlayTab] = useState<'map' | 'stats'>('map');
+  // Hide the pinned action bar while the keyboard is up, so the "I've been killed" /
+  // SOS buttons don't float over the ration-card input (they're back the moment the
+  // keyboard closes; the buttons also live at the end of the scrollable Stats view).
+  const [keyboardUp, setKeyboardUp] = useState(false);
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardDidShow', () => setKeyboardUp(true));
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardUp(false));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
 
   // Tracking diagnostics — polled from the location service so a player (e.g. one
   // stuck on "Starting tracking…") can tap the status card to see exactly where
@@ -276,7 +286,12 @@ export default function PlayerGameScreen() {
 
   function renderWaiting() {
     return (
-      <View style={styles.centerBody}>
+      <ScrollView
+        style={styles.waitScroll}
+        contentContainerStyle={styles.waitContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.waitIcon}>
           <Ionicons name="hourglass-outline" size={48} color={Colors.primary} />
         </View>
@@ -296,12 +311,14 @@ export default function PlayerGameScreen() {
           <Ionicons name="help-circle-outline" size={18} color={Colors.primary} />
           <Text style={styles.howToText}>How to play</Text>
         </TouchableOpacity>
+        {/* Ask for every permission now, in the lobby, instead of mid-game. */}
+        {phase === 'lobby' && <LobbyPermissions rationsEnabled={config.rationsEnabled} />}
         {gameId ? (
           <View style={styles.waitFeed}>
-            <BroadcastFeed gameId={gameId} max={10} />
+            <BroadcastFeed gameId={gameId} max={10} scroll={false} />
           </View>
         ) : null}
-      </View>
+      </ScrollView>
     );
   }
 
@@ -372,7 +389,13 @@ export default function PlayerGameScreen() {
               </View>
             </View>
           ) : (
-            <View style={styles.statsBody}>
+            <ScrollView
+              style={styles.statsBody}
+              contentContainerStyle={styles.statsContent}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+              showsVerticalScrollIndicator={false}
+            >
               <View style={styles.timerCard}>
                 <Text style={styles.timerLabel}>TIME LEFT</Text>
                 <Text style={[styles.timerValue, remaining === 0 && styles.timerValueDanger]}>
@@ -427,12 +450,15 @@ export default function PlayerGameScreen() {
               )}
 
               <Text style={styles.feedHeading}>Messages</Text>
-              <BroadcastFeed gameId={gameId!} />
-            </View>
+              <BroadcastFeed gameId={gameId!} scroll={false} />
+            </ScrollView>
           )}
         </View>
 
-        {/* Pinned action bar — always reachable from either tab. */}
+        {/* Pinned action bar — reachable from either tab, sitting below the (now
+            scrollable) content so it never overlaps it. Hidden only while the keyboard
+            is up so it can't float over the ration-card input; it returns the moment
+            the keyboard closes (e.g. as soon as the camera launch dismisses it). */}
         {out ? (
           <View style={[styles.statusCard, styles.outCard]}>
             <View style={[styles.statusDot, styles.inactiveDot]} />
@@ -443,7 +469,7 @@ export default function PlayerGameScreen() {
               </Text>
             </View>
           </View>
-        ) : (
+        ) : !keyboardUp ? (
           <View style={styles.outBtnWrap}>
             <Button title="I've been killed" onPress={handleMarkOut} variant="danger" />
             <TouchableOpacity style={styles.sosBtn} onPress={handleSos}>
@@ -451,7 +477,7 @@ export default function PlayerGameScreen() {
               <Text style={styles.sosText}>Safety alert — I need help</Text>
             </TouchableOpacity>
           </View>
-        )}
+        ) : null}
       </>
     );
   }
@@ -515,6 +541,8 @@ const styles = StyleSheet.create({
 
   // Waiting / results
   centerBody: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32, gap: 12 },
+  waitScroll: { flex: 1 },
+  waitContent: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32, paddingVertical: 24, gap: 12 },
   waitIcon: {
     width: 96, height: 96, borderRadius: 48, backgroundColor: Colors.surface,
     alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: Colors.border, marginBottom: 8,
@@ -552,6 +580,7 @@ const styles = StyleSheet.create({
   activeTabText: { color: Colors.primary },
   playContent: { flex: 1 },
   statsBody: { flex: 1 },
+  statsContent: { paddingBottom: 12 },
   feedHeading: { fontSize: 11, color: Colors.textSecondary, fontWeight: '700', letterSpacing: 1.5, marginHorizontal: 16, marginBottom: 6 },
 
   mapFull: { flex: 1, marginHorizontal: 16, marginBottom: 8, borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: Colors.border },
@@ -606,10 +635,14 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.danger,
   },
   settingsBtnText: { color: Colors.danger, fontSize: 13, fontWeight: '600' },
-  outBtnWrap: { paddingHorizontal: 16, paddingBottom: 16, gap: 10 },
+  outBtnWrap: {
+    paddingHorizontal: 16, paddingTop: 8, paddingBottom: 16, gap: 10,
+    backgroundColor: Colors.background, borderTopWidth: 1, borderTopColor: Colors.border,
+  },
   sosBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
     paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: Colors.danger,
+    backgroundColor: Colors.background,
   },
   sosText: { color: Colors.danger, fontSize: 14, fontWeight: '600' },
 });

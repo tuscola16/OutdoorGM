@@ -253,7 +253,14 @@ export function GameMap({
       // lands the dot exactly on the checkpoint coordinate. The name label is absolutely
       // positioned below and doesn't affect the layout box (otherwise it would push the
       // dot up toward the top of the radius).
-      el.style.cssText = `position:relative;width:16px;height:16px;cursor:pointer;`;
+      //
+      // Do NOT set `position` here: Mapbox positions every marker by writing a
+      // `transform` onto this element and relies on its own `.mapboxgl-marker`
+      // rule keeping it `position:absolute`. An inline `position:relative` would
+      // win over that rule, drop the element back into normal flow, and offset
+      // the dot from its true coordinate. The element is still a positioned
+      // ancestor (absolute, via Mapbox), so the label's `left:50%` resolves fine.
+      el.style.cssText = `width:16px;height:16px;cursor:pointer;`;
       const cpColor = KIND_META[checkpointKind(cp)].color;
       el.innerHTML = `
         <div style="width:16px;height:16px;border-radius:50%;background:${cpColor};border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.5)"></div>

@@ -249,7 +249,7 @@ export default function PlayersScreen() {
           <Ionicons name="arrow-back" size={24} color={Colors.text} />
         </TouchableOpacity>
         <Text style={styles.title}>Players</Text>
-        <Text style={styles.count}>{members.length} total</Text>
+        <Text style={styles.count}>{players.length} player{players.length !== 1 ? 's' : ''}</Text>
       </View>
 
       <FlatList
@@ -261,7 +261,10 @@ export default function PlayersScreen() {
           members.length > 0 ? (
             <View style={styles.legend}>
               <Text style={styles.legendText}>
-                {gms.length} GM{gms.length !== 1 ? 's' : ''} · {players.length} player{players.length !== 1 ? 's' : ''} · {livingPlayers} alive{districtCount > 0 ? ` · ${districtCount} district${districtCount !== 1 ? 's' : ''}` : ''}
+                {players.length} player{players.length !== 1 ? 's' : ''} · {livingPlayers} alive{districtCount > 0 ? ` · ${districtCount} district${districtCount !== 1 ? 's' : ''}` : ''}
+              </Text>
+              <Text style={styles.legendGm}>
+                Staff: {gms.length} GM{gms.length !== 1 ? 's' : ''}
               </Text>
             </View>
           ) : null
@@ -329,8 +332,10 @@ const styles = StyleSheet.create({
   title: { flex: 1, fontSize: 20, fontWeight: '800', color: Colors.text },
   count: { fontSize: 14, color: Colors.textSecondary },
   list: { paddingHorizontal: 16, paddingBottom: 24 },
-  legend: { paddingVertical: 8, paddingHorizontal: 4 },
+  legend: { paddingVertical: 8, paddingHorizontal: 4, gap: 2 },
   legendText: { fontSize: 13, color: Colors.textSecondary },
+  // GM count is kept on its own line, separate from the player counts (GM-only roster).
+  legendGm: { fontSize: 12, color: Colors.textMuted, fontWeight: '600' },
   row: {
     flexDirection: 'row',
     alignItems: 'center',

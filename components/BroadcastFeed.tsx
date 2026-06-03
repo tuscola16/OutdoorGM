@@ -14,7 +14,17 @@ import type { Broadcast } from '@/types';
  * drop into any player screen. Players see global messages (targetPlayerId == null)
  * plus ones targeted at them; Firestore can't OR those, so we run two listeners.
  */
-export function BroadcastFeed({ gameId, max = 30 }: { gameId: string; max?: number }) {
+export function BroadcastFeed({
+  gameId,
+  max = 30,
+  scroll = true,
+}: {
+  gameId: string;
+  max?: number;
+  /** When false, render the items inline (no internal ScrollView) so the feed can
+   * live inside a parent ScrollView without nesting two vertical scrollers. */
+  scroll?: boolean;
+}) {
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
 
   useEffect(() => {
@@ -61,14 +71,19 @@ export function BroadcastFeed({ gameId, max = 30 }: { gameId: string; max?: numb
     );
   }
 
+  const items = broadcasts.map((b) => (
+    <View key={b.id} style={[styles.item, b.targetPlayerId ? styles.targeted : null]}>
+      <Ionicons name={iconFor(b)} size={16} color={colorFor(b)} style={{ marginTop: 1 }} />
+      <Text style={styles.message}>{b.message}</Text>
+    </View>
+  ));
+
+  // Inline (no own scroll) when embedded in a parent ScrollView.
+  if (!scroll) return <View style={styles.inlineList}>{items}</View>;
+
   return (
     <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
-      {broadcasts.map((b) => (
-        <View key={b.id} style={[styles.item, b.targetPlayerId ? styles.targeted : null]}>
-          <Ionicons name={iconFor(b)} size={16} color={colorFor(b)} style={{ marginTop: 1 }} />
-          <Text style={styles.message}>{b.message}</Text>
-        </View>
-      ))}
+      {items}
     </ScrollView>
   );
 }
@@ -76,6 +91,7 @@ export function BroadcastFeed({ gameId, max = 30 }: { gameId: string; max?: numb
 const styles = StyleSheet.create({
   list: { maxHeight: 160, marginHorizontal: 16, marginBottom: 12 },
   listContent: { gap: 8 },
+  inlineList: { marginHorizontal: 16, marginBottom: 12, gap: 8 },
   item: {
     flexDirection: 'row',
     gap: 10,

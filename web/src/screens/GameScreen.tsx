@@ -145,7 +145,7 @@ export function GameScreen() {
           </button>
         )}
         <button className="btn btn--ghost" style={{ padding: '8px 12px' }} onClick={() => setShowPlayers(true)}>
-          Players ({members.length})
+          Players ({players.length})
         </button>
       </header>
 
@@ -1140,9 +1140,13 @@ function PlayersModal({
   const alive = players.filter((m) => !m.out).length;
   const districtCount = new Set(players.map(districtKey).filter((k) => k !== '~')).size;
   return (
-    <Modal title={`Players (${members.length})`} onClose={onClose}>
+    <Modal title={`Players (${players.length})`} onClose={onClose}>
       <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-        {gms.length} GM{gms.length !== 1 ? 's' : ''} · {players.length} player{players.length !== 1 ? 's' : ''} · {alive} alive{districtCount > 0 ? ` · ${districtCount} district${districtCount !== 1 ? 's' : ''}` : ''}
+        {players.length} player{players.length !== 1 ? 's' : ''} · {alive} alive{districtCount > 0 ? ` · ${districtCount} district${districtCount !== 1 ? 's' : ''}` : ''}
+      </div>
+      {/* GM count kept on its own line, separate from the player counts (GM-only dashboard). */}
+      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted, var(--text-secondary))' }}>
+        Staff: {gms.length} GM{gms.length !== 1 ? 's' : ''}
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 380, overflowY: 'auto' }}>
         {members.length === 0 && <p style={{ color: 'var(--text-secondary)' }}>No members yet.</p>}
