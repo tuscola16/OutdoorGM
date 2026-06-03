@@ -12,6 +12,7 @@ import type {
   GamePhase,
   Broadcast,
   RationSubmission,
+  ScheduledEvent,
 } from '@/types';
 
 interface GameContextValue {
@@ -26,6 +27,8 @@ interface GameContextValue {
   broadcasts: Broadcast[];
   /** Ration submissions awaiting/holding GM review (GM only). */
   rations: RationSubmission[];
+  /** Run-sheet timed actions (GM only, #11). */
+  scheduledEvents: ScheduledEvent[];
   loadGame: (gameId: string, role: 'player' | 'gm') => void;
   clearGame: () => void;
 }
@@ -42,6 +45,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   const [arrivals, setArrivals] = useState<Arrival[]>([]);
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
   const [rations, setRations] = useState<RationSubmission[]>([]);
+  const [scheduledEvents, setScheduledEvents] = useState<ScheduledEvent[]>([]);
 
   const loadGame = useCallback((id: string, role: 'player' | 'gm') => {
     setGameId(id);
@@ -58,6 +62,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     setArrivals([]);
     setBroadcasts([]);
     setRations([]);
+    setScheduledEvents([]);
   }, []);
 
   // Subscribe to game document
@@ -200,9 +205,23 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
       );
   }, [gameId, myRole]);
 
+  // Subscribe to the run-sheet (GM only, #11).
+  useEffect(() => {
+    if (!gameId || myRole !== 'gm') return;
+    return firestore()
+      .collection(Collections.GAMES)
+      .doc(gameId)
+      .collection(Collections.SCHEDULED_EVENTS)
+      .orderBy('createdAt', 'asc')
+      .onSnapshot(
+        (snap) => setScheduledEvents(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ScheduledEvent))),
+        (err) => console.error('[GameContext] scheduledEvents listener error', err)
+      );
+  }, [gameId, myRole]);
+
   return (
     <GameContext.Provider
-      value={{ game, phase: gamePhase(game), myRole, checkpoints, members, playerLocations, arrivals, broadcasts, rations, loadGame, clearGame }}
+      value={{ game, phase: gamePhase(game), myRole, checkpoints, members, playerLocations, arrivals, broadcasts, rations, scheduledEvents, loadGame, clearGame }}
     >
       {children}
     </GameContext.Provider>

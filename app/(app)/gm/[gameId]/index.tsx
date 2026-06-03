@@ -274,6 +274,11 @@ export default function GMGameScreen() {
               )}
             </TouchableOpacity>
           )}
+          {phase !== 'results' && (
+            <TouchableOpacity onPress={() => router.push(`/(app)/gm/${gameId}/runsheet`)} style={styles.headerBtn}>
+              <Ionicons name="time-outline" size={22} color={Colors.text} />
+            </TouchableOpacity>
+          )}
           <TouchableOpacity onPress={() => router.push(`/(app)/gm/${gameId}/players`)} style={styles.headerBtn}>
             <Ionicons name="people-outline" size={22} color={Colors.text} />
           </TouchableOpacity>

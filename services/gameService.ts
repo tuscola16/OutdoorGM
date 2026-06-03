@@ -10,6 +10,9 @@ import {
   type GameStatus,
   type MapBoundary,
   type EliminationCause,
+  type FsTimestamp,
+  type ScheduledEvent,
+  type ScheduledActionType,
 } from '@/types';
 
 /** Resolve a game's phase, defaulting legacy games (created before the `phase`
@@ -344,6 +347,90 @@ export async function deleteCheckpoint(gameId: string, checkpointId: string): Pr
     .delete();
 }
 
+// --- Timed site windows (#12) ---
+
+/** A checkpoint's live state given its window. `always` = no window (default);
+ * `pending` = window set but not open yet; `open` = live now; `closed` = window passed. */
+export type CheckpointWindowState = 'always' | 'pending' | 'open' | 'closed';
+
+export function checkpointWindowState(
+  cp: { opensAt?: FsTimestamp | null; closesAt?: FsTimestamp | null },
+  nowMs: number = Date.now()
+): CheckpointWindowState {
+  const opens = cp.opensAt?.toMillis?.() ?? null;
+  const closes = cp.closesAt?.toMillis?.() ?? null;
+  if (opens == null && closes == null) return 'always';
+  if (opens != null && nowMs < opens) return 'pending';
+  if (closes != null && nowMs > closes) return 'closed';
+  return 'open';
+}
+
+const checkpointDoc = (gameId: string, checkpointId: string) =>
+  firestore()
+    .collection(Collections.GAMES)
+    .doc(gameId)
+    .collection(Collections.CHECKPOINTS)
+    .doc(checkpointId);
+
+/** GM opens a timed site now: live from this moment, no scheduled close (#12). */
+export async function openCheckpointNow(gameId: string, checkpointId: string): Promise<void> {
+  await checkpointDoc(gameId, checkpointId).update({
+    opensAt: firestore.FieldValue.serverTimestamp(),
+    closesAt: firestore.FieldValue.delete(),
+  });
+}
+
+/** GM closes a timed site now: stops firing from this moment on (#12). */
+export async function closeCheckpointNow(gameId: string, checkpointId: string): Promise<void> {
+  await checkpointDoc(gameId, checkpointId).update({
+    closesAt: firestore.FieldValue.serverTimestamp(),
+  });
+}
+
+/** GM removes the window so the site is always live again (#12). */
+export async function clearCheckpointWindow(gameId: string, checkpointId: string): Promise<void> {
+  await checkpointDoc(gameId, checkpointId).update({
+    opensAt: firestore.FieldValue.delete(),
+    closesAt: firestore.FieldValue.delete(),
+  });
+}
+
+// --- Run-sheet / scheduled events (#11) ---
+
+const scheduledEventsCol = (gameId: string) =>
+  firestore().collection(Collections.GAMES).doc(gameId).collection(Collections.SCHEDULED_EVENTS);
+
+/** GM adds a timed action to the run-sheet. `firedAt` starts null so the sweep
+ * (collectionGroup where firedAt == null) can find it. */
+export async function addScheduledEvent(
+  gameId: string,
+  data: {
+    type: ScheduledActionType;
+    offsetMinutes?: number | null;
+    checkpointId?: string;
+    message?: string;
+    template?: 'player-count' | null;
+  }
+): Promise<void> {
+  await scheduledEventsCol(gameId).add({
+    ...data,
+    firedAt: null,
+    createdAt: firestore.FieldValue.serverTimestamp(),
+  });
+}
+
+export async function updateScheduledEvent(
+  gameId: string,
+  eventId: string,
+  updates: Partial<Omit<ScheduledEvent, 'id' | 'createdAt'>>
+): Promise<void> {
+  await scheduledEventsCol(gameId).doc(eventId).update(updates);
+}
+
+export async function deleteScheduledEvent(gameId: string, eventId: string): Promise<void> {
+  await scheduledEventsCol(gameId).doc(eventId).delete();
+}
+
 export async function deleteAccount(userId: string, password: string): Promise<void> {
   const current = auth().currentUser;
   if (!current || !current.email) {
@@ -397,6 +484,26 @@ export async function updateMemberRole(
     .collection(Collections.MEMBERS)
     .doc(userId)
     .update({ role });
+}
+
+/** GM sets (or clears, when `district` is null/empty) a member's district/tribute
+ * pairing. Players cannot change their own district (enforced in firestore.rules) so a
+ * tribute can't reassign their pairing. Read by the geofence function for the
+ * same-district trap-suppression rule (ROADMAP #5). */
+export async function setMemberDistrict(
+  gameId: string,
+  userId: string,
+  district: string | null
+): Promise<void> {
+  const trimmed = district?.trim() ?? '';
+  await firestore()
+    .collection(Collections.GAMES)
+    .doc(gameId)
+    .collection(Collections.MEMBERS)
+    .doc(userId)
+    .update({
+      district: trimmed === '' ? firestore.FieldValue.delete() : trimmed,
+    });
 }
 
 export async function removePlayer(gameId: string, userId: string): Promise<void> {

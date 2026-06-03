@@ -15,8 +15,10 @@ import { Colors } from '@/constants/colors';
 import { TOPO_TILE_URL, TOPO_TILE_SIZE, TOPO_MAX_ZOOM, TOPO_MAX_NATIVE_ZOOM } from '@/constants/map';
 import {
   updateGameConfig, addCheckpoint, updateCheckpoint, deleteCheckpoint,
+  openCheckpointNow, closeCheckpointNow, clearCheckpointWindow, checkpointWindowState,
 } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
+import { useNow } from '@/hooks/useNow';
 import type { MapBoundary, Checkpoint, CheckpointEvent, CheckpointKind, EventAudience } from '@/types';
 
 // Fractions of the screen the framing reticle insets from each edge. The saved
@@ -148,6 +150,7 @@ export default function PlayAreaScreen() {
   const { gameId } = useLocalSearchParams<{ gameId: string }>();
   const { game, checkpoints, loadGame } = useGame();
   const router = useRouter();
+  const now = useNow(10000);
   const boundary: MapBoundary | undefined = game?.boundary;
   const mapRef = useRef<MapView>(null);
   // The map opens framed on `displayRegion` (the GM's location for a new game, or
@@ -397,6 +400,19 @@ export default function PlayAreaScreen() {
     }
   }
 
+  // Timed site window (#12): the buttons write immediately by id (an existing
+  // checkpoint), so they don't go through the staged Save like the rest of the form.
+  async function handleWindowAction(action: 'open' | 'close' | 'clear') {
+    if (!gameId || !editTarget) return;
+    try {
+      if (action === 'open') await openCheckpointNow(gameId, editTarget.id);
+      else if (action === 'close') await closeCheckpointNow(gameId, editTarget.id);
+      else await clearCheckpointWindow(gameId, editTarget.id);
+    } catch (err) {
+      Alert.alert('Error', friendlyError(err));
+    }
+  }
+
   function confirmDeleteCheckpoint(cp: Checkpoint) {
     if (!gameId) return;
     Alert.alert(`Delete "${cp.name}"?`, 'This cannot be undone.', [
@@ -415,6 +431,17 @@ export default function PlayAreaScreen() {
       },
     ]);
   }
+
+  // Live window state of the checkpoint being edited (re-derived from context so it
+  // updates after an open/close write), plus the status copy shown in the modal.
+  const editCp = editTarget ? checkpoints.find((c) => c.id === editTarget.id) ?? editTarget : null;
+  const windowState = editCp ? checkpointWindowState(editCp, now) : 'always';
+  const windowStatusText = {
+    always: 'Always live — fires whenever a player crosses.',
+    open: 'Open — firing now.',
+    pending: 'Scheduled — not open yet.',
+    closed: 'Closed — not firing.',
+  }[windowState];
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
@@ -462,11 +489,21 @@ export default function PlayAreaScreen() {
               const kind = checkpointKind(item);
               const meta = KIND_META[kind];
               const steps = item.eventQueue?.length ?? 0;
+              const w = checkpointWindowState(item, now);
+              const wLabel = w === 'open' ? 'OPEN' : w === 'closed' ? 'CLOSED' : w === 'pending' ? 'SCHEDULED' : '';
+              const wColor = w === 'open' ? Colors.success : w === 'closed' ? Colors.danger : Colors.textSecondary;
               return (
               <View style={styles.checkpointRow}>
                 <Ionicons name={meta.icon} size={20} color={meta.color} style={{ marginRight: 10 }} />
                 <View style={styles.cpInfo}>
-                  <Text style={styles.cpName}>{item.name}</Text>
+                  <View style={styles.cpNameRow}>
+                    <Text style={styles.cpName}>{item.name}</Text>
+                    {wLabel ? (
+                      <View style={[styles.windowBadge, { borderColor: wColor }]}>
+                        <Text style={[styles.windowBadgeText, { color: wColor }]}>{wLabel}</Text>
+                      </View>
+                    ) : null}
+                  </View>
                   <Text style={styles.cpSub}>
                     {meta.label}{steps > 1 ? ` · ${steps} steps` : ''} · {item.radius}m radius
                   </Text>
@@ -699,6 +736,38 @@ export default function PlayAreaScreen() {
               </>
             )}
 
+            {/* Timed site window (#12) — only for an existing checkpoint, since the
+                buttons write immediately. New sites are always-live until opened. */}
+            {editTarget && (
+              <>
+                <Text style={styles.sectionLabel}>Timed site window</Text>
+                <Text style={styles.hintSmall}>{windowStatusText}</Text>
+                <View style={styles.chips}>
+                  <TouchableOpacity
+                    onPress={() => handleWindowAction('open')}
+                    style={[styles.chip, windowState === 'open' && { borderColor: Colors.success, backgroundColor: hexToRgba(Colors.success, 0.15) }]}
+                  >
+                    <Ionicons name="lock-open-outline" size={14} color={windowState === 'open' ? Colors.success : Colors.textSecondary} />
+                    <Text style={[styles.chipText, windowState === 'open' && { color: Colors.success }]}>Open now</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => handleWindowAction('close')}
+                    style={[styles.chip, windowState === 'closed' && { borderColor: Colors.danger, backgroundColor: hexToRgba(Colors.danger, 0.15) }]}
+                  >
+                    <Ionicons name="lock-closed-outline" size={14} color={windowState === 'closed' ? Colors.danger : Colors.textSecondary} />
+                    <Text style={[styles.chipText, windowState === 'closed' && { color: Colors.danger }]}>Close now</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => handleWindowAction('clear')}
+                    style={[styles.chip, windowState === 'always' && { borderColor: Colors.primary, backgroundColor: hexToRgba(Colors.primary, 0.15) }]}
+                  >
+                    <Ionicons name="infinite-outline" size={14} color={windowState === 'always' ? Colors.primary : Colors.textSecondary} />
+                    <Text style={[styles.chipText, windowState === 'always' && { color: Colors.primary }]}>Always live</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+
             <View style={styles.modalActions}>
               <Button title="Cancel" onPress={() => setShowCpModal(false)} variant="ghost" fullWidth={false} style={{ flex: 1 }} />
               <Button title={editTarget ? 'Save' : 'Add'} onPress={handleSaveCheckpoint} loading={savingCp} fullWidth={false} style={{ flex: 1 }} />
@@ -748,8 +817,11 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.border,
   },
   cpInfo: { flex: 1 },
+  cpNameRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   cpName: { fontSize: 15, fontWeight: '700', color: Colors.text },
   cpSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
+  windowBadge: { borderWidth: 1, borderRadius: 5, paddingHorizontal: 5, paddingVertical: 1 },
+  windowBadgeText: { fontSize: 9, fontWeight: '800', letterSpacing: 0.5 },
   iconBtn: { padding: 6, marginLeft: 4 },
   empty: { alignItems: 'center', paddingTop: 60, gap: 12 },
   emptyText: { color: Colors.textSecondary, fontSize: 14, textAlign: 'center', lineHeight: 22 },

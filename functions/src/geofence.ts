@@ -13,6 +13,11 @@ interface CheckpointEvent {
   audience?: EventAudience;
 }
 
+// Same-district trap suppression window (#5): if a tribute's same-district partner
+// arrived at the same trap site within this many ms, the trap is withheld (the
+// explicit rule "don't give a trap if both tributes from a district arrive together").
+const COARRIVAL_WINDOW_MS = 90_000;
+
 /** Resolve who sees an event from its kind, honoring an explicit audience for notifies. */
 function resolveAudience(event: CheckpointEvent): EventAudience {
   switch (event.kind) {
@@ -73,6 +78,8 @@ export const onLocationUpdate = functions.firestore
 
     if (!memberSnap.exists || memberSnap.data()?.role === 'gm') return;
     const playerFcmToken = memberSnap.data()?.fcmToken as string | undefined;
+    // District/tribute pairing (#10), used for same-district trap suppression (#5).
+    const crossingDistrict = memberSnap.data()?.district as string | number | undefined;
 
     // Fetch all checkpoints for this game
     const checkpointsSnap = await admin.firestore()
@@ -103,6 +110,8 @@ export const onLocationUpdate = functions.firestore
       checkpointName: string;
       playerName: string;
       event?: CheckpointEvent;
+      /** GM-only note (e.g. a withheld trap) shown instead of the default arrival line. */
+      gmNote?: string;
     }> = [];
 
     for (const cpDoc of checkpointsSnap.docs) {
@@ -113,10 +122,22 @@ export const onLocationUpdate = functions.firestore
         name: string;
         event?: CheckpointEvent;
         eventQueue?: CheckpointEvent[];
+        opensAt?: admin.firestore.Timestamp | null;
+        closesAt?: admin.firestore.Timestamp | null;
       };
       const checkpointId = cpDoc.id;
 
       if (arrivedCheckpointIds.has(checkpointId)) continue;
+
+      // Time-gate (#12): a site only fires while live, i.e. now ∈ [opensAt, closesAt].
+      // Crossings outside the window are ignored (not recorded), so a site that opens
+      // later still fires once the player is inside it during the live window.
+      const nowMs = Date.now();
+      const opensMs = cp.opensAt ? cp.opensAt.toMillis() : null;
+      const closesMs = cp.closesAt ? cp.closesAt.toMillis() : null;
+      if ((opensMs !== null && nowMs < opensMs) || (closesMs !== null && nowMs > closesMs)) {
+        continue;
+      }
 
       const dist = distanceMeters(
         location.latitude,
@@ -132,11 +153,21 @@ export const onLocationUpdate = functions.firestore
         // arrival and compute the ordinal atomically so simultaneous crossings don't
         // collide on the same slot.
         const queue = cp.eventQueue;
-        const ordinal = await db.runTransaction(async (tx) => {
+        const result = await db.runTransaction(async (tx) => {
           const existing = await tx.get(arrivalsCol.where('checkpointId', '==', checkpointId));
           // Idempotency: if this player somehow already arrived, don't re-fire.
           if (existing.docs.some((d) => d.data().playerId === userId)) return null;
-          const n = existing.size; // distinct prior arrivers
+          const n = existing.size; // distinct prior arrivers → this player's ordinal
+          // Same-district co-arrival suppression (#5): withhold the trap if a tribute
+          // from the SAME district arrived at this site within the co-arrival window.
+          const suppressed =
+            crossingDistrict != null &&
+            existing.docs.some((d) => {
+              const a = d.data();
+              if (a.district == null || a.district !== crossingDistrict) return false;
+              const ms = a.timestamp?.toMillis?.() ?? null;
+              return ms != null && nowMs - ms <= COARRIVAL_WINDOW_MS;
+            });
           const ref = arrivalsCol.doc();
           tx.set(ref, {
             playerId: userId,
@@ -146,15 +177,21 @@ export const onLocationUpdate = functions.firestore
             timestamp: admin.firestore.FieldValue.serverTimestamp(),
             latitude: location.latitude,
             longitude: location.longitude,
+            ...(crossingDistrict != null ? { district: crossingDistrict } : {}),
           });
-          return n;
+          return { n, suppressed };
         });
-        if (ordinal === null) continue; // raced — already recorded
+        if (result === null) continue; // raced — already recorded
+        const { n: ordinal, suppressed } = result;
         newArrivals.push({
           checkpointName: cp.name,
           playerName: location.displayName,
-          // Queue exhausted (more arrivers than events) → GM-only ping, no player event.
-          event: ordinal < queue.length ? queue[ordinal] : undefined,
+          // Queue exhausted (more arrivers than events) → GM-only ping. Same-district
+          // co-arrival → trap withheld (GM-only ping with a note explaining why).
+          event: suppressed ? undefined : ordinal < queue.length ? queue[ordinal] : undefined,
+          gmNote: suppressed
+            ? `${location.displayName} & a District ${crossingDistrict} partner arrived together at ${cp.name} — trap withheld`
+            : undefined,
         });
       } else {
         // Single event (same for every arriver) or no event (GM-only ping).
@@ -167,6 +204,7 @@ export const onLocationUpdate = functions.firestore
           timestamp: admin.firestore.FieldValue.serverTimestamp(),
           latitude: location.latitude,
           longitude: location.longitude,
+          ...(crossingDistrict != null ? { district: crossingDistrict } : {}),
         });
         newArrivals.push({
           checkpointName: cp.name,
@@ -214,12 +252,13 @@ export const onLocationUpdate = functions.firestore
 
     // Fire notifications + events for each new arrival.
     await Promise.all(
-      newArrivals.map(async ({ playerName, checkpointName, event }) => {
+      newArrivals.map(async ({ playerName, checkpointName, event, gmNote }) => {
         // Default behavior (no event, or an explicit gm-only): notify the GM only.
+        // A `gmNote` (e.g. a withheld same-district trap) replaces the default line.
         if (!event || event.kind === 'gm-only') {
-          const body = `${playerName} reached ${checkpointName}`;
+          const body = gmNote ?? `${playerName} reached ${checkpointName}`;
           await Promise.allSettled([
-            sendArrivalPushNotifications(gmTokens, `📍 Arrival Alert`, body),
+            sendArrivalPushNotifications(gmTokens, gmNote ? '⚖️ Trap withheld' : '📍 Arrival Alert', body),
             sendArrivalSMS(gmPhones, body),
           ]);
           return;

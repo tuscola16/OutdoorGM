@@ -44,4 +44,5 @@ export const Collections = {
   ARRIVALS: 'arrivals',
   BROADCASTS: 'broadcasts',
   RATIONS: 'rations',
+  SCHEDULED_EVENTS: 'scheduledEvents',
 } as const;

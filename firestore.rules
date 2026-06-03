@@ -76,13 +76,15 @@ service cloud.firestore {
         allow create: if false;
 
         // A GM may promote/demote/edit any member. A user may update their OWN
-        // member doc (mark out, refresh fcmToken, rename) but never change role
-        // or userId — that closes the privilege-escalation path.
+        // member doc (mark out, refresh fcmToken, rename) but never change role,
+        // userId, or district — that closes the privilege-escalation path and keeps
+        // tribute pairing (district, #10) GM-assigned only.
         allow update: if isGameGM(gameId)
           || (isSignedIn()
               && request.auth.uid == memberId
               && request.resource.data.role == resource.data.role
-              && request.resource.data.userId == resource.data.userId);
+              && request.resource.data.userId == resource.data.userId
+              && request.resource.data.get('district', null) == resource.data.get('district', null));
 
         // A GM may remove anyone; a user may remove their own membership (leave /
         // delete account).
@@ -119,6 +121,13 @@ service cloud.firestore {
               && (resource.data.targetPlayerId == null
                   || resource.data.targetPlayerId == request.auth.uid));
         allow create, update, delete: if isGameGM(gameId);
+      }
+
+      // Run-sheet (#11) — GM-authored timed actions. GM read/write; players never
+      // read it (they only see the broadcasts it produces). Cloud Functions (admin
+      // SDK) stamp firedAt + execute actions, bypassing rules.
+      match /scheduledEvents/{eventId} {
+        allow read, write: if isGameGM(gameId);
       }
 
       // Rations — a player writes only their own submission (doc id `${uid}_${n}`)

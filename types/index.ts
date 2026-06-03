@@ -147,6 +147,14 @@ export interface Checkpoint {
    * "different by arrival number" checkpoints (traps). Mutually exclusive with `event`.
    */
   eventQueue?: CheckpointEvent[];
+  /**
+   * Active window (ROADMAP #12). The checkpoint only fires while live, i.e. while
+   * `now ∈ [opensAt ?? -∞, closesAt ?? +∞]`. Both absent → always live (default;
+   * legacy checkpoints keep working). Crossings outside the window are ignored (not
+   * recorded). Set manually by the GM (open/close now) or by the run-sheet (#11).
+   */
+  opensAt?: FsTimestamp | null;
+  closesAt?: FsTimestamp | null;
 }
 
 export interface GameMember {
@@ -168,6 +176,13 @@ export interface GameMember {
   sosLocation?: { latitude: number; longitude: number } | null;
   /** This member hid the game from their own "My Games" list (finished games only). */
   archived?: boolean;
+  /**
+   * District / tribute pairing (ROADMAP #10). Two tributes share a district. Set by the
+   * GM (players can't reassign their own — enforced in firestore.rules). Read by the
+   * geofence function for the same-district trap-suppression rule (#5). Absent on
+   * solo/legacy games.
+   */
+  district?: string | number;
   joinedAt: FsTimestamp;
 }
 
@@ -240,4 +255,32 @@ export interface ActiveGame {
   gameId: string;
   role: UserRole;
   displayName: string;
+}
+
+/** Run-sheet action types (ROADMAP #11) — the in-app replacement for the paper schedule. */
+export type ScheduledActionType =
+  | 'broadcast' // write a Broadcast (free text, or templated player-count)
+  | 'open-site' // set a checkpoint's window live (#12)
+  | 'close-site' // close a checkpoint's window (#12)
+  | 'gear-drop' // announce a drop location (a broadcast to all)
+  | 'gm-reminder'; // GM-only nudge ("send Aaron to The Dock")
+
+/** A GM-authored timed action on the run-sheet. A scheduled Cloud Function sweeps for
+ * due, unfired actions and executes them, stamping `firedAt` (idempotent). */
+export interface ScheduledEvent {
+  id: string;
+  type: ScheduledActionType;
+  /** Minutes after the game's `startedAt` to fire. Primary scheduling model. */
+  offsetMinutes?: number | null;
+  /** Absolute fire time (alternative to offsetMinutes; reserved for future authoring). */
+  fireAt?: FsTimestamp | null;
+  /** Target checkpoint for `open-site`/`close-site`. */
+  checkpointId?: string;
+  /** Message body for `broadcast`/`gear-drop`/`gm-reminder`. */
+  message?: string;
+  /** Templated payloads, e.g. 'player-count' fills in the living tribute count. */
+  template?: 'player-count' | null;
+  /** Set when executed → idempotent; the sweep skips fired rows. */
+  firedAt?: FsTimestamp | null;
+  createdAt: FsTimestamp;
 }

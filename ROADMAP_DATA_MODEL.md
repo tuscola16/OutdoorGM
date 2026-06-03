@@ -95,7 +95,6 @@ export type CheckpointEventType =
   | 'beast-attack'    // push a hazard prompt to the crossing player
   | 'trap'            // assigned-by-arrival-order hazard (ROADMAP #5)
   | 'gear-drop'       // sponsor/gear drop reveal (Rules 31, 32)
-  | 'voucher'         // time-windowed sponsor-gear claim (§9)
   | 'announcement'    // GM-authored message
   | 'silent-alert';   // GM sees it; player gets nothing
 
@@ -147,10 +146,12 @@ Add, in order:
    checkpoint (count of prior distinct, non-suppressed arrivers) and select
    `eventQueue[ordinal]`; if the queue is exhausted, no event. For a single `event`, honor
    `once` (dedupe against `arrivals` for that checkpoint/player).
-4. **Route by `audience`:** write a `Broadcast` (§3) and/or send push. A `gear-drop`/
-   `voucher` with `recipientPlayerId` only notifies that one player; a non-recipient
-   crossing is logged GM-only (Rule 32's "don't take someone else's drop"). A `voucher`
-   crossing also writes a redemption row (§7).
+4. **Route by `audience`:** write a `Broadcast` (§3) and/or send push. A `gear-drop` with
+   `recipientPlayerId` only notifies that one player; a non-recipient crossing is logged
+   GM-only (Rule 32's "don't take someone else's drop").
+
+   *Voucher turn-in sites are not handled here* — they mint nothing on crossing (§7). They
+   are plain time-windowed checkpoints whose opening the run-sheet (§6) announces.
 
 The arrival ordinal and same-district check need each member's `district` (§5 above) and an
 index on `arrivals` by (`checkpointId`, `timestamp`).
@@ -306,30 +307,23 @@ export interface ScheduledEvent {
   living-tribute count (reuses ROADMAP #4's count).
 - `gm-reminder` pushes only to GM tokens.
 
-## 7. New collection: `vouchers` — sponsor-gear redemption (ROADMAP #13)
+## 7. Voucher turn-in sites — *no new collection* (ROADMAP #13)
 
-Path: `games/{gameId}/vouchers/{playerId}_{checkpointId}` (deterministic ID → one claim per
-player per site, idempotent). Written by the geofence function when a player crosses a live
-`voucher` checkpoint (§2).
+Vouchers are **physical tokens** a player turns in to the GM, at a timed/located site, to
+receive a **ration card** (the card the Rules 6–9 loop consumes). The exchange is paper and
+in-person, so the app holds **no voucher/claim state** — there is **no `vouchers` collection**
+and **no `voucher` checkpoint event type**. The earlier auto-mint-on-crossing model is
+dropped. The app does only the two things the schedule and the GM need:
 
-```ts
-export interface VoucherClaim {
-  id: string;            // `${playerId}_${checkpointId}`
-  playerId: string;
-  playerName: string;
-  checkpointId: string;
-  checkpointName: string;
-  /** Display name of the gear/voucher granted. */
-  voucherName?: string;
-  claimedAt: FsTimestamp;
-}
-```
-
-- A claim is only created while the site is within its `[opensAt, closesAt]` window (§2 #1);
-  a crossing after close is logged GM-only ("site closed"). The deterministic ID stops a
-  player double-claiming.
-- GM sees a redemption feed (who claimed which site). Pairs with the timed gear drops the
-  run-sheet (§6) announces.
+- **Announce the turn-in window.** A voucher site is just a checkpoint with an
+  `[opensAt, closesAt]` window (§2 #12); the run-sheet (§6) `open-site`/`close-site` actions
+  toggle it and emit the announcing `Broadcast` ("Voucher turn-in open at The Dock until
+  12:55"). This is the concrete "open a location at a set time" mechanic — nothing
+  voucher-specific is needed beyond a time-windowed checkpoint plus a run-sheet entry.
+- **Global supply control.** "Rip up all vouchers" / "Rip up all ration cards" are ordinary
+  GM free-text broadcasts (§3, `kind: 'gm-message'`) — a deliberate lever to choke or reset
+  the food economy. No new kind, collection, or server state; the effect plays out physically
+  and surfaces in the next ration window's submissions.
 
 ## 8. `Collections` additions
 
@@ -341,7 +335,6 @@ export const Collections = {
   BROADCASTS: 'broadcasts',
   RATIONS: 'rations',
   SCHEDULED_EVENTS: 'scheduledEvents',
-  VOUCHERS: 'vouchers',
 } as const;
 ```
 
@@ -353,8 +346,6 @@ export const Collections = {
 - `rations`: a player writes only their own submission; GM reads all + updates `status`.
 - `scheduledEvents`: GM read/write (authoring the run-sheet); functions write `firedAt`.
   Players don't read it (they see only its *output* broadcasts).
-- `vouchers`: members read; **functions only** write (server-authoritative redemption, like
-  `arrivals`) — a client must not be able to mint its own claim.
 - Member self-writes already allow `out`/`archived`; extend the allowed-field set to
   `cause`, `deathLocation`, `sos*` (player may set their own `sos`/self `cause`; GM may set
   any member's `cause`). `district` is **GM-only** to write (so tributes can't reassign their
@@ -384,8 +375,89 @@ the transition helper.
 ## 11. Build order recap
 
 Schema-wise the dependency chain is: **`game.config` (§1)** and **`broadcasts` (§3)** are
-foundational — land them first, since elimination (§5), rations (§4), checkpoint events (§2),
-the run-sheet (§6) and vouchers (§7) all emit broadcasts and read config. Then
+foundational — land them first, since elimination (§5), rations (§4), checkpoint events (§2)
+and the run-sheet (§6) all emit broadcasts and read config. Then
 §5 → §4 → **`district` (in §5)** → **site windows (in §2)** → checkpoint events/traps (§2) →
-run-sheet (§6) → vouchers (§7), matching the ROADMAP build order
-(3 → 2 → 1 → 4 → 6 → 10 → 12 → 5 → 11 → 13).
+run-sheet (§6), matching the ROADMAP build order
+(3 → 2 → 1 → 4 → 6 → 10 → 12 → 5 → 11). Voucher turn-in (§7) adds no schema — it falls out of
+site windows + the run-sheet once both exist.
+
+---
+
+## 12. Safety-net invariants — schema & enforcement deltas (ROADMAP "Safety nets")
+
+Most safety nets are **enforcement, not schema**: last-GM, no-mid-game-delete, monotonic
+phases, the Start-Game preflight, the config-lock, and server idempotency live in
+`firestore.rules`, the `gameService` transition helpers, and the Cloud Functions — no new
+fields. The handful that touch the schema:
+
+For MVP the late-join lock is **unconditional** — there is no `allowLateJoin` knob; joining
+is closed once the game reaches `play`. (A GM opt-in for stragglers is a post-MVP addition.)
+
+```ts
+export interface GameMember {
+  // ...existing (out, cause, sos*, district)...
+  /** GM acknowledged this member's SOS; the SOS stays "open" until set. Null = unacked. */
+  sosAckAt?: FsTimestamp | null;
+  /** Latched true while the player is outside game.boundary, so the exit alert fires once. */
+  outOfBounds?: boolean;
+}
+
+export interface PlayerLocation {
+  // ...existing...
+  /** Device battery 0–1, reported with each fix; drives the GM low-battery flag. */
+  battery?: number;
+}
+```
+
+- **Revive** needs no field — `revivePlayer(gameId, playerId)` clears `out`/`outAt`/`cause`
+  and writes a correcting `Broadcast` (`kind: 'gm-message'`). If the game had flipped to
+  `results` on a now-undone winner, it returns to `play`.
+- **Boundary-exit** and **tracking-stopped** alerts reuse the GM-only broadcast/push path
+  (no new collection): the location/geofence function sets `outOfBounds` on a player who
+  leaves `game.boundary` and emits a GM alert; the existing stale-fix logic
+  (`services/locationStatus.ts`) feeds the tracking-stopped alarm.
+- **Rules deltas:** member `delete` denied when `gamePhase(game) == 'play'`; a member `role`
+  change or `delete` that would leave **zero GMs** is denied; `sosAckAt` is GM-write-only;
+  the `joinGameByCode` function rejects any join once `gamePhase(game) != 'lobby'` (it
+  already rejects non-active games); players keep writing their own `battery`/location as
+  today.
+- **Enforcement-only invariants** (no schema): Start-Game preflight and the interval-config
+  lock live in the `startGame`/`updateGameConfig` helpers; phase monotonicity in the
+  transition helpers; idempotency in the winner/starvation/run-sheet functions (deterministic
+  ids + `firedAt`, already the pattern for `rations` and `scheduledEvents`).
+
+---
+
+## 13. Test / practice game mode (ROADMAP #15)
+
+A disposable, on-site dress-rehearsal game — players physically present walk the checkpoints
+so the **real** geofence/event/push pipeline runs — flagged so it never mixes with real data.
+
+```ts
+export interface Game {
+  // ...existing...
+  /** Marks a disposable dress-rehearsal game: PRACTICE badge, relaxed guards, auto-cleanup. */
+  practice?: boolean;
+}
+```
+
+- **Badge:** every GM/player screen shows a PRACTICE banner when `game.practice` is set.
+- **Relaxed guards:** the §12 invariants that block destructive actions (mid-game delete lock,
+  end-while-unaccounted-for, the two-step destructive-broadcast/End-Game confirms) are
+  **bypassed** when `practice` — the whole point is to tear down and re-run freely.
+- **Test checkpoint:** a `Checkpoint.test?: boolean` flag (extends §2). A GM "drop test
+  checkpoint here" action creates one at the device's current GPS with a default generous
+  radius and a test event, firing the normal `onLocationUpdate` geofence path — so the team
+  can verify events/pushes from wherever they're gathered, off-venue. Test checkpoints are
+  badged distinctly and bulk-removed with the practice game (or via a "clear test checkpoints"
+  action before a real game goes live), so they never reach the real course.
+- **Re-run / reset:** a GM action clears the game's `arrivals`, `locations`, and `rations`
+  subcollections so the drill repeats without recreating the game.
+- **Cleanup:** practice games auto-delete (game doc + Storage photos) on end or after a short
+  TTL, extending the `cleanupRationPhotosOnGameEnd` Cloud Function to remove the whole game.
+- **Readiness view:** GM-side derived state (no schema) — joined vs. expected count, players
+  with a fresh fix (reuses `services/locationStatus.ts`), and per-device push-delivery
+  confirmation. The "green check before kickoff."
+- **Rules delta:** `practice` is GM-write-only and set at creation (in the `createGame`
+  function); the relaxed-guard branches in `firestore.rules` / the service helpers key off it.

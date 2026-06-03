@@ -13,12 +13,15 @@ import {
   openLobby, reopenSetup, startGame, endGame, updateGameConfig, gameConfig,
   addCheckpoint, updateCheckpoint, deleteCheckpoint,
   updateMemberRole, removePlayer, eliminatePlayer, clearSos, sendBroadcast,
-  deleteGame, setGameArchived, reviewRation, rationInterval,
+  deleteGame, setGameArchived, reviewRation, rationInterval, setMemberDistrict,
+  openCheckpointNow, closeCheckpointNow, clearCheckpointWindow, checkpointWindowState,
+  addScheduledEvent, updateScheduledEvent, deleteScheduledEvent,
 } from '@/services/gameService';
 import { KIND_META, KIND_ORDER, checkpointKind, buildEvent } from '@/services/checkpointKinds';
 import { deleteField } from 'firebase/firestore';
 import type {
   Arrival, Checkpoint, CheckpointEvent, CheckpointKind, EventAudience, GameMember, MapBoundary, PlayerLocation, RationSubmission,
+  ScheduledEvent, ScheduledActionType,
 } from '@shared/types';
 
 const PHASE_LABEL: Record<string, string> = {
@@ -28,7 +31,7 @@ const PHASE_LABEL: Record<string, string> = {
 export function GameScreen() {
   const { gameId } = useParams<{ gameId: string }>();
   const navigate = useNavigate();
-  const { game, phase, checkpoints, members, playerLocations, arrivals, rations, loadGame, clearGame } = useGame();
+  const { game, phase, checkpoints, members, playerLocations, arrivals, rations, scheduledEvents, loadGame, clearGame } = useGame();
   const { user } = useAuth();
   const [busy, setBusy] = useState(false);
   const [showCodes, setShowCodes] = useState(false);
@@ -36,6 +39,7 @@ export function GameScreen() {
   const [showBroadcast, setShowBroadcast] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
   const [showRations, setShowRations] = useState(false);
+  const [showRunSheet, setShowRunSheet] = useState(false);
   const elapsed = useElapsed(game?.startedAt, game?.endedAt);
   const remaining = useRemaining(game?.startedAt, gameConfig(game).durationMinutes, game?.endedAt);
   const now = useNow(10000);
@@ -135,6 +139,11 @@ export function GameScreen() {
           </div>
         </div>
         <button className="btn btn--ghost" style={{ padding: '8px 12px' }} onClick={() => setShowCodes(true)}>Codes</button>
+        {phase !== 'results' && (
+          <button className="btn btn--ghost" style={{ padding: '8px 12px' }} onClick={() => setShowRunSheet(true)}>
+            Run-sheet{scheduledEvents.length ? ` (${scheduledEvents.length})` : ''}
+          </button>
+        )}
         <button className="btn btn--ghost" style={{ padding: '8px 12px' }} onClick={() => setShowPlayers(true)}>
           Players ({members.length})
         </button>
@@ -236,6 +245,14 @@ export function GameScreen() {
           onClose={() => setShowRations(false)}
         />
       )}
+      {showRunSheet && (
+        <RunSheetModal
+          gameId={gameId!}
+          events={scheduledEvents}
+          checkpoints={checkpoints}
+          onClose={() => setShowRunSheet(false)}
+        />
+      )}
     </div>
   );
 }
@@ -315,6 +332,7 @@ function SetupView({
           {checkpoints.map((cp) => {
             const meta = KIND_META[checkpointKind(cp)];
             const steps = cp.eventQueue?.length ?? 0;
+            const w = checkpointWindowState(cp);
             return (
               <button
                 key={cp.id}
@@ -327,7 +345,7 @@ function SetupView({
                   {cp.name}
                 </span>
                 <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-                  {meta.label}{steps > 1 ? ` · ${steps} steps` : ''} · {cp.radius}m
+                  {meta.label}{steps > 1 ? ` · ${steps} steps` : ''} · {cp.radius}m{w !== 'always' ? ` · ${w.toUpperCase()}` : ''}
                 </span>
               </button>
             );
@@ -506,6 +524,26 @@ function CheckpointModal({
 
   const labelStyle = { fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: 0.5 } as const;
 
+  // Timed site window (#12). Re-derive from live context so the status updates after
+  // an open/close write; the buttons write immediately by id (existing checkpoints only).
+  const { checkpoints: liveCheckpoints } = useGame();
+  const liveCp = edit ? liveCheckpoints.find((c) => c.id === edit.id) ?? edit : null;
+  const windowState = liveCp ? checkpointWindowState(liveCp) : 'always';
+  const windowStatusText = {
+    always: 'Always live — fires whenever a player crosses.',
+    open: 'Open — firing now.',
+    pending: 'Scheduled — not open yet.',
+    closed: 'Closed — not firing.',
+  }[windowState];
+  async function windowAction(action: 'open' | 'close' | 'clear') {
+    if (!edit) return;
+    try {
+      if (action === 'open') await openCheckpointNow(gameId, edit.id);
+      else if (action === 'close') await closeCheckpointNow(gameId, edit.id);
+      else await clearCheckpointWindow(gameId, edit.id);
+    } catch (err) { window.alert(friendlyError(err)); }
+  }
+
   return (
     <Modal title={edit ? 'Edit Checkpoint' : 'New Checkpoint'} onClose={onClose}>
       <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
@@ -605,6 +643,18 @@ function CheckpointModal({
         )}
       </div>
 
+      {edit && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <span style={labelStyle}>Timed site window</span>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{windowStatusText}</span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" className={windowState === 'open' ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 10px' }} onClick={() => windowAction('open')}>Open now</button>
+            <button type="button" className={windowState === 'closed' ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 10px' }} onClick={() => windowAction('close')}>Close now</button>
+            <button type="button" className={windowState === 'always' ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 10px' }} onClick={() => windowAction('clear')}>Always live</button>
+          </div>
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: 12 }}>
         <button className="btn btn--ghost" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
         <button className="btn" style={{ flex: 1 }} onClick={save} disabled={busy}>{edit ? 'Save' : 'Add'}</button>
@@ -647,6 +697,157 @@ function RulesModal({ gameId, initial, onClose }: { gameId: string; initial: str
       <div style={{ display: 'flex', gap: 12 }}>
         <button className="btn btn--ghost" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
         <button className="btn" style={{ flex: 1 }} onClick={save} disabled={busy}>Save</button>
+      </div>
+    </Modal>
+  );
+}
+
+// --- Run-sheet (#11) ---
+type RunAction = {
+  key: string;
+  type: ScheduledActionType;
+  template?: 'player-count';
+  label: string;
+  needs: 'message' | 'checkpoint' | 'none';
+};
+const RUN_ACTIONS: RunAction[] = [
+  { key: 'broadcast', type: 'broadcast', label: 'Announcement', needs: 'message' },
+  { key: 'player-count', type: 'broadcast', template: 'player-count', label: 'Player count', needs: 'none' },
+  { key: 'gear-drop', type: 'gear-drop', label: 'Gear drop', needs: 'message' },
+  { key: 'gm-reminder', type: 'gm-reminder', label: 'GM reminder', needs: 'message' },
+  { key: 'open-site', type: 'open-site', label: 'Open site', needs: 'checkpoint' },
+  { key: 'close-site', type: 'close-site', label: 'Close site', needs: 'checkpoint' },
+];
+const runActionFor = (key: string) => RUN_ACTIONS.find((a) => a.key === key)!;
+const runKeyForEvent = (ev: ScheduledEvent) => (ev.template === 'player-count' ? 'player-count' : ev.type);
+
+function RunSheetModal({
+  gameId, events, checkpoints, onClose,
+}: {
+  gameId: string;
+  events: ScheduledEvent[];
+  checkpoints: Checkpoint[];
+  onClose: () => void;
+}) {
+  const [editId, setEditId] = useState<string | null>(null);
+  const [actionKey, setActionKey] = useState('broadcast');
+  const [offset, setOffset] = useState('0');
+  const [message, setMessage] = useState('');
+  const [checkpointId, setCheckpointId] = useState<string | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const action = runActionFor(actionKey);
+
+  function reset() {
+    setEditId(null); setActionKey('broadcast'); setOffset('0'); setMessage(''); setCheckpointId(undefined);
+  }
+  function startEdit(ev: ScheduledEvent) {
+    setEditId(ev.id);
+    setActionKey(runKeyForEvent(ev));
+    setOffset(ev.offsetMinutes != null ? String(ev.offsetMinutes) : '0');
+    setMessage(ev.message ?? '');
+    setCheckpointId(ev.checkpointId);
+  }
+  async function save() {
+    const offsetMinutes = parseInt(offset, 10);
+    if (isNaN(offsetMinutes) || offsetMinutes < 0) { window.alert('Enter minutes after game start (0 or more).'); return; }
+    if (action.needs === 'message' && !message.trim()) { window.alert('Enter a message for this action.'); return; }
+    if (action.needs === 'checkpoint' && !checkpointId) { window.alert('Pick a checkpoint for this action.'); return; }
+    const data = {
+      type: action.type,
+      offsetMinutes,
+      template: action.template ?? null,
+      message: action.needs === 'message' ? message.trim() : '',
+      ...(action.needs === 'checkpoint' ? { checkpointId } : {}),
+    };
+    setBusy(true);
+    try {
+      if (editId) await updateScheduledEvent(gameId, editId, data);
+      else await addScheduledEvent(gameId, data);
+      reset();
+    } catch (err) { window.alert(friendlyError(err)); }
+    finally { setBusy(false); }
+  }
+  async function remove(ev: ScheduledEvent) {
+    if (!window.confirm('Delete this run-sheet action?')) return;
+    try { await deleteScheduledEvent(gameId, ev.id); if (editId === ev.id) reset(); }
+    catch (err) { window.alert(friendlyError(err)); }
+  }
+  function summary(ev: ScheduledEvent): string {
+    const a = runActionFor(runKeyForEvent(ev));
+    if (a.needs === 'checkpoint') {
+      const cp = checkpoints.find((c) => c.id === ev.checkpointId);
+      return `${a.label} · ${cp?.name ?? 'deleted checkpoint'}`;
+    }
+    if (a.key === 'player-count') return 'Pushes the living-tribute count to all players';
+    return ev.message || a.label;
+  }
+  const sorted = [...events].sort((a, b) => (a.offsetMinutes ?? Infinity) - (b.offsetMinutes ?? Infinity));
+
+  return (
+    <Modal title="Run-sheet" onClose={onClose}>
+      <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: 13 }}>
+        Timed actions fire automatically, measured from when you Start the game. They run only while the game is in play.
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 240, overflowY: 'auto' }}>
+        {sorted.length === 0 && <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>No timed actions yet.</span>}
+        {sorted.map((ev) => {
+          const a = runActionFor(runKeyForEvent(ev));
+          const fired = ev.firedAt != null;
+          return (
+            <div key={ev.id} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', opacity: fired ? 0.6 : 1 }}>
+              <strong style={{ width: 56, fontVariant: 'tabular-nums' }}>{ev.offsetMinutes === 0 ? 'Start' : `+${ev.offsetMinutes}m`}</strong>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 13 }}>{a.label}{fired ? ' · fired' : ''}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{summary(ev)}</div>
+              </div>
+              <button className="btn btn--ghost" style={{ padding: '4px 8px', fontSize: 12 }} onClick={() => startEdit(ev)}>Edit</button>
+              <button className="btn btn--ghost" style={{ padding: '4px 8px', fontSize: 12, color: 'var(--danger)' }} onClick={() => remove(ev)}>Delete</button>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <strong style={{ fontSize: 13 }}>{editId ? 'Edit action' : 'Add action'}</strong>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {RUN_ACTIONS.map((a) => (
+            <button key={a.key} type="button" className={a.key === actionKey ? 'btn' : 'btn btn--ghost'} style={{ padding: '6px 10px', fontSize: 12 }} onClick={() => setActionKey(a.key)}>{a.label}</button>
+          ))}
+        </div>
+        <div className="field">
+          <label>Minutes after game start</label>
+          <input className="input" type="number" value={offset} onChange={(e) => setOffset(e.target.value)} />
+        </div>
+        {action.needs === 'message' && (
+          <textarea
+            className="input"
+            rows={2}
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            placeholder={action.key === 'gm-reminder' ? 'e.g. Send Aaron to The Dock now' : action.key === 'gear-drop' ? 'e.g. A supply drop is at Trestle Bridge' : 'e.g. The storm is closing in — head for high ground'}
+            style={{ resize: 'vertical' }}
+          />
+        )}
+        {action.key === 'player-count' && (
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Auto-fills the living-tribute count and pushes it to all players.</span>
+        )}
+        {action.key === 'gm-reminder' && (
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Only you (the GM) are notified — players see nothing.</span>
+        )}
+        {action.needs === 'checkpoint' && (
+          checkpoints.length === 0 ? (
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No checkpoints yet — add one on the map first.</span>
+          ) : (
+            <select className="input" value={checkpointId ?? ''} onChange={(e) => setCheckpointId(e.target.value || undefined)}>
+              <option value="">Select checkpoint…</option>
+              {checkpoints.map((cp) => <option key={cp.id} value={cp.id}>{cp.name}</option>)}
+            </select>
+          )
+        )}
+        <div style={{ display: 'flex', gap: 8 }}>
+          {editId && <button className="btn btn--ghost" style={{ flex: 1 }} onClick={reset}>Cancel edit</button>}
+          <button className="btn" style={{ flex: 1 }} onClick={save} disabled={busy}>{editId ? 'Save action' : 'Add action'}</button>
+        </div>
       </div>
     </Modal>
   );
@@ -914,26 +1115,64 @@ function PlayersModal({
     try { await clearSos(gameId, m.userId); }
     catch (err) { window.alert(friendlyError(err)); }
   }
+  async function setDistrict(m: GameMember) {
+    const next = window.prompt(
+      `District for ${m.displayName}? Tributes who share a district are paired (a trap is withheld if both arrive together). Leave blank to clear.`,
+      m.district != null ? String(m.district) : ''
+    );
+    if (next == null) return; // cancelled
+    try { await setMemberDistrict(gameId, m.userId, next); }
+    catch (err) { window.alert(friendlyError(err)); }
+  }
+  // Tributes sharing a district sit adjacent; unassigned ('~') sort last. Numeric
+  // collation keeps "2" before "10".
+  const districtKey = (m: GameMember) =>
+    m.district != null && String(m.district).trim() !== '' ? String(m.district).trim() : '~';
   const gms = members.filter((m) => m.role === 'gm');
-  const players = members.filter((m) => m.role === 'player');
+  const players = members
+    .filter((m) => m.role === 'player')
+    .sort((a, b) => {
+      const ka = districtKey(a);
+      const kb = districtKey(b);
+      if (ka !== kb) return ka.localeCompare(kb, undefined, { numeric: true });
+      return a.displayName.localeCompare(b.displayName);
+    });
   const alive = players.filter((m) => !m.out).length;
+  const districtCount = new Set(players.map(districtKey).filter((k) => k !== '~')).size;
   return (
     <Modal title={`Players (${members.length})`} onClose={onClose}>
       <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-        {gms.length} GM{gms.length !== 1 ? 's' : ''} · {players.length} player{players.length !== 1 ? 's' : ''} · {alive} alive
+        {gms.length} GM{gms.length !== 1 ? 's' : ''} · {players.length} player{players.length !== 1 ? 's' : ''} · {alive} alive{districtCount > 0 ? ` · ${districtCount} district${districtCount !== 1 ? 's' : ''}` : ''}
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 380, overflowY: 'auto' }}>
         {members.length === 0 && <p style={{ color: 'var(--text-secondary)' }}>No members yet.</p>}
         {[...gms, ...players].map((m) => {
           const isGM = m.role === 'gm';
           const isOut = !!m.out;
+          const hasDistrict = m.district != null && String(m.district).trim() !== '';
           const showFix = !isGM && !isOut && phase === 'play';
           const fixMs = lastFixByUser.get(m.userId) ?? null;
           const level = showFix ? stalenessLevel(fixMs == null ? null : now - fixMs) : 'none';
           return (
             <div key={m.userId} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderColor: m.sos ? 'var(--danger)' : undefined, background: m.sos ? 'rgba(232,64,42,0.08)' : undefined }}>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 700, textDecoration: isOut ? 'line-through' : undefined, color: isOut ? 'var(--text-secondary)' : undefined }}>{m.displayName}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontWeight: 700, textDecoration: isOut ? 'line-through' : undefined, color: isOut ? 'var(--text-secondary)' : undefined }}>{m.displayName}</span>
+                  {!isGM && (
+                    <button
+                      onClick={() => setDistrict(m)}
+                      title="Set district"
+                      style={{
+                        fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 6, cursor: 'pointer',
+                        border: hasDistrict ? '1px solid rgba(90,126,78,0.6)' : '1px dashed var(--border)',
+                        background: hasDistrict ? 'rgba(90,126,78,0.15)' : 'transparent',
+                        color: hasDistrict ? undefined : 'var(--text-secondary)',
+                      }}
+                    >
+                      {hasDistrict ? `District ${m.district}` : '+ District'}
+                    </button>
+                  )}
+                </div>
                 {m.sos ? (
                   <div style={{ fontSize: 12, color: 'var(--danger)', fontWeight: 600 }}>🆘 Needs assistance</div>
                 ) : showFix ? (

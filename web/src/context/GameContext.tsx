@@ -9,7 +9,7 @@ import {
 } from 'firebase/firestore';
 import { db, Collections } from '@/services/firebase';
 import { gamePhase } from '@/services/gameService';
-import type { Game, Checkpoint, GameMember, PlayerLocation, Arrival, GamePhase, RationSubmission } from '@shared/types';
+import type { Game, Checkpoint, GameMember, PlayerLocation, Arrival, GamePhase, RationSubmission, ScheduledEvent } from '@shared/types';
 
 interface GameContextValue {
   game: Game | null;
@@ -21,6 +21,8 @@ interface GameContextValue {
   arrivals: Arrival[];
   /** Ration submissions awaiting/holding GM review (GM only). */
   rations: RationSubmission[];
+  /** Run-sheet timed actions (GM only, #11). */
+  scheduledEvents: ScheduledEvent[];
   loadGame: (gameId: string, role: 'player' | 'gm') => void;
   clearGame: () => void;
 }
@@ -36,6 +38,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   const [playerLocations, setPlayerLocations] = useState<PlayerLocation[]>([]);
   const [arrivals, setArrivals] = useState<Arrival[]>([]);
   const [rations, setRations] = useState<RationSubmission[]>([]);
+  const [scheduledEvents, setScheduledEvents] = useState<ScheduledEvent[]>([]);
 
   const loadGame = useCallback((id: string, role: 'player' | 'gm') => {
     setGameId(id);
@@ -51,6 +54,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     setPlayerLocations([]);
     setArrivals([]);
     setRations([]);
+    setScheduledEvents([]);
   }, []);
 
   // Game document
@@ -123,9 +127,22 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     );
   }, [gameId, myRole]);
 
+  // Run-sheet (GM only, #11).
+  useEffect(() => {
+    if (!gameId || myRole !== 'gm') return;
+    return onSnapshot(
+      query(
+        collection(db, Collections.GAMES, gameId, Collections.SCHEDULED_EVENTS),
+        orderBy('createdAt', 'asc')
+      ),
+      (snap) => setScheduledEvents(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ScheduledEvent))),
+      (err) => console.error('[GameContext] scheduledEvents listener error', err)
+    );
+  }, [gameId, myRole]);
+
   return (
     <GameContext.Provider
-      value={{ game, phase: gamePhase(game), myRole, checkpoints, members, playerLocations, arrivals, rations, loadGame, clearGame }}
+      value={{ game, phase: gamePhase(game), myRole, checkpoints, members, playerLocations, arrivals, rations, scheduledEvents, loadGame, clearGame }}
     >
       {children}
     </GameContext.Provider>

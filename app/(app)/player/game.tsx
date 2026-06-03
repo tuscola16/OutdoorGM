@@ -14,7 +14,7 @@ import { BroadcastFeed } from '@/components/BroadcastFeed';
 import { RationPanel } from '@/components/RationPanel';
 import { Tutorial } from '@/components/Tutorial';
 import * as Location from 'expo-location';
-import { startLocationTracking, stopLocationTracking } from '@/services/locationTask';
+import { startLocationTracking, stopLocationTracking, getTrackingDiagnostics } from '@/services/locationTask';
 import { onForegroundMessage } from '@/services/notificationService';
 import { eliminatePlayer, raiseSos, setDeathLocation, gamePhase, gameConfig } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
@@ -50,6 +50,16 @@ export default function PlayerGameScreen() {
   const [error, setError] = useState('');
   const [permissionDenied, setPermissionDenied] = useState(false);
   const [showTutorial, setShowTutorial] = useState(false);
+
+  // Tracking diagnostics — polled from the location service so a player (e.g. one
+  // stuck on "Starting tracking…") can tap the status card to see exactly where
+  // startup stalled: permission states, which source engaged, last upload, last error.
+  const [diag, setDiag] = useState(getTrackingDiagnostics());
+  const [showDiag, setShowDiag] = useState(false);
+  useEffect(() => {
+    const id = setInterval(() => setDiag(getTrackingDiagnostics()), 2000);
+    return () => clearInterval(id);
+  }, []);
 
   // Tracks whether we've ever observed our own membership doc, so we only treat a
   // *disappearing* doc (GM removed us) as a removal — not a not-yet-loaded one.
@@ -130,15 +140,20 @@ export default function PlayerGameScreen() {
 
   // Track location only while actively playing and not out.
   useEffect(() => {
-    if (!gameId || !displayName) return;
+    if (!gameId) return;
     const shouldTrack = phase === 'play' && !out;
     if (!shouldTrack) {
       setTracking(false);
       stopLocationTracking().catch(() => {});
       return;
     }
+    // Never block tracking on the display name loading — going invisible to the GM
+    // is far worse than a brief placeholder. If the member doc has no displayName,
+    // fall back to email/'Player'; this effect re-runs once displayName arrives, so
+    // the real name replaces the placeholder on the next fix.
+    const trackName = displayName || user?.email || 'Player';
     let started = false;
-    startLocationTracking(gameId, displayName, { batterySaver })
+    startLocationTracking(gameId, trackName, { batterySaver })
       .then(() => { setTracking(true); started = true; })
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
@@ -306,15 +321,31 @@ export default function PlayerGameScreen() {
             </View>
           </View>
         ) : (
-          <View style={styles.statusCard}>
-            <View style={[styles.statusDot, tracking ? styles.activeDot : styles.inactiveDot]} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.statusTitle}>{tracking ? 'Location Sharing Active' : 'Starting tracking…'}</Text>
-              <Text style={styles.statusSub}>
-                {tracking ? 'Your Game Master can see you in real time.' : 'Requesting location permission…'}
-              </Text>
-            </View>
-          </View>
+          <>
+            <TouchableOpacity style={styles.statusCard} activeOpacity={0.7} onPress={() => setShowDiag((v) => !v)}>
+              <View style={[styles.statusDot, tracking ? styles.activeDot : styles.inactiveDot]} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.statusTitle}>{tracking ? 'Location Sharing Active' : 'Starting tracking…'}</Text>
+                <Text style={styles.statusSub}>
+                  {tracking ? 'Your Game Master can see you in real time.' : 'Requesting location permission…'}
+                </Text>
+              </View>
+              <Ionicons name={showDiag ? 'chevron-up' : 'chevron-down'} size={18} color={Colors.textMuted} />
+            </TouchableOpacity>
+            {showDiag && (
+              <View style={styles.diagCard}>
+                <Text style={styles.diagRow}>Foreground permission: <Text style={styles.diagVal}>{diag.foreground}</Text></Text>
+                <Text style={styles.diagRow}>Background permission: <Text style={styles.diagVal}>{diag.background}</Text></Text>
+                <Text style={styles.diagRow}>Source: <Text style={styles.diagVal}>{diag.path}</Text></Text>
+                <Text style={styles.diagRow}>
+                  Last upload: <Text style={styles.diagVal}>
+                    {diag.lastUploadAt ? `${Math.round((Date.now() - diag.lastUploadAt) / 1000)}s ago` : 'never'}
+                  </Text>
+                </Text>
+                <Text style={styles.diagRow}>Last error: <Text style={styles.diagVal}>{diag.lastError ?? 'none'}</Text></Text>
+              </View>
+            )}
+          </>
         )}
 
         {error ? (
@@ -436,6 +467,13 @@ const styles = StyleSheet.create({
   inactiveDot: { backgroundColor: Colors.textMuted },
   statusTitle: { fontSize: 15, fontWeight: '700', color: Colors.text },
   statusSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
+  diagCard: {
+    marginHorizontal: 16, marginTop: -4, marginBottom: 12,
+    backgroundColor: Colors.surface, borderRadius: 12, padding: 14,
+    borderWidth: 1, borderColor: Colors.border, gap: 4,
+  },
+  diagRow: { fontSize: 12, color: Colors.textSecondary, fontVariant: ['tabular-nums'] },
+  diagVal: { color: Colors.text, fontWeight: '600' },
   errorBanner: {
     marginHorizontal: 16, marginBottom: 12, backgroundColor: Colors.danger + '22',
     borderRadius: 8, padding: 12, borderWidth: 1, borderColor: Colors.danger,

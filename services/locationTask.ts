@@ -8,6 +8,49 @@ export const LOCATION_TASK_NAME = 'hgl-background-location';
 export const ACTIVE_GAME_KEY = 'hgl_active_game';
 export const DISPLAY_NAME_KEY = 'hgl_display_name';
 
+// --- Tracking diagnostics ----------------------------------------------------
+// A debugging aid surfaced on the player screen. Because startLocationTracking
+// can hang on a wedged native call (before its promise resolves), the UI can't
+// tell *where* it stalled from the resolved/rejected state alone. So we stamp a
+// module-level record at each milestone; the player screen polls it. The last
+// field that advanced tells us which native call wedged.
+export type TrackingPath = 'none' | 'background-service' | 'foreground-watch';
+export interface TrackingDiagnostics {
+  /** Foreground permission status from the last start attempt. */
+  foreground: string;
+  /** Background ("Always") permission status, or 'error'/'timeout'. */
+  background: string;
+  /** Which source actually engaged. 'none' while still starting (or wedged). */
+  path: TrackingPath;
+  /** ms when a source successfully engaged (setup resolved). */
+  startedAt: number | null;
+  /** ms of the most recent successful location upload. */
+  lastUploadAt: number | null;
+  /** Most recent error (start or upload), or null. */
+  lastError: string | null;
+  updatedAt: number;
+}
+
+let _diag: TrackingDiagnostics = {
+  foreground: 'unknown',
+  background: 'unknown',
+  path: 'none',
+  startedAt: null,
+  lastUploadAt: null,
+  lastError: null,
+  updatedAt: Date.now(),
+};
+
+export function getTrackingDiagnostics(): TrackingDiagnostics {
+  return { ..._diag };
+}
+
+function setDiag(patch: Partial<TrackingDiagnostics>): void {
+  _diag = { ..._diag, ...patch, updatedAt: Date.now() };
+}
+
+const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
 // Define the background task — must be at module top level
 TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
   if (error) {
@@ -34,10 +77,12 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
       accuracy: location.coords.accuracy ?? undefined,
       heading: location.coords.heading ?? undefined,
     });
+    setDiag({ lastUploadAt: Date.now(), lastError: null });
   } catch (err) {
     // A single failed upload (transient network/permission) shouldn't crash the
     // background task — the next location update will retry.
     console.error('[LocationTask] location upload failed:', err);
+    setDiag({ lastError: `bg upload: ${errMsg(err)}` });
   }
 });
 
@@ -69,10 +114,15 @@ export async function startLocationTracking(
   displayName: string,
   options: TrackingOptions = {}
 ): Promise<void> {
+  // Reset the per-attempt diagnostics (keep lastUploadAt — it's useful history).
+  setDiag({ path: 'none', startedAt: null, lastError: null });
+
   // Foreground permission is the only hard requirement — it's enough to share
   // location while the app is open, which is when the GM is watching live.
   const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
+  setDiag({ foreground: fgStatus });
   if (fgStatus !== 'granted') {
+    setDiag({ lastError: 'foreground permission denied' });
     throw new Error('PERMISSION_DENIED:Location access is required to play. Please enable it in Settings.');
   }
 
@@ -91,10 +141,19 @@ export async function startLocationTracking(
   // watcher that works with just "While Using" (uploads while the app is open).
   let bgGranted = false;
   try {
-    const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
+    // Time-box the background-permission request: on some Android builds it can
+    // wedge (or sit behind a settings redirect) and would otherwise block the
+    // foreground fallback below, leaving the player invisible to the GM.
+    const { status: bgStatus } = await withTimeout(
+      Location.requestBackgroundPermissionsAsync(),
+      8000,
+      'requestBackgroundPermissions'
+    );
     bgGranted = bgStatus === 'granted';
-  } catch {
+    setDiag({ background: bgStatus });
+  } catch (err) {
     bgGranted = false;
+    setDiag({ background: 'error', lastError: `bg permission: ${errMsg(err)}` });
   }
 
   // Try the background task when "Always" is granted (it also fires while
@@ -127,8 +186,10 @@ export async function startLocationTracking(
         );
       }
       backgroundActive = true;
+      setDiag({ path: 'background-service', startedAt: Date.now(), lastError: null });
     } catch (err) {
       console.error('[Location] background updates unavailable, falling back to foreground watcher:', err);
+      setDiag({ lastError: `bg start: ${errMsg(err)}` });
       // Tear down any half-started background task so we don't run two sources.
       try {
         if (await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME).catch(() => false)) {
@@ -143,23 +204,30 @@ export async function startLocationTracking(
     // fallback when the background service couldn't start. Restart it so it
     // captures the current gameId/displayName.
     if (foregroundSub) { foregroundSub.remove(); foregroundSub = null; }
-    foregroundSub = await Location.watchPositionAsync(
-      { accuracy, timeInterval, distanceInterval: options.batterySaver ? 20 : 5 },
-      async (pos) => {
-        const user = auth().currentUser;
-        if (!user) return;
-        try {
-          await updatePlayerLocation(gameId, user.uid, displayName, {
-            latitude: pos.coords.latitude,
-            longitude: pos.coords.longitude,
-            accuracy: pos.coords.accuracy ?? undefined,
-            heading: pos.coords.heading ?? undefined,
-          });
-        } catch (err) {
-          console.error('[Location] foreground upload failed:', err);
+    foregroundSub = await withTimeout(
+      Location.watchPositionAsync(
+        { accuracy, timeInterval, distanceInterval: options.batterySaver ? 20 : 5 },
+        async (pos) => {
+          const user = auth().currentUser;
+          if (!user) return;
+          try {
+            await updatePlayerLocation(gameId, user.uid, displayName, {
+              latitude: pos.coords.latitude,
+              longitude: pos.coords.longitude,
+              accuracy: pos.coords.accuracy ?? undefined,
+              heading: pos.coords.heading ?? undefined,
+            });
+            setDiag({ lastUploadAt: Date.now(), lastError: null });
+          } catch (err) {
+            console.error('[Location] foreground upload failed:', err);
+            setDiag({ lastError: `fg upload: ${errMsg(err)}` });
+          }
         }
-      }
+      ),
+      10000,
+      'watchPositionAsync'
     );
+    setDiag({ path: 'foreground-watch', startedAt: Date.now() });
   }
 }
 

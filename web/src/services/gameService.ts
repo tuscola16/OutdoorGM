@@ -11,6 +11,7 @@ import {
   deleteDoc,
   writeBatch,
   serverTimestamp,
+  deleteField,
 } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { db, functions, Collections } from './firebase';
@@ -23,6 +24,9 @@ import {
   type GameStatus,
   type MapBoundary,
   type EliminationCause,
+  type FsTimestamp,
+  type ScheduledEvent,
+  type ScheduledActionType,
 } from '@shared/types';
 
 /** Ration eat-window math (Rules 6–9). Ported from the mobile gameService: given
@@ -252,6 +256,80 @@ export async function deleteCheckpoint(gameId: string, checkpointId: string): Pr
   await deleteDoc(doc(db, Collections.GAMES, gameId, Collections.CHECKPOINTS, checkpointId));
 }
 
+// --- Timed site windows (#12) ---
+
+export type CheckpointWindowState = 'always' | 'pending' | 'open' | 'closed';
+
+export function checkpointWindowState(
+  cp: { opensAt?: FsTimestamp | null; closesAt?: FsTimestamp | null },
+  nowMs: number = Date.now()
+): CheckpointWindowState {
+  const opens = cp.opensAt?.toMillis?.() ?? null;
+  const closes = cp.closesAt?.toMillis?.() ?? null;
+  if (opens == null && closes == null) return 'always';
+  if (opens != null && nowMs < opens) return 'pending';
+  if (closes != null && nowMs > closes) return 'closed';
+  return 'open';
+}
+
+const cpDoc = (gameId: string, checkpointId: string) =>
+  doc(db, Collections.GAMES, gameId, Collections.CHECKPOINTS, checkpointId);
+
+/** GM opens a timed site now: live from this moment, no scheduled close (#12). */
+export async function openCheckpointNow(gameId: string, checkpointId: string): Promise<void> {
+  await updateDoc(cpDoc(gameId, checkpointId), {
+    opensAt: serverTimestamp(),
+    closesAt: deleteField(),
+  });
+}
+
+/** GM closes a timed site now (#12). */
+export async function closeCheckpointNow(gameId: string, checkpointId: string): Promise<void> {
+  await updateDoc(cpDoc(gameId, checkpointId), { closesAt: serverTimestamp() });
+}
+
+/** GM removes the window so the site is always live again (#12). */
+export async function clearCheckpointWindow(gameId: string, checkpointId: string): Promise<void> {
+  await updateDoc(cpDoc(gameId, checkpointId), {
+    opensAt: deleteField(),
+    closesAt: deleteField(),
+  });
+}
+
+// --- Run-sheet / scheduled events (#11) ---
+
+const scheduledEventsCol = (gameId: string) =>
+  collection(db, Collections.GAMES, gameId, Collections.SCHEDULED_EVENTS);
+
+export async function addScheduledEvent(
+  gameId: string,
+  data: {
+    type: ScheduledActionType;
+    offsetMinutes?: number | null;
+    checkpointId?: string;
+    message?: string;
+    template?: 'player-count' | null;
+  }
+): Promise<void> {
+  await addDoc(scheduledEventsCol(gameId), {
+    ...data,
+    firedAt: null,
+    createdAt: serverTimestamp(),
+  });
+}
+
+export async function updateScheduledEvent(
+  gameId: string,
+  eventId: string,
+  updates: Partial<Omit<ScheduledEvent, 'id' | 'createdAt'>>
+): Promise<void> {
+  await updateDoc(doc(db, Collections.GAMES, gameId, Collections.SCHEDULED_EVENTS, eventId), updates);
+}
+
+export async function deleteScheduledEvent(gameId: string, eventId: string): Promise<void> {
+  await deleteDoc(doc(db, Collections.GAMES, gameId, Collections.SCHEDULED_EVENTS, eventId));
+}
+
 // --- Members ---
 
 export async function updateMemberRole(
@@ -267,4 +345,17 @@ export async function removePlayer(gameId: string, userId: string): Promise<void
   batch.delete(doc(db, Collections.GAMES, gameId, Collections.MEMBERS, userId));
   batch.delete(doc(db, Collections.GAMES, gameId, Collections.LOCATIONS, userId));
   await batch.commit();
+}
+
+/** GM sets (or clears, when null/empty) a member's district/tribute pairing (ROADMAP
+ * #10). Players can't change their own district (firestore.rules). */
+export async function setMemberDistrict(
+  gameId: string,
+  userId: string,
+  district: string | null
+): Promise<void> {
+  const trimmed = district?.trim() ?? '';
+  await updateDoc(doc(db, Collections.GAMES, gameId, Collections.MEMBERS, userId), {
+    district: trimmed === '' ? deleteField() : trimmed,
+  });
 }
