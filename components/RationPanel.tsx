@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TextInput, Alert, ActivityIndicator, Linking, Keyboard } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { View, Text, StyleSheet, TextInput, Alert, ActivityIndicator, Keyboard } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import * as ImagePicker from 'expo-image-picker';
 import * as Notifications from 'expo-notifications';
 import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
 import { Collections } from '@/services/firebase';
@@ -11,6 +10,7 @@ import { friendlyError } from '@/services/errorUtils';
 import { useNow } from '@/hooks/useNow';
 import { formatDuration } from '@/hooks/useElapsed';
 import { Button } from '@/components/ui/Button';
+import { CameraCapture } from '@/components/CameraCapture';
 import { Colors } from '@/constants/colors';
 import type { GameConfig, RationStatus } from '@/types';
 
@@ -44,14 +44,11 @@ export function RationPanel({
   const [cardNumber, setCardNumber] = useState('');
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<RationStatus | null>(null);
+  const [showCamera, setShowCamera] = useState(false);
   // On-screen diagnostics so a field tester can see what the camera + reminder
   // scheduling actually did, without needing a logcat. Surfaced as muted lines.
   const [camDebug, setCamDebug] = useState('');
   const [notifDebug, setNotifDebug] = useState('');
-  // Synchronous re-entry guard: the camera permission prompt + launch are async, and
-  // without this a second tap before the camera opens fires a *concurrent*
-  // launchCameraAsync, which wedges the picker so it never opens (the field-test bug).
-  const launchingRef = useRef(false);
 
   const intervalIndex = interval?.index ?? null;
 
@@ -169,53 +166,26 @@ export function RationPanel({
 
   const remainingSecs = Math.max(0, Math.floor((interval.windowEndsAt - now) / 1000));
 
-  async function handleSubmit() {
-    if (launchingRef.current || busy) return; // already capturing/uploading
+  // Open the in-app camera (CameraCapture). Using our own camera view instead of
+  // ImagePicker.launchCameraAsync avoids the external-activity result loss that left
+  // the old flow stuck on "opening camera…".
+  function openCamera() {
+    if (busy || showCamera) return;
     if (requireCard && !cardNumber.trim()) {
       Alert.alert('Card number required', 'Enter the number printed on your ration card before submitting.');
       return;
     }
-    launchingRef.current = true;
-    setCamDebug('preparing…');
+    Keyboard.dismiss();
+    setCamDebug('opening camera…');
+    setShowCamera(true);
+  }
+
+  // A photo came back from the in-app camera → upload + record the submission.
+  async function onCaptured(uri: string) {
+    setShowCamera(false);
+    setBusy(true);
+    setCamDebug('uploading…');
     try {
-      // Dismiss the keyboard BEFORE launching the camera. Launching the camera
-      // activity while the soft keyboard is still up makes Android open and then
-      // immediately cancel it (the "brief dim/flash, then nothing" field-test bug) —
-      // give the window a moment to settle after the keyboard closes.
-      Keyboard.dismiss();
-      await new Promise((r) => setTimeout(r, 350));
-
-      // Resolve permission deterministically before launching: check current state,
-      // ask only if we still can, and route to Settings if it's been hard-denied.
-      let perm = await ImagePicker.getCameraPermissionsAsync();
-      if (!perm.granted && perm.canAskAgain) {
-        perm = await ImagePicker.requestCameraPermissionsAsync();
-      }
-      if (!perm.granted) {
-        setCamDebug(`camera permission: ${perm.status}`);
-        Alert.alert(
-          'Camera access needed',
-          perm.canAskAgain
-            ? 'Outdoor GM needs the camera to photograph your ration card.'
-            : 'Camera access is blocked. Enable it in Settings to photograph your ration card.',
-          perm.canAskAgain
-            ? [{ text: 'OK' }]
-            : [{ text: 'Cancel', style: 'cancel' }, { text: 'Open Settings', onPress: () => Linking.openSettings() }]
-        );
-        return;
-      }
-
-      setCamDebug('opening camera…');
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.6,
-      });
-      if (result.canceled) { setCamDebug('camera canceled (no photo taken)'); return; }
-      const uri = result.assets?.[0]?.uri;
-      if (!uri) { setCamDebug('camera returned no image'); return; }
-
-      setBusy(true);
-      setCamDebug('uploading…');
       const url = await uploadRationPhoto(gameId, player.userId, intervalIndex!, uri);
       await submitRation(
         gameId,
@@ -230,7 +200,6 @@ export function RationPanel({
       setCamDebug(`error: ${err instanceof Error ? err.message : String(err)}`);
       Alert.alert('Could not submit', friendlyError(err));
     } finally {
-      launchingRef.current = false;
       setBusy(false);
     }
   }
@@ -280,13 +249,18 @@ export function RationPanel({
           />
           <Button
             title={busy ? 'Submitting…' : 'Take ration photo'}
-            onPress={handleSubmit}
+            onPress={openCamera}
             loading={busy}
           />
           {camDebug ? <Text style={styles.debug}>camera: {camDebug}</Text> : null}
           {notifDebug ? <Text style={styles.debug}>{notifDebug}</Text> : null}
         </>
       )}
+      <CameraCapture
+        visible={showCamera}
+        onClose={() => { setShowCamera(false); setCamDebug('camera closed'); }}
+        onCapture={onCaptured}
+      />
     </View>
   );
 }

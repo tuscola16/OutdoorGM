@@ -49,37 +49,29 @@ export async function getPlayerPermissions(rationsEnabled: boolean): Promise<Pla
 }
 
 /**
- * Request every player permission, in the order the OS requires (foreground location
- * before background). Only prompts for ones still undetermined, so it won't re-nag a
- * player who already decided. Safe to call more than once. Returns the resulting state.
+ * Request the **non-location** player permissions (notifications + camera). Location is
+ * deliberately excluded here: the location-tracking flow (`startLocationTracking`, which
+ * runs in the lobby) already owns the location prompts, and issuing a *second* concurrent
+ * `requestForegroundPermissionsAsync` from the lobby primer can deadlock expo-location and
+ * wedge tracking on "Starting tracking…". Only prompts for ones still undetermined.
  */
-export async function requestAllPlayerPermissions(rationsEnabled: boolean): Promise<PlayerPermissions> {
-  // 1) Foreground location — the prerequisite for background.
-  let fg = await Location.getForegroundPermissionsAsync();
-  if (fg.status === 'undetermined') {
-    fg = await Location.requestForegroundPermissionsAsync().catch(() => fg);
-  }
-
-  // 2) Background location ("Allow all the time") — only askable once foreground is granted.
-  let bg = await Location.getBackgroundPermissionsAsync();
-  if (fg.status === 'granted' && bg.status === 'undetermined') {
-    bg = await Location.requestBackgroundPermissionsAsync().catch(() => bg);
-  }
-
-  // 3) Notifications (handles the iOS FCM authorization too, via notificationService).
+export async function requestNonLocationPlayerPermissions(rationsEnabled: boolean): Promise<void> {
+  // Notifications (handles the iOS FCM authorization too, via notificationService).
   await requestNotificationPermissions().catch(() => {});
-  const notif = await Notifications.getPermissionsAsync();
 
-  // 4) Camera — only when the game actually uses ration photos.
-  let cam = await ImagePicker.getCameraPermissionsAsync();
+  // Camera — only when the game actually uses ration photos.
+  const cam = await ImagePicker.getCameraPermissionsAsync();
   if (rationsEnabled && cam.status === 'undetermined') {
-    cam = await ImagePicker.requestCameraPermissionsAsync().catch(() => cam);
+    await ImagePicker.requestCameraPermissionsAsync().catch(() => {});
   }
+}
 
-  return {
-    locationWhenInUse: norm(fg),
-    locationAlways: norm(bg),
-    notifications: norm(notif),
-    camera: rationsEnabled ? norm(cam) : 'granted',
-  };
+/** Request foreground→background location (user-initiated, e.g. the checklist "Allow" button). */
+export async function requestLocationPermissions(): Promise<void> {
+  let fg = await Location.getForegroundPermissionsAsync();
+  if (fg.status !== 'granted') fg = await Location.requestForegroundPermissionsAsync().catch(() => fg);
+  if (fg.status === 'granted') {
+    const bg = await Location.getBackgroundPermissionsAsync();
+    if (bg.status !== 'granted') await Location.requestBackgroundPermissionsAsync().catch(() => {});
+  }
 }

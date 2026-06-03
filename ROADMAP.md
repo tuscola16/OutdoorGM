@@ -206,10 +206,13 @@ that by the time the GM is ready to start, every player already has a fix.
 >   before kickoff. The lobby waiting screen shows a "Location ready — you're on your GM's map" /
 >   "Getting your location ready…" indicator.
 > - **Up-front permission priming** (`components/LobbyPermissions.tsx`, `services/permissions.ts`):
->   the lobby waiting screen requests *all* player permissions at once — location "Allow all the
->   time", notifications, and camera (when rations are on) — instead of prompting mid-game when each
->   feature first fires. Shows a live checklist with a per-item **Allow / Settings** fix and
->   re-checks on return from Settings.
+>   the lobby waiting screen primes player permissions — notifications + camera are requested on
+>   entry, and location is surfaced with an **Allow / Settings** fix — instead of prompting mid-game
+>   when each feature first fires. Shows a live checklist that re-checks on return from Settings.
+>   *Note:* the primer deliberately does **not** issue its own location request — `startLocationTracking`
+>   already prompts for it in the lobby, and a second concurrent `requestForegroundPermissionsAsync`
+>   was found to deadlock expo-location and wedge tracking on "Starting tracking…" (that request is
+>   now also time-boxed as a backstop).
 > - **Geofence phase guard** (`functions/src/geofence.ts`): the function now reads the game doc
 >   and returns unless `phase === 'play'`, so lobby/setup fixes appear on the GM map but **never**
 >   fire a checkpoint prematurely (mirrors the `gamePhase()` legacy default).
@@ -272,6 +275,16 @@ later when the app was manually opened — then it fired.
 >   warning despite granted perms). Now we read the current grant via
 >   `getBackgroundPermissionsAsync()` first (instant, no prompt) and only request when genuinely
 >   needed, falling back to the read grant if the request hangs.
+> - **`distanceInterval: 0`** (field test, 2026-06): the location request had a 10–30 m displacement
+>   filter, so a player standing still (e.g. waiting *at* a checkpoint) delivered **no** fixes — the
+>   geofence got no write inside the radius (no event until they moved/opened the app) and the GM saw
+>   them go stale within ~2 min. Now purely time-based, so stationary/locked players keep reporting
+>   and checkpoints fire.
+> - **Foreground-request deadlock fixed** (field test, 2026-06): the lobby permission primer issuing
+>   its own `requestForegroundPermissionsAsync` concurrently with `startLocationTracking` could leave
+>   the latter pending forever → stuck on "Starting tracking…", GM saw the player not reporting even
+>   though the OS blue dot showed. The primer no longer requests location, and the tracking request
+>   is time-boxed.
 > - **Resume re-assert** (`player/game.tsx`): on every app foreground we re-run
 >   `startLocationTracking`, which restarts a service the OS may have killed and *upgrades* a
 >   foreground-only player to the background service if they granted "Always" in Settings since.
@@ -339,12 +352,13 @@ instead of cramming both into one cramped screen.
 > ending at the boundary. `RationPanel.tsx` hides the capture UI until open (showing a muted
 > "opens in …" countdown) and **schedules local notifications** (deterministic ids, MAX
 > `broadcasts` channel) at each future window-open so the player is alerted even backgrounded/locked.
-> **Camera root cause:** `setBusy(true)` ran only *after* the camera returned, so the button stayed
-> live through the permission prompt + launch and rapid taps fired **concurrent** `launchCameraAsync`
-> calls that wedged the picker. Fixed with a synchronous re-entry guard (`launchingRef`) +
-> permission-first flow (`getCameraPermissionsAsync` → ask only if `canAskAgain` → Settings link when
-> hard-denied) + surfaced launch errors. GM config editors (mobile + web) expose the new
-> open-window field (interval field relabeled). Needs device verification of the camera launch.
+> **Camera:** two field-test rounds proved `ImagePicker.launchCameraAsync` unreliable on Android —
+> the external camera activity launched but the result promise never resolved (the host activity is
+> recreated and the result is lost; observed as stuck on "opening camera…"). Replaced it with an
+> **in-app camera** (`components/CameraCapture.tsx`, `expo-camera` `CameraView`) so capture happens
+> inside our own activity and can't lose the result. GM config editors (mobile + web) expose the new
+> open-window field (interval field relabeled). On-screen `camera:`/`🔔 alerts` diagnostics added for
+> field testing. Needs device verification of the in-app camera.
 
 ---
 

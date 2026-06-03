@@ -119,7 +119,20 @@ export async function startLocationTracking(
 
   // Foreground permission is the only hard requirement — it's enough to share
   // location while the app is open, which is when the GM is watching live.
-  const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
+  // Time-box the request: a *concurrent* permission request elsewhere (e.g. the
+  // lobby primer) can leave requestForegroundPermissionsAsync pending forever, which
+  // would wedge tracking on "Starting tracking…". On timeout, fall back to the
+  // current status instead of hanging.
+  let fgStatus: string;
+  try {
+    fgStatus = (await withTimeout(
+      Location.requestForegroundPermissionsAsync(),
+      12000,
+      'requestForegroundPermissions'
+    )).status;
+  } catch {
+    fgStatus = (await Location.getForegroundPermissionsAsync().catch(() => ({ status: 'undetermined' }))).status;
+  }
   setDiag({ foreground: fgStatus });
   if (fgStatus !== 'granted') {
     setDiag({ lastError: 'foreground permission denied' });

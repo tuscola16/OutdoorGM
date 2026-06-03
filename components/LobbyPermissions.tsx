@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, AppState, Linking } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
 import * as ImagePicker from 'expo-image-picker';
 import { Colors } from '@/constants/colors';
 import {
   getPlayerPermissions,
-  requestAllPlayerPermissions,
+  requestNonLocationPlayerPermissions,
+  requestLocationPermissions,
   type PermState,
   type PlayerPermissions,
 } from '@/services/permissions';
@@ -40,14 +40,17 @@ export function LobbyPermissions({ rationsEnabled }: { rationsEnabled: boolean }
     [rationsEnabled]
   );
 
-  // Ask for everything once on entry, then keep the checklist in sync.
+  // Ask for the non-location permissions once on entry (notifications + camera), then
+  // read all statuses for the checklist. Location is intentionally NOT requested here —
+  // startLocationTracking already prompts for it in the lobby, and a second concurrent
+  // request would wedge tracking. Players fix location via the row's "Allow" button.
   useEffect(() => {
     if (requestedOnce.current) return;
     requestedOnce.current = true;
     setBusy(true);
-    requestAllPlayerPermissions(rationsEnabled)
-      .then(setPerms)
-      .catch(() => refresh())
+    requestNonLocationPlayerPermissions(rationsEnabled)
+      .catch(() => {})
+      .then(refresh)
       .finally(() => setBusy(false));
   }, [rationsEnabled, refresh]);
 
@@ -99,16 +102,11 @@ export function LobbyPermissions({ rationsEnabled }: { rationsEnabled: boolean }
     setBusy(true);
     try {
       if (kind === 'location') {
-        let fg = await Location.getForegroundPermissionsAsync();
-        if (fg.status !== 'granted') fg = await Location.requestForegroundPermissionsAsync();
-        if (fg.status === 'granted') {
-          const bg = await Location.getBackgroundPermissionsAsync();
-          if (bg.status !== 'granted') await Location.requestBackgroundPermissionsAsync().catch(() => {});
-        }
+        await requestLocationPermissions();
         // Android grants "Allow all the time" only via Settings — send them there if
-        // a direct request didn't upgrade it.
-        const after = await Location.getBackgroundPermissionsAsync();
-        if (after.status !== 'granted') Linking.openSettings();
+        // a direct request didn't upgrade it to the background grant.
+        const after = await getPlayerPermissions(rationsEnabled);
+        if (after.locationAlways !== 'granted') Linking.openSettings();
       } else if (kind === 'notifications') {
         const r = await Notifications.requestPermissionsAsync();
         if (!r.granted && r.canAskAgain === false) Linking.openSettings();

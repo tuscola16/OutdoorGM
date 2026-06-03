@@ -21,6 +21,7 @@
     "@react-native-firebase/messaging": "^20.3.0",
     "@react-native-firebase/storage": "^20.3.0",
     "expo": "^51.0.39",
+    "expo-camera": "~15.0.16",
     "expo-clipboard": "~6.0.3",
     "expo-constants": "~16.0.2",
     "expo-dev-client": "~4.0.21",

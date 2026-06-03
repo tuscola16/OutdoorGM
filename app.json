@@ -83,6 +83,13 @@
           "cameraPermission": "Outdoor GM uses the camera so you can photograph your ration card each eat window for your Game Master to verify."
         }
       ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Outdoor GM uses the camera so you can photograph your ration card each eat window for your Game Master to verify.",
+          "recordAudioAndroid": false
+        }
+      ],
       "@react-native-firebase/app",
       "@react-native-firebase/auth",
       "@react-native-firebase/crashlytics",
