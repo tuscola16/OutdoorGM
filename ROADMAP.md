@@ -85,7 +85,10 @@ and the only player tracking anyone has degrade gracefully rather than silently 
 
 > **Built and removed from this list:** #12 (timed checkpoint windows — `opensAt`/`closesAt`
 > on a checkpoint, the geofence time-gate, and GM open/close-now controls in the Play Area
-> editor). The run-sheet (#11) flips these on schedule.
+> editor). The run-sheet (#11) flips these on schedule. *Follow-on:* the web checkpoint editor
+> now also exposes the window choice (**Start open / Start closed / Always live**) in the
+> **New Checkpoint** flow, not just on edit — staged at create and applied via the existing
+> `openCheckpointNow`/`closeCheckpointNow` calls right after the doc is created.
 
 ### 13. Voucher turn-in sites (ration-card resupply)
 Last year ran **five live voucher windows**. A voucher is a **physical token a player already
@@ -362,6 +365,178 @@ instead of cramming both into one cramped screen.
 
 ---
 
+## Field-test findings — 2026-06-03 ration-loop review
+
+A second pass focused on the ration capture/review loop in use. Three defects in how the GM
+review and the player submission behave once a card is actually submitted — all in the
+already-built Rules 6–9 path (`components/RationPanel.tsx`, `app/(app)/gm/[gameId]/rations.tsx`,
+the web `RationsModal`). Schema detail: [ROADMAP_DATA_MODEL.md](ROADMAP_DATA_MODEL.md) §14.
+
+### 22. GM ration review — approve/reject is terminal, not a pair of always-live buttons
+On the GM review feed, **Approve** and **Reject** currently both stay tappable after a decision:
+approving a card shows "approved" but the **Reject** button is still there and can be clicked
+(and vice-versa). A reviewed card should expose **no further action** — once `status` is
+`valid` or `rejected`, replace the button pair with the resolved state (a label/chip, e.g.
+"✓ Approved" / "✕ Rejected"), not a second live button. The only way to flip a decision should
+be a deliberate, explicit "change decision" affordance (if we want one at all), never an
+ever-present opposite button that looks like the next step. Applies to **both** the mobile feed
+(`rations.tsx`) and the web `RationsModal`, which share `reviewRation()`.
+
+### 23. Ration photo review must scale to the window and scroll
+The photo lightbox/review blows up **larger than the window** and isn't scrollable, so a
+portrait card photo can't be fully seen. The review image must **fit within the viewport**
+(scale to the available width/height, preserve aspect ratio, `resizeMode: 'contain'`) and the
+review surface must **scroll** when content exceeds the screen — on the mobile lightbox and the
+web modal alike. No part of a submitted photo should be clipped off-screen or zoomed past the
+frame.
+
+### 24. Player — one ration submission per window; show pending → approved, then count down
+A player can currently submit **multiple** ration cards while the window is open, and the panel
+keeps showing the open capture UI even after they've submitted. It should be **one submission
+per window**:
+- **After submit:** hide the capture UI and show **"approval pending"** for that window's card
+  (the existing deterministic `rations/{playerId}_{intervalIndex}` doc already makes the submit
+  idempotent — the UI just needs to reflect it).
+- **On approval (`status: 'valid'`):** show that **this window's ration was approved** and switch
+  to the **countdown to the next window** ("next ration in …"), exactly as if the window had
+  closed — do **not** keep the window "open" or allow another capture.
+- **On rejection (`status: 'rejected'`):** the player may **re-submit** for the same window while
+  it's still open (the one rejection path that reopens capture), since a rejected card means they
+  still owe a valid one this interval. After the window closes, fall through to the normal
+  missed/closed state.
+
+The driver is the player's own submission doc for the current `intervalIndex` (already in scope
+via the rations listener) — the panel keys its state off that doc's presence and `status` rather
+than off the raw window-open boolean alone.
+
+---
+
+## Production hardening & go-live — code review 2026-06-04
+
+A full-codebase review focused on **security, loading sequence, efficiency, and what it takes
+to ship as a production app**. These are not ruleset features or playtest defects — they're the
+deploy-blockers, cost/scaling risks, and data-lifecycle gaps that surface when the app goes
+live. New stable numbers continue the #-series; schema/enforcement detail is in
+[ROADMAP_DATA_MODEL.md](ROADMAP_DATA_MODEL.md) §15. Recommended order: the four **Critical**
+items first (they break a deploy or fail at runtime), then **High** (cost/privacy), then the
+rest.
+
+### Critical — block or gate the launch
+
+#### 25. Migrate Twilio off `functions.config()` *(deprecated — will break deploys)*
+`functions/src/sms.ts:8` reads Twilio creds via `functions.config()`, which is removed in the
+current `firebase-functions` generation (Google has set a shutdown date). On a fresh deploy with
+an up-to-date toolchain this returns `undefined` and silently disables SMS — the **only**
+non-push channel for SOS alerts (#3). Migrate to `defineSecret`/params (`TWILIO_SID`,
+`TWILIO_TOKEN`, `TWILIO_FROM`) and pass them into the function. Most likely single thing to break
+a production deploy.
+
+#### 26. Turn on App Check enforcement + add callable rate-limiting *(open abuse surface)*
+`functions/src/games.ts:12` has `ENFORCE_APP_CHECK = false` (intentional pre-launch), and there
+is **no rate limiting** on any callable. Any authenticated user can brute-force `joinGameByCode`
+or spam `createGame`. Before launch: register App Check on both platforms, verify real builds get
+tokens, flip the flag, **and** add a per-UID throttle on `joinGameByCode` (a short cooldown doc
+or a failed-attempt counter). The 32⁶ code space makes blind brute force impractical, but an
+authenticated attacker with no throttle is still a real vector.
+
+#### 27. Restrict the Google Maps API keys in Cloud Console *(billing-abuse vector)*
+`app.json:22` (iOS) and `app.json:44` (Android) ship Maps keys in the binary — unavoidable, and
+fine **only if** each key is locked to its bundle ID / SHA-1 and to the Maps SDK. If unrestricted,
+anyone can extract them from the APK/IPA and bill maps usage to the project. Verify (and document)
+the restrictions before the store release. No code change — a console/ops task to confirm.
+
+#### 28. Add the missing collection-group index for the run-sheet sweep *(runtime failure)*
+`functions/src/runsheet.ts:30` runs `collectionGroup('scheduledEvents').where('firedAt','==',null)`,
+which needs a `COLLECTION_GROUP`-scoped single-field index on `scheduledEvents.firedAt` — the same
+reason the `members.userId` override exists in `firestore.indexes.json`. No such override is
+present, so the every-minute sweep throws `FAILED_PRECONDITION` (needs-index) and **every
+run-sheet action silently never fires** (#11). Add the field override (or confirm it was created
+manually in the console) and redeploy indexes.
+
+### High — cost, privacy, data lifecycle
+
+#### 29. Geofence read-cost scales poorly and does work during the lobby
+`functions/src/geofence.ts` (`onLocationUpdate`) fires on every location write (time-based, ~every
+5s/player) and does ~4 reads each time (game doc, member doc, all checkpoints, all arrivals).
+During the **lobby**, players already upload location (#16), so each write costs 2 reads just to
+hit the `phase !== 'play'` early-return and no-op. Over an N-player, 3.5h game this is the dominant
+Firestore cost. Mitigations: cache/skip the game+member reads, short-circuit lobby writes more
+cheaply, or skip processing when the game has zero checkpoints. Model the cost at expected player
+counts before launch.
+
+#### 30. Purge location & arrival data on game end *(privacy / unbounded growth)*
+Only ration *photos* are cleaned on game end (`functions/src/cleanup.ts`). Player `locations/*`
+(last GPS + name) and `arrivals/*` persist in Firestore indefinitely for every finished game — a
+privacy/retention liability for a location-tracking app, and unbounded growth. Extend
+`cleanupRationPhotosOnGameEnd` (or add a scheduled job) to also delete `locations` (and optionally
+`arrivals`) on the `play → ended` transition, and reflect the retention policy in the privacy
+policy.
+
+#### 31. Parallelize `getMyGames` (N+1 sequential reads)
+`services/gameService.ts:293-315` `await`s a separate `games/{gameId}` read inside a `for` loop,
+once per membership, and this runs on **every focus** of the Games screen
+(`app/(app)/games.tsx:50`). A user in 10 games pays 10 serial round-trips on every return to the
+list. Wrap the per-game reads in `Promise.all` (and consider caching) so the list loads in one
+round-trip's worth of latency.
+
+#### 32. Consolidate duplicate broadcast listeners on the player screen
+`AlertOverlay` and `BroadcastFeed` each open **two** Firestore listeners (global + targeted). The
+play screen mounts `AlertOverlay` + a `BroadcastFeed`, and the waiting screen mounts another
+`BroadcastFeed`, so a player holds 4–6 concurrent subscriptions on the same collection. Lift
+broadcasts into a single shared subscription (the player screen doesn't use `GameContext` today)
+and feed both components from it — fewer live listeners, less read load.
+
+### Medium — correctness & robustness
+
+#### 33. Make single-event arrival dedup transactional
+`functions/src/geofence.ts:206-224` — the `eventQueue` path guards double-fire with a transaction,
+but the single-`event` path relies on the non-transactional `arrivedCheckpointIds` set read at
+function start. Two concurrent location writes for the same player can both pass the check and
+create duplicate arrival records/notifications. Close the asymmetry by reusing the transactional
+idempotency check for the single-event path too.
+
+#### 34. Harden `deleteAccount` — batch limit + sole-GM orphans
+`services/gameService.ts:471-511` deletes all memberships in one `WriteBatch` (caps at 500 writes
+— a user in 250+ games throws), and deleting the **sole GM** of a game orphans it (players still
+in, no one able to end/delete). Chunk the batch, and handle sole-GM games (transfer GM, or
+server-side delete the game).
+
+#### 35. Stabilize the player tracking effect (stop/restart churn)
+`app/(app)/player/game.tsx:158-201` — the tracking effect depends on `displayName`, `batterySaver`,
+`phase`, `out`; `displayName` flips `'' → real name` shortly after mount, so cleanup stops the
+background service and the next run restarts it (a brief window with no active game), and the
+separate AppState effect can call `startLocationTracking` concurrently. Drive tracking from a
+single controller keyed on a stable `shouldTrack` boolean to avoid the churn and the concurrent
+starts.
+
+#### 36. Range-validate coordinates in the location write rule
+`firestore.rules:98-103` checks `latitude`/`longitude` are `is number` but not bounded to ±90 /
+±180. A member can write nonsense coordinates for their own location doc. Low impact, cheap to
+tighten with two range checks.
+
+### Low — polish & branding
+
+#### 37. Rebrand the remaining legacy "Hunger Games" strings
+`functions/src/sms.ts:27` prefixes SMS bodies with `[HungerGamesLocator]` while the app is "Outdoor
+GM" — user-visible. Internal identifiers (`hgl-background-location`, `hgl_*` AsyncStorage keys) are
+harmless to leave, but the SMS prefix should be rebranded.
+
+#### 38. Reset the login button's loading state on a stuck navigation
+`app/(auth)/login.tsx:42-45` only clears `loading` on error; on success it relies on `router.replace`
+unmounting the screen. If navigation is delayed/blocked the button spins indefinitely. A
+`finally { setLoading(false) }` (or a guard) makes it robust.
+
+#### 39. Remove the unused `arrivals` composite index
+`firestore.indexes.json:3` defines `arrivals` (playerId ASC, timestamp DESC), but no query uses it
+(the geofence filters `playerId` only; the client orders by `timestamp` only). Dead config — drop
+it (or add the query that needs it).
+
+> **Verified clean:** real secrets (`.env`, `web/.env`) are correctly gitignored; only
+> `.env.example` and the client config files (`google-services.json`, `GoogleService-Info.plist`,
+> which are not secrets) are tracked.
+
+---
+
 ## Consequence of replacing Pingo (sole location & safety tool)
 
 Outdoor GM has **replaced "Find My Kids by Pingo"** as the only location & safety tool — so
@@ -465,7 +640,10 @@ camera fix (`21`), alerts over the app + triggering-player hazard text (`17`), F
 keep-tracking-while-locked (`18`), lobby location capture + GM readiness + geofence phase guard
 (`16`), refreshed player intro (`19`), and the player Map/Stats split (`20`). **All six still need
 on-device verification from a build** — especially the camera launch (`21`) and the locked-screen
-tracking/alert path (`16`/`18`).
+tracking/alert path (`16`/`18`). A follow-up review pass then surfaced three ration-loop UX
+defects (`22`–`24`: terminal GM approve/reject, viewport-fit scrollable photo review, and
+one-submission-per-window pending→approved player state) — **outstanding**, all in the
+already-built Rules 6–9 path.
 
 With the playtest batch done, what remains is the pre-existing tier list, roughly in order: the
 **safety-critical** hardening `3` (SOS→SMS fallback) + `8` (offline resilience) — these are the
@@ -477,3 +655,11 @@ The **safety nets & invariants** land *alongside the features they protect* — 
 invariants are cheap rules/guards; the safety-critical welfare nets ride the `3` / `8` /
 stale-fix hardening, which (with the Pingo consequence) is "must ship before a real game."
 Then the rest of **P3**.
+
+**Cutting across all of the above is the go-live hardening batch (`25`–`39`, code review
+2026-06-04).** Independent of the ruleset roadmap, the four **Critical** items (`25` Twilio
+secrets, `26` App Check + rate-limit, `27` Maps key restriction, `28` run-sheet index) must be
+cleared before a production deploy — `25` and `28` fail at deploy/runtime, `26`/`27` are
+security/billing exposure. The **High** items (`29` geofence cost, `30` data retention, `31`
+getMyGames N+1, `32` duplicate listeners) should follow before a real event; the Medium/Low
+items (`33`–`39`) are correctness/polish that can trail.

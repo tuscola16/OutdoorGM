@@ -469,3 +469,124 @@ export interface Game {
   confirmation. The "green check before kickoff."
 - **Rules delta:** `practice` is GM-write-only and set at creation (in the `createGame`
   function); the relaxed-guard branches in `firestore.rules` / the service helpers key off it.
+
+---
+
+## 14. Ration review & single-submission UX (ROADMAP #22–#24)
+
+**No schema change** — these are UI-state deltas over the existing `RationSubmission` doc (§4)
+and its `status: 'pending' | 'valid' | 'rejected'`. The deterministic id
+`rations/{playerId}_{intervalIndex}` already gives one doc per player per window; the work is to
+make both the GM review and the player panel render purely off that doc's `status`.
+
+- **#22 — terminal review action (GM).** In the mobile feed (`app/(app)/gm/[gameId]/rations.tsx`)
+  and the web `RationsModal`, branch on `submission.status`:
+  - `pending` → show the **Approve** / **Reject** button pair (both call `reviewRation()`).
+  - `valid` / `rejected` → show a **resolved chip** ("✓ Approved" / "✕ Rejected"), **no live
+    opposite button**. Any change-of-mind is a separate explicit "change decision" control, not a
+    standing second button. `reviewRation()` itself is unchanged — it already writes
+    `status` + `reviewedAt`; this is purely which controls render for a non-`pending` doc.
+
+- **#23 — viewport-fit, scrollable photo review.** The lightbox/review image uses
+  `resizeMode: 'contain'` sized to the available width/height (mobile: `useWindowDimensions()`
+  minus chrome; web: `max-width:100%; max-height:100vh; object-fit:contain`), inside a scrollable
+  container (`ScrollView` / overflow-auto modal body) so an over-tall portrait card can be panned
+  rather than clipped. No data change.
+
+- **#24 — one submission per window, state-driven panel.** `RationPanel.tsx` already receives the
+  player's submissions via the rations listener; select the doc for the **current** `intervalIndex`
+  (`rationInterval(game, now)`, §1) and drive the panel off it:
+
+  | current-window doc | window open? | panel state |
+  | --- | --- | --- |
+  | none | open | **capture UI** (camera) |
+  | `pending` | open | **"approval pending"** — capture hidden |
+  | `valid` | open or closed | **"ration approved"** → countdown to next window's open |
+  | `rejected` | open | **capture UI re-enabled** (still owes a valid card this interval) |
+  | `rejected` | closed | normal **missed/closed** state |
+  | none | closed | normal **"opens in …"** / missed state |
+
+  The countdown after a `valid` reuses the same `windowStartsAt` math the closed-window branch
+  already shows — an approved card simply ends this window early for that player. No new field;
+  re-submit after a rejection overwrites the same deterministic doc back to `pending`.
+
+---
+
+## 15. Production hardening & go-live (ROADMAP #25–#39)
+
+Mostly **config, infra, and enforcement deltas — almost no schema change.** These are the
+deploy-blockers and cost/lifecycle gaps from the 2026-06-04 code review. Grouped by the same
+severity tiers as the roadmap.
+
+### Critical (#25–#28)
+
+- **#25 — Twilio off `functions.config()`.** Replace the `functions.config().twilio.*` reads in
+  `functions/src/sms.ts` with `defineSecret('TWILIO_SID' | 'TWILIO_TOKEN' | 'TWILIO_FROM')` (or
+  params), declare them on the SMS-sending functions' `runWith({ secrets: [...] })`, and set them
+  with `firebase functions:secrets:set`. No app-side change; `sendArrivalSMS` still no-ops when a
+  secret is unset (same graceful-skip as today).
+- **#26 — App Check + callable throttle.** Flip `ENFORCE_APP_CHECK → true` in
+  `functions/src/games.ts` *after* both platforms are registered and verified. Add a lightweight
+  per-UID rate limit to `joinGameByCode`: a `rateLimits/{uid}` doc (or a counter on the user doc)
+  stamped each attempt, rejecting > N tries / window with `resource-exhausted`. Schema: an
+  internal, admin-SDK-only `rateLimits` collection (not in `Collections`, not client-readable) —
+  no game-doc change.
+- **#27 — Maps key restriction.** Pure ops/console task — restrict each `app.json` Maps key to its
+  bundle ID / SHA-1 + Maps SDK in Google Cloud Console. No code, no schema.
+- **#28 — run-sheet index.** Add the missing single-field override to `firestore.indexes.json` so
+  the `collectionGroup('scheduledEvents').where('firedAt','==',null)` sweep (`runsheet.ts`) has a
+  collection-group index:
+
+  ```jsonc
+  // firestore.indexes.json → fieldOverrides[]
+  {
+    "collectionGroup": "scheduledEvents",
+    "fieldPath": "firedAt",
+    "indexes": [
+      { "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" }
+    ]
+  }
+  ```
+
+  Mirrors the existing `members.userId` override. Redeploy with `firebase deploy --only firestore:indexes`.
+
+### High (#29–#32)
+
+- **#29 — geofence read cost.** No schema. In `onLocationUpdate`, avoid the per-write game+member
+  reads where possible: e.g. short-circuit lobby writes before the second read, skip when the
+  game has zero checkpoints, or cache the game-phase/member-role on a cheap lookup. Goal is fewer
+  reads per location write, not a data change.
+- **#30 — data retention.** Extend `cleanupRationPhotosOnGameEnd` (`functions/src/cleanup.ts`),
+  which already fires on the `status: active → ended` game-doc transition, to also
+  `recursiveDelete` (or batch-delete) the game's `locations` (and optionally `arrivals`)
+  subcollections. No schema; a lifecycle/cleanup delta. Document the retention window in the
+  privacy policy.
+- **#31 — `getMyGames` N+1.** `services/gameService.ts` — replace the sequential `for … await`
+  per-game read with `Promise.all(memberDocs.map(...))`. No schema.
+- **#32 — shared broadcast subscription.** Lift the global+targeted broadcast listeners out of
+  `AlertOverlay`/`BroadcastFeed` into one source (a small `useBroadcasts(gameId)` hook or a
+  player-side `GameContext` subscription) and pass results down as props. No schema — a
+  client-architecture change to cut concurrent listeners.
+
+### Medium / Low (#33–#39)
+
+- **#33 — transactional single-event arrival dedup.** `functions/src/geofence.ts` — wrap the
+  single-`event` arrival write in the same `runTransaction` idempotency guard the `eventQueue`
+  path uses (re-read arrivals for `checkpointId`, bail if this `playerId` already recorded). No
+  schema.
+- **#34 — `deleteAccount` robustness.** `services/gameService.ts` — chunk deletes into ≤ 500-write
+  batches (or `recursiveDelete` per game via a callable), and detect sole-GM games (offer GM
+  transfer, or delete the game server-side). May warrant a small `transferGm`/`deleteGameForce`
+  callable; no game-doc schema change.
+- **#35 — tracking controller.** `app/(app)/player/game.tsx` — collapse the tracking effect +
+  AppState re-assert into one controller gated on a stable `shouldTrack` boolean so deps like
+  `displayName` arriving don't stop/restart the background service. Client-only.
+- **#36 — coordinate range rule.** `firestore.rules` locations `create, update` — add
+  `request.resource.data.latitude >= -90 && <= 90` and `longitude >= -180 && <= 180` to the
+  existing `is number` checks.
+- **#37 — rebrand SMS prefix.** `functions/src/sms.ts` — change the `[HungerGamesLocator]` body
+  prefix to the Outdoor GM brand. Cosmetic.
+- **#38 — login loading reset.** `app/(auth)/login.tsx` — add `finally { setLoading(false) }` (or
+  a mounted guard) so the submit button can't spin forever if navigation stalls. Client-only.
+- **#39 — drop unused index.** Remove the unused `arrivals` (playerId ASC, timestamp DESC)
+  composite from `firestore.indexes.json` (no query references it), or add the query that needs it.
