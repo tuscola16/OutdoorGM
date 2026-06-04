@@ -472,6 +472,11 @@ function CheckpointModal({
   const [audience, setAudience] = useState<EventAudience>(edit?.event?.audience ?? 'crossing-player');
   const [queue, setQueue] = useState<CheckpointEvent[]>(edit?.eventQueue ?? []);
 
+  // Timed site window for a *new* checkpoint (#12). Existing checkpoints write immediately by id
+  // (see windowAction below); a new one has no id yet, so we stage the choice and apply it right
+  // after the doc is created.
+  const [windowChoice, setWindowChoice] = useState<'always' | 'open' | 'closed'>('always');
+
   const updateQueueItem = (i: number, patch: Partial<CheckpointEvent>) =>
     setQueue((q) => q.map((e, idx) => (idx === i ? { ...e, ...patch } : e)));
   const addQueueItem = () => setQueue((q) => [...q, { kind: 'hazard' }]);
@@ -505,10 +510,13 @@ function CheckpointModal({
           eventQueue: (eventQueue ?? deleteField()) as never,
         });
       } else {
-        await addCheckpoint(gameId, {
+        const created = await addCheckpoint(gameId, {
           name: name.trim(), latitude: coord.latitude, longitude: coord.longitude, radius: r,
           ...(eventQueue ? { eventQueue } : { event }),
         });
+        // Apply the staged timed-window choice ('always' = leave unset, always live).
+        if (windowChoice === 'open') await openCheckpointNow(gameId, created.id);
+        else if (windowChoice === 'closed') await closeCheckpointNow(gameId, created.id);
       }
       onClose();
     } catch (err) { window.alert(friendlyError(err)); setBusy(false); }
@@ -643,7 +651,7 @@ function CheckpointModal({
         )}
       </div>
 
-      {edit && (
+      {edit ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <span style={labelStyle}>Timed site window</span>
           <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{windowStatusText}</span>
@@ -651,6 +659,22 @@ function CheckpointModal({
             <button type="button" className={windowState === 'open' ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 10px' }} onClick={() => windowAction('open')}>Open now</button>
             <button type="button" className={windowState === 'closed' ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 10px' }} onClick={() => windowAction('close')}>Close now</button>
             <button type="button" className={windowState === 'always' ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 10px' }} onClick={() => windowAction('clear')}>Always live</button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <span style={labelStyle}>Timed site window</span>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            {windowChoice === 'open'
+              ? 'Starts open — fires as soon as a player crosses.'
+              : windowChoice === 'closed'
+                ? 'Starts closed — won’t fire until you open it (here or from the run-sheet).'
+                : 'Always live — fires whenever a player crosses.'}
+          </span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" className={windowChoice === 'open' ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 10px' }} onClick={() => setWindowChoice('open')}>Start open</button>
+            <button type="button" className={windowChoice === 'closed' ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 10px' }} onClick={() => setWindowChoice('closed')}>Start closed</button>
+            <button type="button" className={windowChoice === 'always' ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 10px' }} onClick={() => setWindowChoice('always')}>Always live</button>
           </div>
         </div>
       )}
