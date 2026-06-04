@@ -17,8 +17,11 @@ export async function sendArrivalSMS(phones: string[], message: string): Promise
   const token = process.env.TWILIO_TOKEN;
   const from = process.env.TWILIO_FROM;
 
-  if (!sid || !token || !from) {
-    console.warn('Twilio secrets missing — skipping SMS. Set TWILIO_SID, TWILIO_TOKEN, TWILIO_FROM via firebase functions:secrets:set and bind TWILIO_SECRETS on the function.');
+  // SMS stays optional. A real Twilio Account SID always starts with "AC", so an unset
+  // value OR a placeholder secret (set just so the function can bind it before SMS is
+  // actually configured) is treated as "not configured" and skipped cleanly.
+  if (!sid || !token || !from || !sid.startsWith('AC')) {
+    console.warn('Twilio not configured — skipping SMS. Set real TWILIO_SID/TWILIO_TOKEN/TWILIO_FROM via firebase functions:secrets:set to enable it.');
     return;
   }
 
