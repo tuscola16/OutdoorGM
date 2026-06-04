@@ -2,11 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, Modal, TouchableOpacity, Pressable } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
-import auth from '@react-native-firebase/auth';
-import { Collections } from '@/services/firebase';
 import { Colors } from '@/constants/colors';
 import { iconFor, colorFor, titleFor, isCritical } from '@/components/broadcastVisuals';
+import { useBroadcasts } from '@/context/BroadcastsContext';
 import type { Broadcast } from '@/types';
 
 /** Non-critical alerts clear themselves after this long if the player doesn't tap. */
@@ -18,60 +16,34 @@ const AUTO_DISMISS_MS = 7000;
  * so the crossing player actually sees the hazard text instead of it quietly
  * appending to the easily-missed {@link BroadcastFeed} list (#17).
  *
- * Self-subscribing (same global + targeted query as the feed). Only *newly
- * arrived* broadcasts pop — the backlog present when the screen mounts is marked
- * seen and ignored, so re-entering a game doesn't replay old alerts.
+ * Reads from the shared {@link BroadcastsProvider} subscription (#32). Only *newly
+ * arrived* broadcasts pop — the backlog present when the screen mounts (captured the
+ * moment the provider reports `initialized`) is marked seen and ignored, so re-entering
+ * a game doesn't replay old alerts.
  */
-export function AlertOverlay({ gameId }: { gameId: string }) {
+export function AlertOverlay() {
+  const { broadcasts, initialized } = useBroadcasts();
   const [queue, setQueue] = useState<Broadcast[]>([]);
   // Every broadcast id we've already accounted for (initial backlog + ones we've
-  // queued), so a doc never pops twice across the two listeners / re-renders.
+  // queued), so a doc never pops twice across re-renders.
   const seen = useRef<Set<string>>(new Set());
+  const primed = useRef(false);
 
   useEffect(() => {
-    if (!gameId) return;
-    seen.current = new Set();
-    setQueue([]);
-
-    const col = firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .collection(Collections.BROADCASTS);
-    const uid = auth().currentUser?.uid;
-
-    // Each listener's first snapshot is the existing backlog — record those ids as
-    // seen without popping. Only docs added afterwards surface as heads-up alerts.
-    const makeHandler = () => {
-      let primed = false;
-      return (snap: FirebaseFirestoreTypes.QuerySnapshot) => {
-        if (!primed) {
-          snap.docs.forEach((d) => seen.current.add(d.id));
-          primed = true;
-          return;
-        }
-        const fresh: Broadcast[] = [];
-        snap.docChanges().forEach((c) => {
-          if (c.type !== 'added' || seen.current.has(c.doc.id)) return;
-          seen.current.add(c.doc.id);
-          fresh.push({ id: c.doc.id, ...c.doc.data() } as Broadcast);
-        });
-        if (fresh.length) setQueue((q) => [...q, ...fresh]);
-      };
-    };
-
-    const unsubGlobal = col
-      .where('targetPlayerId', '==', null)
-      .onSnapshot(makeHandler(), (err) => console.error('[AlertOverlay] global error', err));
-    const unsubMine = uid
-      ? col
-          .where('targetPlayerId', '==', uid)
-          .onSnapshot(makeHandler(), (err) => console.error('[AlertOverlay] mine error', err))
-      : () => {};
-    return () => {
-      unsubGlobal();
-      unsubMine();
-    };
-  }, [gameId]);
+    // Wait for the initial backlog to finish loading, then record it as seen without
+    // popping. Anything that appears afterwards is a genuinely new broadcast.
+    if (!initialized) return;
+    if (!primed.current) {
+      broadcasts.forEach((b) => seen.current.add(b.id));
+      primed.current = true;
+      return;
+    }
+    const fresh = broadcasts.filter((b) => !seen.current.has(b.id));
+    if (fresh.length) {
+      fresh.forEach((b) => seen.current.add(b.id));
+      setQueue((q) => [...q, ...fresh]);
+    }
+  }, [broadcasts, initialized]);
 
   const current = queue[0] ?? null;
 

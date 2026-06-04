@@ -41,6 +41,9 @@ export default function LoginScreen() {
       router.replace('/(app)/games');
     } catch (err) {
       setError(friendlyError(err));
+    } finally {
+      // Always clear the spinner — even on success, so the button can't stay stuck
+      // if navigation is delayed or the screen doesn't unmount immediately.
       setLoading(false);
     }
   }

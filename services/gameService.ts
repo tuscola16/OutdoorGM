@@ -1,4 +1,4 @@
-import firestore from '@react-native-firebase/firestore';
+import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
 import auth from '@react-native-firebase/auth';
 import { Collections, functions } from './firebase';
 import {
@@ -297,21 +297,23 @@ export async function getMyGames(userId: string): Promise<MyGameEntry[]> {
     .where('userId', '==', userId)
     .get();
 
-  const results: MyGameEntry[] = [];
-  for (const memberDoc of snap.docs) {
-    // Parent path: games/{gameId}/members/{userId}
-    const gameId = memberDoc.ref.parent.parent?.id;
-    if (!gameId) continue;
-    const gameSnap = await firestore().collection(Collections.GAMES).doc(gameId).get();
-    if (gameSnap.exists) {
-      results.push({
+  // Fetch each parent game doc in parallel rather than serially — this runs on every
+  // focus of the Games screen, so a user in N games shouldn't pay N round-trips of latency.
+  const entries = await Promise.all(
+    snap.docs.map(async (memberDoc) => {
+      // Parent path: games/{gameId}/members/{userId}
+      const gameId = memberDoc.ref.parent.parent?.id;
+      if (!gameId) return null;
+      const gameSnap = await firestore().collection(Collections.GAMES).doc(gameId).get();
+      if (!gameSnap.exists) return null;
+      return {
         game: { id: gameSnap.id, ...gameSnap.data() } as Game,
         role: memberDoc.data().role as 'player' | 'gm',
         archived: memberDoc.data().archived === true,
-      });
-    }
-  }
-  return results;
+      };
+    })
+  );
+  return entries.filter((e): e is MyGameEntry => e !== null);
 }
 
 /** Delete a game that hasn't started yet (GM-only). Runs server-side so the game
@@ -488,12 +490,15 @@ export async function deleteAccount(userId: string, password: string): Promise<v
     .where('userId', '==', userId)
     .get();
 
-  const batch = firestore().batch();
+  // Collect every doc to delete, then commit in chunks: a Firestore WriteBatch caps at
+  // 500 ops, so a user in many games would otherwise blow the limit (#34). Each member
+  // contributes its member doc + the game's location doc; plus the user profile doc.
+  const refs: FirebaseFirestoreTypes.DocumentReference[] = [];
   for (const memberDoc of memberSnap.docs) {
     const gameId = memberDoc.ref.parent.parent?.id;
-    batch.delete(memberDoc.ref);
+    refs.push(memberDoc.ref);
     if (gameId) {
-      batch.delete(
+      refs.push(
         firestore()
           .collection(Collections.GAMES)
           .doc(gameId)
@@ -502,8 +507,19 @@ export async function deleteAccount(userId: string, password: string): Promise<v
       );
     }
   }
-  batch.delete(firestore().collection(Collections.USERS).doc(userId));
-  await batch.commit();
+  refs.push(firestore().collection(Collections.USERS).doc(userId));
+
+  const CHUNK = 450; // safe margin under the 500-op batch limit
+  for (let i = 0; i < refs.length; i += CHUNK) {
+    const batch = firestore().batch();
+    for (const ref of refs.slice(i, i + CHUNK)) batch.delete(ref);
+    await batch.commit();
+  }
+
+  // NOTE (#34, deferred): if this user is the *sole GM* of a game, deleting their
+  // membership orphans that game (players remain, no GM). Reassigning/cleaning up such
+  // games belongs with the "always ≥ 1 GM" safety-net invariant and a GM-transfer flow,
+  // tracked separately — not handled here.
 
   // Delete the Firebase Auth account last — once deleted we lose Firestore write
   // access. Reauthentication above ensures this cannot fail with requires-recent-login.

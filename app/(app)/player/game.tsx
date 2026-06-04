@@ -15,6 +15,7 @@ import { AlertOverlay } from '@/components/AlertOverlay';
 import { LobbyPermissions } from '@/components/LobbyPermissions';
 import { RationPanel } from '@/components/RationPanel';
 import { Tutorial } from '@/components/Tutorial';
+import { BroadcastsProvider } from '@/context/BroadcastsContext';
 import * as Location from 'expo-location';
 import { startLocationTracking, stopLocationTracking, getTrackingDiagnostics } from '@/services/locationTask';
 import { eliminatePlayer, raiseSos, setDeathLocation, gamePhase, gameConfig } from '@/services/gameService';
@@ -151,27 +152,36 @@ export default function PlayerGameScreen() {
     if (gameId) AsyncStorage.setItem(`tutorial_seen_${gameId}`, '1').catch(() => {});
   }
 
-  // Track location while in the lobby *and* during play (and not out). Starting in the
-  // lobby (#16) means a player who's been waiting a few minutes already has a fix on the
-  // GM's map at kickoff, instead of popping in minutes after the game starts. Lobby fixes
-  // don't trigger checkpoints — the geofence function only fires arrivals during `play`.
+  // Whether we should be sharing location: in the lobby *and* during play (#16), unless
+  // out. A single stable boolean so the lifecycle effect below doesn't churn on unrelated
+  // re-renders. Lobby fixes don't trigger checkpoints — the geofence fires only in `play`.
+  const shouldTrack = !!gameId && (phase === 'lobby' || phase === 'play') && !out;
+
+  // Latest tracking params, held in refs so the start/stop lifecycle effect can read them
+  // without listing displayName/batterySaver as deps (#35) — a late-arriving displayName or
+  // a battery-saver toggle re-asserts params (effect below) instead of tearing down and
+  // restarting the background service, which left a window with no active tracker.
+  const trackName = displayName || user?.email || 'Player';
+  const trackParamsRef = useRef({ trackName, batterySaver });
+  trackParamsRef.current = { trackName, batterySaver };
+  const shouldTrackRef = useRef(shouldTrack);
+  shouldTrackRef.current = shouldTrack;
+
+  // Start/stop lifecycle — keyed only on gameId + shouldTrack (both stable), so it runs
+  // exactly when tracking should begin or end, not on every param change.
   useEffect(() => {
-    if (!gameId) return;
-    const shouldTrack = (phase === 'lobby' || phase === 'play') && !out;
-    if (!shouldTrack) {
+    if (!shouldTrack || !gameId) {
       setTracking(false);
       stopLocationTracking().catch(() => {});
       return;
     }
-    // Never block tracking on the display name loading — going invisible to the GM
-    // is far worse than a brief placeholder. If the member doc has no displayName,
-    // fall back to email/'Player'; this effect re-runs once displayName arrives, so
-    // the real name replaces the placeholder on the next fix.
-    const trackName = displayName || user?.email || 'Player';
-    let started = false;
-    startLocationTracking(gameId, trackName, { batterySaver })
-      .then(() => { setTracking(true); started = true; })
+    let active = true;
+    startLocationTracking(gameId, trackParamsRef.current.trackName, {
+      batterySaver: trackParamsRef.current.batterySaver,
+    })
+      .then(() => { if (active) setTracking(true); })
       .catch((err: unknown) => {
+        if (!active) return;
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.startsWith('PERMISSION_DENIED:')) {
           setPermissionDenied(true);
@@ -180,8 +190,23 @@ export default function PlayerGameScreen() {
           setError(msg || 'Could not start location tracking.');
         }
       });
-    return () => { if (started) stopLocationTracking().catch(console.error); };
-  }, [gameId, displayName, phase, out, batterySaver]);
+    return () => { active = false; stopLocationTracking().catch(console.error); };
+  }, [gameId, shouldTrack]);
+
+  // Propagate param changes (displayName arriving, battery-saver toggle) to a running
+  // tracker WITHOUT a stop/start — startLocationTracking refreshes the stored name/cadence
+  // and is a no-op restart if the background service is already running. Skips the initial
+  // render so it doesn't double-start alongside the lifecycle effect on mount.
+  const paramsPrimed = useRef(false);
+  useEffect(() => {
+    if (!paramsPrimed.current) { paramsPrimed.current = true; return; }
+    if (!shouldTrack || !gameId) return;
+    startLocationTracking(gameId, trackName, { batterySaver })
+      .then(() => setTracking(true))
+      .catch(() => {});
+    // shouldTrack/gameId read live; we only want to react to param changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackName, batterySaver]);
 
   // Re-assert tracking every time the app returns to the foreground. Two reasons:
   // (1) if the player granted "Always" in Settings since we started, this upgrades
@@ -191,14 +216,15 @@ export default function PlayerGameScreen() {
   useEffect(() => {
     if (!gameId) return;
     const sub = AppState.addEventListener('change', (state) => {
-      if (state !== 'active' || (phase !== 'play' && phase !== 'lobby') || out) return;
-      const trackName = displayName || user?.email || 'Player';
-      startLocationTracking(gameId, trackName, { batterySaver })
+      if (state !== 'active' || !shouldTrackRef.current) return;
+      startLocationTracking(gameId, trackParamsRef.current.trackName, {
+        batterySaver: trackParamsRef.current.batterySaver,
+      })
         .then(() => setTracking(true))
         .catch(() => {});
     });
     return () => sub.remove();
-  }, [gameId, phase, out, displayName, batterySaver, user?.email]);
+  }, [gameId]);
 
   // Foreground alerts surface via <AlertOverlay> (driven by the broadcasts feed),
   // which pops over the app instead of the easily-missed list. FCM heads-up
@@ -315,7 +341,7 @@ export default function PlayerGameScreen() {
         {phase === 'lobby' && <LobbyPermissions rationsEnabled={config.rationsEnabled} />}
         {gameId ? (
           <View style={styles.waitFeed}>
-            <BroadcastFeed gameId={gameId} max={10} scroll={false} />
+            <BroadcastFeed max={10} scroll={false} />
           </View>
         ) : null}
       </ScrollView>
@@ -450,7 +476,7 @@ export default function PlayerGameScreen() {
               )}
 
               <Text style={styles.feedHeading}>Messages</Text>
-              <BroadcastFeed gameId={gameId!} scroll={false} />
+              <BroadcastFeed scroll={false} />
             </ScrollView>
           )}
         </View>
@@ -500,27 +526,29 @@ export default function PlayerGameScreen() {
   const isWaiting = phase === 'setup' || phase === 'lobby';
 
   return (
-    <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
-      <View style={styles.header}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.gameName} numberOfLines={1}>{gameName || 'Game'}</Text>
-          <Text style={styles.role}>Player · {displayName || 'Player'}</Text>
+    <BroadcastsProvider gameId={gameId ?? ''}>
+      <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
+        <View style={styles.header}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.gameName} numberOfLines={1}>{gameName || 'Game'}</Text>
+            <Text style={styles.role}>Player · {displayName || 'Player'}</Text>
+          </View>
+          {phase !== 'results' && (
+            <TouchableOpacity onPress={handleLeave} style={styles.leaveBtn}>
+              <Ionicons name="exit-outline" size={20} color={Colors.danger} />
+              <Text style={styles.leaveText}>Leave</Text>
+            </TouchableOpacity>
+          )}
         </View>
-        {phase !== 'results' && (
-          <TouchableOpacity onPress={handleLeave} style={styles.leaveBtn}>
-            <Ionicons name="exit-outline" size={20} color={Colors.danger} />
-            <Text style={styles.leaveText}>Leave</Text>
-          </TouchableOpacity>
-        )}
-      </View>
 
-      {isWaiting && renderWaiting()}
-      {phase === 'play' && renderPlay()}
-      {phase === 'results' && renderResults()}
+        {isWaiting && renderWaiting()}
+        {phase === 'play' && renderPlay()}
+        {phase === 'results' && renderResults()}
 
-      {gameId && phase !== 'results' && <AlertOverlay gameId={gameId} />}
-      <Tutorial visible={showTutorial} onDone={dismissTutorial} rules={rules} />
-    </SafeAreaView>
+        {gameId && phase !== 'results' && <AlertOverlay />}
+        <Tutorial visible={showTutorial} onDone={dismissTutorial} rules={rules} />
+      </SafeAreaView>
+    </BroadcastsProvider>
   );
 }
 

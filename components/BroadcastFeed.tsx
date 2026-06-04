@@ -1,66 +1,26 @@
-import { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
-import auth from '@react-native-firebase/auth';
-import { Collections } from '@/services/firebase';
 import { Colors } from '@/constants/colors';
 import { iconFor, colorFor } from '@/components/broadcastVisuals';
-import type { Broadcast } from '@/types';
+import { useBroadcasts } from '@/context/BroadcastsContext';
 
 /**
  * Player-facing feed of GM→player messages (Rule 24 player-count updates, checkpoint
- * events — hazards/boons/notifications, death/winner announcements). Self-subscribing so it can
- * drop into any player screen. Players see global messages (targetPlayerId == null)
- * plus ones targeted at them; Firestore can't OR those, so we run two listeners.
+ * events — hazards/boons/notifications, death/winner announcements). Reads from the shared
+ * {@link BroadcastsProvider} subscription (#32) rather than opening its own listeners, so
+ * the player screen holds a single broadcast subscription no matter how many feeds render.
  */
 export function BroadcastFeed({
-  gameId,
   max = 30,
   scroll = true,
 }: {
-  gameId: string;
   max?: number;
   /** When false, render the items inline (no internal ScrollView) so the feed can
    * live inside a parent ScrollView without nesting two vertical scrollers. */
   scroll?: boolean;
 }) {
-  const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
-
-  useEffect(() => {
-    if (!gameId) return;
-    const col = firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .collection(Collections.BROADCASTS);
-    const uid = auth().currentUser?.uid;
-    const merged = new Map<string, Broadcast>();
-    const emit = () =>
-      setBroadcasts(
-        [...merged.values()]
-          .sort((a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0))
-          .slice(0, max)
-      );
-    const handle = (snap: FirebaseFirestoreTypes.QuerySnapshot) => {
-      snap.docChanges().forEach((c) => {
-        if (c.type === 'removed') merged.delete(c.doc.id);
-        else merged.set(c.doc.id, { id: c.doc.id, ...c.doc.data() } as Broadcast);
-      });
-      emit();
-    };
-    const unsubGlobal = col
-      .where('targetPlayerId', '==', null)
-      .onSnapshot(handle, (err) => console.error('[BroadcastFeed] global error', err));
-    const unsubMine = uid
-      ? col
-          .where('targetPlayerId', '==', uid)
-          .onSnapshot(handle, (err) => console.error('[BroadcastFeed] mine error', err))
-      : () => {};
-    return () => {
-      unsubGlobal();
-      unsubMine();
-    };
-  }, [gameId, max]);
+  // The provider already keeps these sorted newest-first; just cap to `max`.
+  const broadcasts = useBroadcasts().broadcasts.slice(0, max);
 
   if (broadcasts.length === 0) {
     return (
