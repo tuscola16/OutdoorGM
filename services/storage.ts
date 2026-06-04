@@ -16,6 +16,8 @@ export async function uploadRationPhoto(
   localUri: string
 ): Promise<string> {
   const ref = storage().ref(`games/${gameId}/rations/${playerId}/${intervalIndex}.jpg`);
-  await ref.putFile(localUri);
+  // Set contentType explicitly: putFile doesn't always infer it from the camera's
+  // cache file, and an unset contentType trips the Storage rules' image check.
+  await ref.putFile(localUri, { contentType: 'image/jpeg' });
   return ref.getDownloadURL();
 }

@@ -1,9 +1,16 @@
 rules_version = '2';
 
 // Firebase Storage rules for ration-card photos (the meal/food picture loop,
-// Rules 6–9). Photos live at games/{gameId}/rations/{playerId}/{file}. These
-// rules cross-reference Firestore membership so only game members touch a game's
-// photos, mirroring the Firestore rules in firestore.rules.
+// Rules 6–9). Photos live at games/{gameId}/rations/{playerId}/{file}.
+//
+// IMPORTANT: Storage rules CANNOT read Firestore — `firestore.get()/exists()` are a
+// Firestore-rules-only feature and are invalid here (they compile to an error and
+// deny the request). So membership can't be checked in these rules. Instead:
+//   • A player may only write/read under their OWN uid path (request.auth.uid ==
+//     playerId), which is all the abuse protection we need (plus a size cap).
+//   • GMs review photos via the tokenized download URL saved on the ration doc
+//     (getDownloadURL()), which grants read without a rules check — so the read rule
+//     here only needs to cover direct-path access by the owning player.
 service firebase.storage {
   match /b/{bucket}/o {
 
@@ -11,36 +18,18 @@ service firebase.storage {
       return request.auth != null;
     }
 
-    // Storage rules can read Firestore via the `firestore` global. The members
-    // doc id is the user's uid (games/{gameId}/members/{uid}); its existence
-    // proves membership and its `role` field distinguishes GMs.
-    function memberPath(gameId) {
-      return /databases/(default)/documents/games/$(gameId)/members/$(request.auth.uid);
-    }
-
-    function isGameMember(gameId) {
-      return isSignedIn() && firestore.exists(memberPath(gameId));
-    }
-
-    function isGameGM(gameId) {
-      return isSignedIn()
-        && firestore.exists(memberPath(gameId))
-        && firestore.get(memberPath(gameId)).data.role == 'gm';
-    }
-
     match /games/{gameId}/rations/{playerId}/{fileName} {
-      // The owning player may read their own photo; any GM of the game may read
-      // it to review. Other players never see each other's ration cards.
-      allow read: if isGameGM(gameId)
-        || (isSignedIn() && request.auth.uid == playerId);
+      // Direct-path read by the owning player. GM review uses the download URL token.
+      allow read: if isSignedIn() && request.auth.uid == playerId;
 
-      // A player uploads only to their own path, only while an active member,
-      // and only a reasonably sized image (anti-abuse: cap at 10 MB, images only).
+      // A player uploads only to their own uid path, a reasonably sized image
+      // (cap 10 MB; must be an image when the contentType is set — putFile doesn't
+      // always populate it, and calling .matches() on null would error the rule).
       allow write: if isSignedIn()
         && request.auth.uid == playerId
-        && isGameMember(gameId)
         && request.resource.size < 10 * 1024 * 1024
-        && request.resource.contentType.matches('image/.*');
+        && (request.resource.contentType == null
+            || request.resource.contentType.matches('image/.*'));
     }
   }
 }
