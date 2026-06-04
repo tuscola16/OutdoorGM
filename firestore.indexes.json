@@ -1,18 +1,16 @@
 {
-  "indexes": [
-    {
-      "collectionGroup": "arrivals",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "playerId", "order": "ASCENDING" },
-        { "fieldPath": "timestamp", "order": "DESCENDING" }
-      ]
-    }
-  ],
+  "indexes": [],
   "fieldOverrides": [
     {
       "collectionGroup": "members",
       "fieldPath": "userId",
+      "indexes": [
+        { "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" }
+      ]
+    },
+    {
+      "collectionGroup": "scheduledEvents",
+      "fieldPath": "firedAt",
       "indexes": [
         { "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" }
       ]
