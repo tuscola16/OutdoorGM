@@ -3,6 +3,7 @@ import { useAuth } from '@/context/AuthContext';
 import { LoginScreen } from '@/screens/LoginScreen';
 import { GamesScreen } from '@/screens/GamesScreen';
 import { GameScreen } from '@/screens/GameScreen';
+import { DemoScreen } from '@/screens/DemoScreen';
 
 function FullScreenMessage({ text }: { text: string }) {
   return (
@@ -61,6 +62,7 @@ export function App() {
           </RequireAuth>
         }
       />
+      <Route path="/demo" element={<DemoScreen />} />
       <Route path="/" element={<Navigate to="/games" replace />} />
       <Route path="*" element={<Navigate to="/games" replace />} />
     </Routes>
