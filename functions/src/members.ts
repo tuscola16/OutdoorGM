@@ -1,7 +1,7 @@
 import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
 import { sendPushToTokens } from './notifications';
-import { sendArrivalSMS } from './sms';
+import { sendArrivalSMS, TWILIO_SECRETS } from './sms';
 
 interface MemberData {
   userId?: string;
@@ -33,8 +33,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  *    game is still active, declare a winner + end the game (Rules 1, 2, 8, 16, 17).
  *  - A player raised `sos` → push + SMS the alert to all GMs (Rules 22, 27, 28).
  */
-export const onMemberWrite = functions.firestore
-  .document('games/{gameId}/members/{userId}')
+export const onMemberWrite = functions
+  // Bind Twilio secrets so the SOS SMS path can read them from process.env (#25).
+  .runWith({ secrets: TWILIO_SECRETS })
+  .firestore.document('games/{gameId}/members/{userId}')
   .onWrite(async (change, context) => {
     const { gameId } = context.params;
     const before = change.before.exists ? (change.before.data() as MemberData) : undefined;

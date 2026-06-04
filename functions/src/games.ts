@@ -43,6 +43,46 @@ function requireAuth(context: functions.https.CallableContext): string {
   return context.auth.uid;
 }
 
+/**
+ * Per-UID fixed-window throttle (#26). Guards code-guessing on joinGameByCode: an
+ * authenticated caller gets at most JOIN_RATELIMIT_MAX attempts per
+ * JOIN_RATELIMIT_WINDOW_MS; beyond that we reject with `resource-exhausted` before
+ * doing any code lookup. Defense-in-depth alongside App Check (the 32^6 code space
+ * already makes blind guessing impractical; this stops automated enumeration).
+ *
+ * State lives in `rateLimits/{uid}` — an internal collection with NO client rules,
+ * so it's admin-SDK-only (clients can't read or reset their own counter).
+ */
+const JOIN_RATELIMIT_MAX = 10;
+const JOIN_RATELIMIT_WINDOW_MS = 60_000;
+
+async function enforceJoinRateLimit(
+  db: admin.firestore.Firestore,
+  uid: string
+): Promise<void> {
+  const ref = db.collection('rateLimits').doc(uid);
+  let limited = false;
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const now = Date.now();
+    const data = snap.data();
+    if (!data || now - (data.windowStart ?? 0) > JOIN_RATELIMIT_WINDOW_MS) {
+      // Fresh window.
+      tx.set(ref, { windowStart: now, count: 1, action: 'joinGameByCode' });
+    } else if ((data.count ?? 0) >= JOIN_RATELIMIT_MAX) {
+      limited = true; // decide outside the txn so we don't abort/retry on a thrown error
+    } else {
+      tx.update(ref, { count: (data.count ?? 0) + 1 });
+    }
+  });
+  if (limited) {
+    throw new functions.https.HttpsError(
+      'resource-exhausted',
+      'Too many join attempts. Wait a minute and try again.'
+    );
+  }
+}
+
 /** Generate a playerCode/gmCode pair that isn't currently in use by an active game. */
 async function generateUniqueCodes(
   db: admin.firestore.Firestore
@@ -172,6 +212,9 @@ export const joinGameByCode = functions.https.onCall(async (data, context) => {
   }
 
   const db = admin.firestore();
+
+  // Throttle before doing any lookup work, so code-guessing is capped per caller (#26).
+  await enforceJoinRateLimit(db, uid);
 
   // Resolve the code to a game + role.
   let role: 'player' | 'gm' | null = null;

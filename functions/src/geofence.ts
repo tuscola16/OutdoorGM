@@ -1,7 +1,7 @@
 import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
 import { sendArrivalPushNotifications, sendPushToTokens } from './notifications';
-import { sendArrivalSMS } from './sms';
+import { sendArrivalSMS, TWILIO_SECRETS } from './sms';
 
 // Mirror of types/index.ts (the RN/web shared types can't be imported into functions/).
 type CheckpointKind = 'hazard' | 'boon' | 'player-notify' | 'gm-only';
@@ -48,8 +48,33 @@ function distanceMeters(
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-export const onLocationUpdate = functions.firestore
-  .document('games/{gameId}/locations/{userId}')
+// Short-TTL cache of each game's checkpoints, reused across warm invocations of this
+// trigger (#29). onLocationUpdate fires on every player's location write (~every 5s), and
+// re-reading the whole checkpoints collection each time is the redundant cost. Checkpoints
+// change rarely; a brand-new checkpoint or a run-sheet-driven open/close window is honored
+// within CP_CACHE_TTL_MS — well under the run-sheet's 60s sweep cadence. Arrivals are still
+// read fresh every time, so dedup/arrival-ordinal correctness is unaffected.
+interface CachedCheckpoint {
+  id: string;
+  data: FirebaseFirestore.DocumentData;
+}
+const CP_CACHE_TTL_MS = 15_000;
+const checkpointCache = new Map<string, { cps: CachedCheckpoint[]; expires: number }>();
+
+async function getCheckpointsCached(gameId: string): Promise<CachedCheckpoint[]> {
+  const hit = checkpointCache.get(gameId);
+  if (hit && hit.expires > Date.now()) return hit.cps;
+  const snap = await admin.firestore()
+    .collection('games').doc(gameId).collection('checkpoints').get();
+  const cps = snap.docs.map((d) => ({ id: d.id, data: d.data() }));
+  checkpointCache.set(gameId, { cps, expires: Date.now() + CP_CACHE_TTL_MS });
+  return cps;
+}
+
+export const onLocationUpdate = functions
+  // Bind Twilio secrets so sendArrivalSMS can read them from process.env (#25).
+  .runWith({ secrets: TWILIO_SECRETS })
+  .firestore.document('games/{gameId}/locations/{userId}')
   .onWrite(async (change, context) => {
     // Only process on create or update (not delete)
     if (!change.after.exists) return;
@@ -91,30 +116,23 @@ export const onLocationUpdate = functions.firestore
     // District/tribute pairing (#10), used for same-district trap suppression (#5).
     const crossingDistrict = memberSnap.data()?.district as string | number | undefined;
 
-    // Fetch all checkpoints for this game
-    const checkpointsSnap = await admin.firestore()
-      .collection('games')
-      .doc(gameId)
-      .collection('checkpoints')
-      .get();
+    const db = admin.firestore();
+    const arrivalsCol = db.collection('games').doc(gameId).collection('arrivals');
 
-    if (checkpointsSnap.empty) return;
+    // Fetch checkpoints (cached, #29) and this player's existing arrivals (always fresh)
+    // in parallel — they're independent, so this trims the trigger's wall-time.
+    const [checkpoints, existingArrivalsSnap] = await Promise.all([
+      getCheckpointsCached(gameId),
+      arrivalsCol.where('playerId', '==', userId).get(),
+    ]);
 
-    // Fetch existing arrivals for this player (to avoid duplicate notifications)
-    const existingArrivalsSnap = await admin.firestore()
-      .collection('games')
-      .doc(gameId)
-      .collection('arrivals')
-      .where('playerId', '==', userId)
-      .get();
+    if (checkpoints.length === 0) return;
 
+    // Existing arrivals for this player, to avoid duplicate notifications.
     const arrivedCheckpointIds = new Set(
       existingArrivalsSnap.docs.map((d) => d.data().checkpointId as string)
     );
 
-    const db = admin.firestore();
-    const arrivalsCol = db.collection('games').doc(gameId).collection('arrivals');
-    const batch = db.batch();
     // Events resolved for this crossing: `event` is undefined → GM-only arrival ping.
     const newArrivals: Array<{
       checkpointName: string;
@@ -124,8 +142,9 @@ export const onLocationUpdate = functions.firestore
       gmNote?: string;
     }> = [];
 
-    for (const cpDoc of checkpointsSnap.docs) {
-      const cp = cpDoc.data() as {
+    for (const cpEntry of checkpoints) {
+      const checkpointId = cpEntry.id;
+      const cp = cpEntry.data as {
         latitude: number;
         longitude: number;
         radius: number;
@@ -135,7 +154,6 @@ export const onLocationUpdate = functions.firestore
         opensAt?: admin.firestore.Timestamp | null;
         closesAt?: admin.firestore.Timestamp | null;
       };
-      const checkpointId = cpDoc.id;
 
       if (arrivedCheckpointIds.has(checkpointId)) continue;
 
@@ -204,18 +222,27 @@ export const onLocationUpdate = functions.firestore
             : undefined,
         });
       } else {
-        // Single event (same for every arriver) or no event (GM-only ping).
-        const arrivalRef = arrivalsCol.doc();
-        batch.set(arrivalRef, {
-          playerId: userId,
-          playerName: location.displayName,
-          checkpointId,
-          checkpointName: cp.name,
-          timestamp: admin.firestore.FieldValue.serverTimestamp(),
-          latitude: location.latitude,
-          longitude: location.longitude,
-          ...(crossingDistrict != null ? { district: crossingDistrict } : {}),
+        // Single event (same for every arriver) or no event (GM-only ping). Record the
+        // arrival in a transaction (#33) so two concurrent location writes for the same
+        // player can't both pass the in-memory dedup and create duplicate arrivals/pushes.
+        // Mirrors the queue path: query by checkpointId (single-field auto index) and
+        // filter playerId in memory, so no composite index is needed.
+        const wrote = await db.runTransaction(async (tx) => {
+          const existing = await tx.get(arrivalsCol.where('checkpointId', '==', checkpointId));
+          if (existing.docs.some((d) => d.data().playerId === userId)) return false;
+          tx.set(arrivalsCol.doc(), {
+            playerId: userId,
+            playerName: location.displayName,
+            checkpointId,
+            checkpointName: cp.name,
+            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+            latitude: location.latitude,
+            longitude: location.longitude,
+            ...(crossingDistrict != null ? { district: crossingDistrict } : {}),
+          });
+          return true;
         });
+        if (!wrote) continue; // raced — already recorded
         newArrivals.push({
           checkpointName: cp.name,
           playerName: location.displayName,
@@ -227,8 +254,6 @@ export const onLocationUpdate = functions.firestore
     }
 
     if (newArrivals.length === 0) return;
-
-    await batch.commit();
 
     // Fetch all GMs to notify
     const gmsSnap = await admin.firestore()
