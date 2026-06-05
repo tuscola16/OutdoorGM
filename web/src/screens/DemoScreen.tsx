@@ -5,7 +5,7 @@
  * Uses entirely mock data; no Firebase connection required.
  */
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -794,24 +794,8 @@ function ResultsView() {
 // ─── Main Demo Screen ─────────────────────────────────────────────────────────
 
 export function DemoScreen() {
-  const [params, setParams] = useSearchParams();
-  const state       = (params.get('state') ?? 'gm-play') as DemoState;
-  const rawControls = params.get('controls');
-  const [hidden, setHidden] = useState(rawControls === '0');
-
-  // Toggle controls with H key
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if ((e.target as HTMLElement).tagName === 'INPUT') return;
-      if (e.key === 'h' || e.key === 'H') setHidden((v) => !v);
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
-
-  function go(s: DemoState) {
-    setParams({ state: s, ...(hidden ? { controls: '0' } : {}) });
-  }
+  const [params] = useSearchParams();
+  const raw = params.get('state');
 
   const views: Record<DemoState, JSX.Element> = {
     games:          <GamesListView/>,
@@ -823,45 +807,64 @@ export function DemoScreen() {
     results:        <ResultsView/>,
   };
 
+  // No (or unknown) state param → show the picker. With a valid state → render
+  // that screen full-bleed with no controls, so screenshots are clean.
+  const state = raw && raw in views ? (raw as DemoState) : null;
+
   return (
     <div style={{
       height: '100%', background: C.bg, overflow: 'hidden',
       fontFamily: "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
       position: 'relative',
     }}>
-      {views[state]}
+      {state ? views[state] : <DemoPicker/>}
+    </div>
+  );
+}
 
-      {/* Floating state switcher */}
-      {!hidden && (
-        <div style={{
-          position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
-          background: 'rgba(10,10,10,0.9)', backdropFilter: 'blur(12px)',
-          border: '1px solid rgba(255,255,255,0.12)', borderRadius: 20,
-          padding: '10px 14px', display: 'flex', gap: 6, alignItems: 'center',
-          zIndex: 9999, boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
-          flexWrap: 'wrap', maxWidth: 'calc(100vw - 32px)', justifyContent: 'center',
-        }}>
-          {(Object.keys(STATE_LABELS) as DemoState[]).map((s) => (
-            <button
-              key={s}
-              onClick={() => go(s)}
-              style={{
-                padding: '6px 12px', borderRadius: 10, border: 'none', cursor: 'pointer',
-                background: state === s ? C.primary : 'rgba(255,255,255,0.07)',
-                color: state === s ? '#fff' : C.textSec,
-                fontSize: 12, fontWeight: 600, transition: 'background 0.15s',
-              }}
-            >
-              {STATE_LABELS[s]}
-            </button>
-          ))}
-          <span style={{
-            marginLeft: 4, fontSize: 11, color: C.textMute, borderLeft: `1px solid ${C.border}`, paddingLeft: 8,
-          }}>
-            H to hide
-          </span>
+// ─── State picker (shown only at /demo with no state param) ────────────────────
+
+function DemoPicker() {
+  return (
+    <div style={{
+      height: '100%', overflowY: 'auto', display: 'flex', flexDirection: 'column',
+      alignItems: 'center', justifyContent: 'center', padding: 32, gap: 28,
+    }}>
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 2, color: C.primary }}>
+          OUTDOOR GM
         </div>
-      )}
+        <h1 style={{ margin: '8px 0 4px', fontSize: 26, fontWeight: 800, color: C.text }}>
+          Screenshot Preview
+        </h1>
+        <p style={{ margin: 0, fontSize: 14, color: C.textSec, maxWidth: 380 }}>
+          Pick a screen to preview. The picker is hidden once a screen is open, so
+          screenshots come out clean.
+        </p>
+      </div>
+
+      <div style={{
+        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+        gap: 12, width: '100%', maxWidth: 540,
+      }}>
+        {(Object.keys(STATE_LABELS) as DemoState[]).map((s) => (
+          <a
+            key={s}
+            href={`/demo?state=${s}`}
+            style={{
+              ...card, textDecoration: 'none', color: C.text, textAlign: 'center',
+              fontWeight: 700, fontSize: 15, padding: '20px 12px', cursor: 'pointer',
+              transition: 'border-color 0.15s, background 0.15s',
+            }}
+          >
+            {STATE_LABELS[s]}
+          </a>
+        ))}
+      </div>
+
+      <p style={{ margin: 0, fontSize: 12, color: C.textMute }}>
+        Tip: append <code style={{ color: C.textSec }}>?state=gm-play</code> to the URL to jump straight to a screen.
+      </p>
     </div>
   );
 }
