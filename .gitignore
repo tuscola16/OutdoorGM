@@ -33,3 +33,5 @@ functions/lib/
 
 expo-env.d.ts
 # @end expo-cli
+
+.firebase/
