@@ -795,7 +795,7 @@ function ResultsView() {
 
 export function DemoScreen() {
   const [params, setParams] = useSearchParams();
-  const state       = (params.get('state') ?? 'games') as DemoState;
+  const state       = (params.get('state') ?? 'gm-play') as DemoState;
   const rawControls = params.get('controls');
   const [hidden, setHidden] = useState(rawControls === '0');
 
