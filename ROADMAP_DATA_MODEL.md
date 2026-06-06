@@ -283,11 +283,12 @@ with a server backstop) sweeps for due, unfired actions and executes them.
 
 ```ts
 export type ScheduledActionType =
-  | 'broadcast'    // write a Broadcast (§3); free text or templated
-  | 'open-site'    // set a checkpoint's opensAt window live (§2 #12)
-  | 'close-site'   // close a checkpoint's window
-  | 'gear-drop'    // announce a drop location (broadcast)
-  | 'gm-reminder'; // GM-only nudge ("send Aaron to The Dock")
+  | 'broadcast'         // write a Broadcast (§3); free text or templated
+  | 'open-site'         // set a checkpoint's opensAt window live (§2 #12)
+  | 'close-site'        // close a checkpoint's window
+  | 'reveal-checkpoint' // make a checkpoint marker visible to players (§17 #48)
+  | 'gear-drop'         // announce a drop location (broadcast)
+  | 'gm-reminder';      // GM-only nudge ("send Aaron to The Dock")
 
 export interface ScheduledEvent {
   id: string;
@@ -590,3 +591,229 @@ severity tiers as the roadmap.
   a mounted guard) so the submit button can't spin forever if navigation stalls. Client-only.
 - **#39 — drop unused index.** Remove the unused `arrivals` (playerId ASC, timestamp DESC)
   composite from `firestore.indexes.json` (no query references it), or add the query that needs it.
+
+---
+
+## 16. Reviewer-pass UX & bugs (ROADMAP #40–#45)
+
+### #40 — Game list ordering + optional `gameDate`
+
+Add an optional `gameDate` to the game doc and sort the My Games list newest-first:
+
+```ts
+export interface Game {
+  // ...existing...
+  /** GM-set event date (e.g. the day of the real game), distinct from the system `createdAt`.
+   *  Used for sort/display when present; absent on legacy games (fall back to `createdAt`). */
+  gameDate?: FsTimestamp | null;
+}
+```
+
+Client-side sort in `app/(app)/games.tsx` (and `web/`): order by `gameDate ?? createdAt`
+descending (newest first). No index change — the sort is in-memory over the already-fetched
+list. The GM create/setup screens gain an optional date picker for `gameDate`.
+
+### #41 — Pre-populate join display name
+
+**No schema change.** `app/(app)/join.tsx` already seeds `displayName` from
+`profile?.displayName` at mount. The fix is to handle the late-arriving profile (subscribe
+to `profile` changes so the field updates if it loads after mount, while preserving any
+user edit), and add a visual hint ("from your profile") so the player knows it's a default
+they can override.
+
+### #42 — Navigate to game after join
+
+**No schema change.** `joinGameByCode` already returns `{ gameId, role }`. Replace the
+`router.replace('/(app)/games')` with a direct navigation to the game screen:
+
+```ts
+const { gameId, role } = await joinGameByCode(...);
+if (role === 'gm') {
+  router.replace(`/(app)/gm/${gameId}`);
+} else {
+  router.replace({ pathname: '/(app)/player/game', params: { id: gameId } });
+}
+```
+
+Also call `loadGame(gameId, role)` before the navigation so the `GameContext` is primed
+when the screen mounts.
+
+### #43 — Winner detection: exclude GMs from "remaining" count
+
+**No schema change — logic fix.** `functions/src/members.ts` `handleDeath` already filters
+`m.role !== 'gm' && !m.out` for `livingNonGm`, which *should* exclude GMs. Investigate:
+the bug may be that the GM's member doc has `role: 'player'` (a `createGame` or
+promote/demote data issue) or that the transaction re-read races with a stale snapshot.
+Add an explicit guard: if the sole remaining member has `role === 'gm'`, that is the
+zero-survivor path ("all tributes have fallen — there is no winner"), never a winner
+declaration. Log a warning if this guard fires (it means the roster data is wrong).
+
+### #44 — Filter crossing player's token out of GM push
+
+**No schema change — logic fix.** In `dispatchCheckpointEvent`
+(`functions/src/geofence.ts`), the GM push is sent to **all** `gmTokens` and the
+player push is sent to `crossingPlayerToken`. On a shared device (same FCM token
+registered in both the player's and the GM's member docs), the same physical token
+appears in both lists and the device gets two pushes. Fix: before dispatching,
+filter `crossingPlayerToken` out of `gmTokens` (and `allPlayerTokens`) so a token
+never receives both the GM-internal line and the player-facing event:
+
+```ts
+const filteredGmTokens = args.crossingPlayerToken
+  ? args.gmTokens.filter((t) => t !== args.crossingPlayerToken)
+  : args.gmTokens;
+```
+
+Apply the same filter to `allPlayerTokens` in the `all-players` branch to prevent a
+double-push there too (unlikely but cheap to guard).
+
+### #45 — Demo screen parity
+
+**No schema change.** The `web/src/screens/DemoScreen.tsx` (on the
+`claude/demo-website-screenshots` branch) mockup components need to be rebuilt to match
+the current mobile screens. No data-model work — purely a UI/screenshot task.
+
+---
+
+## 17. Tester feedback — schema & enforcement deltas (ROADMAP #46–#50)
+
+The headline (#48) is real schema; the rest are mostly UI/enforcement with small additive fields.
+
+### #46 — Polygon boundary
+
+Generalize the rectangular `MapBoundary` to an **optional** polygon while keeping the box for
+legacy games:
+
+```ts
+export interface MapBoundary {
+  // ...existing min/max lat/lng (rectangle; kept for legacy + the simple case)...
+  /** Ordered polygon vertices (≥ 3). When present, takes precedence over the min/max box. */
+  polygon?: { latitude: number; longitude: number }[];
+}
+```
+
+- **Geofence + boundary-exit (§12 `outOfBounds`):** when `polygon` is set, replace the min/max
+  compare with a **point-in-polygon** (ray-cast) test in `functions/src/geofence.ts` and any
+  client-side boundary check. Absent `polygon` → unchanged box behavior.
+- **Editor:** the `gm/[gameId]/boundary.tsx` map gains a tap-to-add-vertex / drag-vertex mode.
+  Low priority — the box path stays the default.
+
+### #47 — Split boundary / checkpoint editors
+
+**No schema change.** Pure screen-structure work: separate the boundary-drag mode from the
+checkpoint-tap mode so a tap can't mutate the boundary (a `gm/[gameId]/boundary.tsx` and a
+dedicated checkpoints editor, each single-purpose). Mobile-only; the web dashboard already
+separates them.
+
+### #48 — Player-visible checkpoints + visibility / reveal model *(headline)*
+
+Add a **visibility axis** to `Checkpoint`, **orthogonal to** the existing `event`/`eventQueue`
+payload (§2). Payload = *what happens on crossing*; visibility = *whether/when/to-whom the
+marker shows on the player map*.
+
+```ts
+export type CheckpointVisibility =
+  | 'gm-only'    // current behavior — never shown to players (default; legacy)
+  | 'always'     // marker shown to all players from game start (case C)
+  | 'on-reveal'; // hidden until a reveal trigger fires (cases A, B, D)
+
+export type RevealTrigger =
+  | 'game-time'   // revealed at offsetMinutes after startedAt (or absolute revealAt)
+  | 'gm-manual'   // GM taps "reveal" (run-sheet `reveal-checkpoint`, §6)
+  | 'on-crossing';// revealed the moment a player enters (case A trap)
+
+export type RevealAudience =
+  | 'all'              // every player (case B)
+  | 'specific-players' // a named subset, usually 1 (case D)
+  | 'triggerer';       // only the player who crossed (case A)
+
+export interface CheckpointReveal {
+  trigger: RevealTrigger;
+  audience: RevealAudience;
+  /** game-time trigger: minutes after startedAt … */
+  offsetMinutes?: number | null;
+  /** … or an absolute fire time (exactly one of offsetMinutes/revealAt). */
+  revealAt?: FsTimestamp | null;
+  /** specific-players audience: member ids allowed to see it once revealed. */
+  recipientPlayerIds?: string[];
+}
+
+export interface Checkpoint {
+  // ...existing (event, eventQueue, opensAt, closesAt)...
+  /** Who can see the marker. Absent → 'gm-only' (legacy invisible-to-players). */
+  visibility?: CheckpointVisibility;
+  /** For visibility === 'on-reveal': how/when/to-whom it becomes visible. */
+  reveal?: CheckpointReveal;
+  /** Latched once the reveal fires (set by the run-sheet / geofence). */
+  revealedAt?: FsTimestamp | null;
+  /** For specific-players/triggerer audiences: member ids it's been revealed to so far. */
+  revealedTo?: string[];
+}
+```
+
+**Case → config mapping:**
+
+| Story | `visibility` | `reveal.trigger` | `reveal.audience` |
+| --- | --- | --- | --- |
+| A — trap | `on-reveal` | `on-crossing` | `triggerer` |
+| B — drop to all | `on-reveal` | `game-time` *or* `gm-manual` | `all` |
+| C — named location | `always` | — | — |
+| D — sponsor drop | `on-reveal` | `game-time` *or* `gm-manual` | `specific-players` |
+
+**Security — do not ship hidden checkpoints to players.** A player who can read the
+`checkpoints` subcollection could read **every** checkpoint's coordinates regardless of UI, so
+visibility can't be enforced client-side. Keep the `checkpoints` collection **GM-only-readable**
+(as today) and instead have the **server project revealed markers into a player-readable
+surface**:
+
+```ts
+// games/{gameId}/markers/{checkpointId}  — player-readable, server-written only
+export interface RevealedMarker {
+  checkpointId: string;
+  name: string;                 // marker label only — NOT the secret event payload (case C)
+  latitude: number;
+  longitude: number;
+  /** Omitted = visible to all; set = only these players may read/see it (case A/D). */
+  audiencePlayerIds?: string[];
+  revealedAt: FsTimestamp;
+}
+```
+
+- **Who writes markers:** `'always'` checkpoints get a marker at **Start Game**; `on-reveal`
+  checkpoints get one when their trigger fires — `game-time`/`gm-manual` via the run-sheet
+  (`reveal-checkpoint`, §6 below), `on-crossing` via the geofence (which already runs per fix).
+  The marker carries **only the label + location**, never the `event` body, so case C's "you can
+  see it but not what it does" holds.
+- **Player map layer:** the player-side `GameContext` (today players subscribe to *no*
+  checkpoints) adds a `markers` listener and renders them; rules filter `audiencePlayerIds`
+  (null OR contains me).
+- **Run-sheet:** add `'reveal-checkpoint'` to `ScheduledActionType` (§6), targeting a
+  `checkpointId` — it stamps `revealedAt`/`revealedTo` and writes the `RevealedMarker`.
+- **Indexes/rules:** `markers` — members read (functions write); a composite on
+  `audiencePlayerIds` (array-contains) if the per-player filter is done server-side.
+
+### #49 — GM per-player screen + targeted messaging
+
+**Targeted messaging needs no new schema** — `Broadcast.targetPlayerId` (§3) already scopes a
+broadcast to one player, and the player feed already filters `targetPlayerId == null || == me`.
+The first build is a GM **compose-to-player** UI on a new per-player detail screen
+(`gm/[gameId]/player/[playerId].tsx`) that writes a `gm-message` broadcast with `targetPlayerId`
+set. Later sub-items:
+
+- **Per-player checkpoints** — the authoring side of #48 case D (set `reveal.audience:
+  specific-players` + `recipientPlayerIds` from this screen). No new field beyond #48.
+- **GM↔GM messaging** — *new*: broadcasts are GM→player today. Either add a `targetRole: 'gm'`
+  / `gm-only` audience to `Broadcast`, or a small `gmMessages` channel. Nice-to-have; spec when
+  prioritized.
+
+### #50 — Orphaned-game cleanup
+
+**Mostly enforcement.** Prevention is the existing **"Always ≥ 1 GM"** rule (§12) — deny a
+member `delete`/`role`-change that would leave zero GMs. Remediation for **already-orphaned**
+games (zero GMs) is server-side, no game-doc field:
+
+- A **scheduled sweep** finds games whose `members` contain no `role: 'gm'` doc and **auto-ends**
+  them (`status: 'ended'`), which triggers the §15 `cleanupRationPhotosOnGameEnd` + #30
+  location/arrival purge. **No GM-transfer** — an orphaned game is closed out, not reassigned.
+- Folds together with **#34** (deleteAccount sole-GM orphans): when a delete would orphan a game,
+  reuse the same auto-end path (end the game server-side) rather than leaving it GM-less.

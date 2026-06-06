@@ -11,7 +11,7 @@ the geofence Cloud Function). Tiers are by criticality: **P0** items are mechani
 > [COMPETITIVE_ANALYSIS.md](COMPETITIVE_ANALYSIS.md) for why the generic "team scavenger"
 > framing was reprioritized for this specific game.
 >
-> Item numbers (`#1`–`#14`, `§`-refs) are **stable** and shared with ROADMAP_DATA_MODEL.md —
+> Item numbers (`#1`–`#50`, `§`-refs) are **stable** and shared with ROADMAP_DATA_MODEL.md —
 > landed items have been removed from this file, but their numbers are not reused.
 
 ## Cross-cutting theme: the game runs on a clock
@@ -51,6 +51,11 @@ only flags for GM review).
 Deferred on purpose until the photo path is field-tested — a flaky-signal day shouldn't
 wrongly starve everyone. Today the GM eliminates missed players by hand from the review feed
 (the "not eaten this window" glance feeds this).
+
+> **Tester confirmed (2026-06-05):** auto-starvation **is wanted** — build the gated sweep. The
+> default stays `gm-confirmed` (the GM flips a game to `auto` when they want hands-off
+> elimination) until the photo path is field-proven, so a bad-signal day can't wrongly starve
+> the field.
 
 ### 3. Graceful SMS fallback for SOS — *safety-critical*
 **Rules 22, 27, 28.** The SOS button, the high-priority GM push, and the GM clear/controls are
@@ -122,7 +127,8 @@ open/close/announce run-sheet rows.)
   before the game formally concludes. Add an `endgame` phase between `play` and `results`
   (e.g. a final convergence / sudden-death window) the GM triggers, so the app models that
   step instead of jumping straight to results.
-- **Post-game media — recap video + photo album (#14)** — once a game is complete
+- **Post-game media — recap video + photo album (#14)** *(lowest priority — tester confirmed:
+  deprioritize to the very bottom; stitching footage happens well after the real event)* — once a game is complete
   (`results` / `status: 'ended'`), let a GM attach a **YouTube recap video** and a **Google
   Photos shared album** so everyone can relive the event. Adding or updating *either* link
   **pushes an alert to all other GMs and players** in that game ("📺 The recap video is up
@@ -148,7 +154,12 @@ open/close/announce run-sheet rows.)
     pipeline already exists, and it closes the loop after `results`.
 - **Custom arena map overlay** (Rule 33) — let the GM upload the arena map image as a map
   overlay instead of relying only on generic tiles + a rectangle boundary.
-- **Night-before test game (practice mode) — #15** — instead of a static pre-game checklist,
+- **Night-before test game (practice mode) — #15** — **⬆ PROMOTED to the top of the build
+  order (2026-06-05 tester feedback): build this first.** Bennett wants to start testing with
+  real people, and a disposable dress-rehearsal game is exactly what unblocks that. It rides
+  with the #25–#28 **Critical** deploy-blockers, since any TestFlight/Play test build deploys
+  through them. (Listed here under P3 for context, but sequenced first — see the build order.)
+  Instead of a static pre-game checklist,
   the team runs a **full dress rehearsal with players physically gathered in one spot** (the
   night before, or shortly before kickoff — possibly a **short drive from the actual venue**,
   so they can't walk the real course): everyone installs the app, grants "Always" location,
@@ -537,6 +548,158 @@ it (or add the query that needs it).
 
 ---
 
+## Field-test findings — 2026-06-05 reviewer pass
+
+A reviewer-account walkthrough (signing in/out between a GM account and a personal player
+account on the same device) plus a screenshot/demo prep pass. New stable numbers continue
+the #-series.
+
+### 40. Sort My Games by creation date (newest first), add optional game date
+
+The "My Games" list (`app/(app)/games.tsx`) shows games in the arbitrary order Firestore
+returns them — for a player or GM with several games, the most recent game may be buried at
+the bottom. Sort games **newest-first** by `createdAt` on the client (the field already
+exists on every game doc). Additionally, add an optional `gameDate` field (`FsTimestamp?`)
+to the game doc — a human-facing **event date** the GM sets at creation or in setup (e.g.
+"August 9, 2026"), distinct from the system-generated `createdAt`. When present, the list
+can sort/group by `gameDate` instead, so a game scheduled for next month appears at the top
+even if it was created weeks ago.
+
+### 41. Pre-populate join display name from user profile
+
+When a player taps "Join Game" (`app/(app)/join.tsx`), the display-name field already
+seeds from `profile?.displayName` — **but only if the profile has one**. The gap: a player
+who set their name on the Profile screen should see that name carry forward into every
+join. Today this works, but the UX isn't explicit: the field should show the profile name
+as a **pre-filled default** with a visual hint ("from your profile") so the player knows
+they *can* change it per-game but don't *have* to. Verify the seed actually fires when the
+profile is slow to load (the `useAuth()` `profile` may arrive after mount, leaving the
+field blank).
+
+### 42. Navigate directly to the game after joining — not back to My Games
+
+After a successful `joinGameByCode`, the app navigates to `/(app)/games` (the My Games
+list), forcing the player to find the game they just joined and tap into it. Instead,
+`joinGameByCode` already returns `{ gameId, role }` — use it to **navigate directly to the
+game screen** (e.g. `/(app)/player/game?id={gameId}` or the GM equivalent), skipping the
+extra step. The join should feel like "enter code → you're in the game," not "enter code →
+find it in the list."
+
+### 43. Winner detection counts GMs as "remaining" — declares a GM the winner *(bug)*
+
+Observed: a game with **one player and one GM**; when the player tapped out, auto-winner
+detection declared the **GM** the winner. The server function (`functions/src/members.ts`)
+filters `m.role !== 'gm' && !m.out` to find living non-GM members, which should produce
+`living.length === 0` in this case (the zero-survivor "no winner" path). If the GM was
+incorrectly crowned, either: (a) the GM's member doc has `role: 'player'` despite being
+the GM (a data issue — check the `createGame` callable + the promote/demote flow), or
+(b) the transaction re-read picked up a stale snapshot. Investigate and fix — the function
+must never declare a GM (who doesn't play) the winner. Add a regression guard: when the
+sole remaining member is a GM, that's the zero-survivor path ("all tributes have fallen"),
+not a winner.
+
+### 44. Player gets both the player hazard notification AND the GM notification on crossing *(bug)*
+
+Observed: player account crossed a hazard checkpoint and received **two** push
+notifications — the hazard text (correct, player-facing) **and** the third-person
+"[player] triggered an event at [checkpoint]" GM notification. The `dispatchCheckpointEvent`
+function (`functions/src/geofence.ts`) **always** sends a GM push (line ~351,
+`sendArrivalPushNotifications(gmTokens, ...)`) and then, in the `crossing-player` branch,
+also pushes to `crossingPlayerToken`. On a **shared device** where the same physical FCM
+token is registered on both the player's member doc *and* the GM's member doc (because the
+reviewer signed into both accounts on the same phone), the same device token appears in
+**both** `gmTokens` and `crossingPlayerToken`, so two pushes land. Fix: filter the
+crossing player's token *out* of `gmTokens` before sending the GM push, so a device that
+is also the crossing player doesn't double-receive. (This also prevents the player from
+seeing the GM-internal event line, which leaks GM context.)
+
+### 45. Demo / screenshot screens don't match the current mobile UI
+
+The web demo page (`web/src/screens/DemoScreen.tsx`, on the
+`claude/demo-website-screenshots` branch) was built against an earlier iteration of the
+mobile screens. The mobile app has since gained the Map/Stats split (#20), the ration
+eat-window gate (#21), the alert overlay (#17), the lobby permission primer (#16), the
+refreshed tutorial (#19), and the setup → lobby → play → results phase flow. The demo
+screens need to be rebuilt to **match the current mobile UI** — accurate enough for App
+Store / Play Store screenshots. This means updating (or replacing) the static mockup
+components so the map view, stats tab, ration panel, lobby, setup, and results screens
+visually match what a player and GM actually see.
+
+---
+
+## Tester feedback — 2026-06-05 (Bennett)
+
+First outside-tester pass (Bennett, setting up as a GM on the **desktop web** dashboard and
+playing as a player on his phone). Reactions to the setup flow plus a set of checkpoint
+**user stories** that reframe the biggest product gap: **checkpoints are never visible to
+players today, and they should be** — sometimes from the start, sometimes revealed by timing
+or a GM prompt, with different audiences. New stable numbers continue the #-series; schema
+detail in [ROADMAP_DATA_MODEL.md](ROADMAP_DATA_MODEL.md) §17.
+
+### 46. Polygon play-area boundary (vs. the current rectangle) — *low priority*
+`MapBoundary` is a lat/lng **rectangle** (`minLat/maxLat/minLng/maxLng`), captured from the
+map view. A real arena is rarely a clean box. Allow the GM to define the boundary as a
+**polygon** (ordered vertices) so the play area can follow terrain/roads. The boundary-exit
+safety check (Safety nets) and the geofence both switch from the current min/max compare to a
+**point-in-polygon** test. Bennett asked for it; **deprioritized** — the rectangle is workable
+for now. Related to, but distinct from, the P3 "custom arena map overlay" item.
+
+### 47. Split boundary editing and checkpoint placement into separate screens *(UX defect)*
+On the combined map editor a tap meant to **place a checkpoint can accidentally drag the
+boundary** — Bennett moved the boundary several times while trying to drop checkpoints.
+Separate the two modes: a dedicated **Set Boundary** screen (`gm/[gameId]/boundary.tsx`) and a
+dedicated **Add Checkpoints** screen, so a tap in one can never mutate the other. Bennett also
+noted the **desktop web GM dashboard** is the more comfortable place to do setup (easy to
+split-screen) — decoupling the mobile screens narrows that gap.
+
+### 48. Player-visible checkpoints + a visibility / reveal model *(the headline change)*
+**Today every checkpoint is GM-only and invisible to players.** All four tester user stories
+turn on *players seeing (some) checkpoints, at the right time, with the right audience* — this
+is "the biggest thing to change." Build the **full A–D matrix**: a checkpoint gains a
+**visibility axis** that is **independent of its event payload** —
+
+- **A — Trap.** Hidden from players (GM sees it); becomes visible **to the triggering player
+  only** once they cross it. (`visibility: on-reveal`, `trigger: on-crossing`, `audience: triggerer`.)
+- **B — Timed/triggered drop.** GM-only at start; becomes visible **to all players** at a
+  **set game time** *or* a **GM manual trigger**. (`on-reveal`, `trigger: game-time | gm-manual`,
+  `audience: all`.)
+- **C — Named location.** Visible to **all players from game start**, but **what it does is
+  not** — the effect only reveals on crossing. (`visibility: always`; the existing
+  `event`/`eventQueue` stays the hidden payload.)
+- **D — Sponsor drop for a specific player.** GM-only at start; becomes visible **to a named
+  subset (usually 1)** at a game time or GM trigger. (`on-reveal`, `audience: specific-players`,
+  `recipientPlayerIds`.)
+
+Visibility is **separate** from the event audience (#5 / §2): a marker can be *visible* while
+its effect stays secret (case C). Reveal reuses the timed-window (#12) and run-sheet (#11)
+machinery — a new `reveal-checkpoint` run-sheet action plus a `game-time` offset / `gm-manual`
+toggle / `on-crossing` path in the geofence. **Security note:** hidden checkpoints must never
+reach a player's device, so reveal works by the server **projecting revealed markers into a
+player-readable surface** rather than opening the GM-only checkpoints collection — players gain
+a markers map layer they don't have today (see §17). Pairs with #47 (now that checkpoints carry
+real semantics, authoring them deserves its own screen).
+
+### 49. GM per-player screen + targeted player messaging *(messaging first)*
+A GM **per-player detail screen** (tap a player on the roster → their detail) is the natural
+home for **player-specific actions**. Build **targeted GM→player messaging first** —
+`Broadcast.targetPlayerId` already exists and players already filter targeted broadcasts, so
+it's mostly a compose UI. The point (Bennett's): keep the whole game experience in-app instead
+of bouncing to a separate messaging app mid-game. **Later sub-items on the same screen:**
+authoring **per-player checkpoints** (the GM side of case D / #48) and **GM↔GM messaging** (new
+— broadcasts are GM→player only today; an explicit nice-to-have).
+
+### 50. Cleanup for orphaned / lost games *(no-GM games)*
+Bennett hit a dead game: as the **sole GM he removed himself from the players list**, then
+couldn't End Game ("no permissions"). **Prevention** is the existing **"Always ≥ 1 GM"**
+invariant (block the last GM from removing/demoting themselves) — landing in the next deploy.
+**This item is the remediation for games *already* orphaned**: a **scheduled sweep that
+auto-ends** any game left with **zero GMs** (`status: 'ended'`), which then triggers the
+existing end-of-game cleanup (#30 location/arrival purge, ration-photo deletion). No
+GM-transfer — an orphaned game is just closed out. Pairs with #34 (deleteAccount sole-GM
+orphans), which can reuse the same auto-end path.
+
+---
+
 ## Consequence of replacing Pingo (sole location & safety tool)
 
 Outdoor GM has **replaced "Find My Kids by Pingo"** as the only location & safety tool — so
@@ -645,11 +808,15 @@ defects (`22`–`24`: terminal GM approve/reject, viewport-fit scrollable photo 
 one-submission-per-window pending→approved player state) — **outstanding**, all in the
 already-built Rules 6–9 path.
 
-With the playtest batch done, what remains is the pre-existing tier list, roughly in order: the
-**safety-critical** hardening `3` (SOS→SMS fallback) + `8` (offline resilience) — these are the
-"must ship before the August game" items — then `1` (auto-starvation sweep), the `4` auto-count
-sliver, and **P3** (end-game phase, post-game media #14, arena overlay, and the #15 night-before
-test game).
+**New top of the list (2026-06-05 tester feedback): the night-before practice game (`15`).**
+Bennett wants to start testing with real people, so the disposable dress-rehearsal game is
+built **first**, alongside the `25`–`28` **Critical** deploy-blockers it ships through.
+
+After that, the pre-existing tier list, roughly in order: the **safety-critical** hardening `3`
+(SOS→SMS fallback) + `8` (offline resilience) — these are the "must ship before the August game"
+items — then `1` (auto-starvation sweep, **tester-confirmed wanted**, default stays
+`gm-confirmed`), the `4` auto-count sliver, and the rest of **P3** (end-game phase, arena
+overlay, and — **deprioritized to the very bottom** — post-game media `14`).
 
 The **safety nets & invariants** land *alongside the features they protect* — the integrity
 invariants are cheap rules/guards; the safety-critical welfare nets ride the `3` / `8` /
@@ -663,3 +830,18 @@ cleared before a production deploy — `25` and `28` fail at deploy/runtime, `26
 security/billing exposure. The **High** items (`29` geofence cost, `30` data retention, `31`
 getMyGames N+1, `32` duplicate listeners) should follow before a real event; the Medium/Low
 items (`33`–`39`) are correctness/polish that can trail.
+
+**The 2026-06-05 reviewer-pass bugs (`43`, `44`) are correctness regressions** — `43`
+(winner-detection crowning a GM) and `44` (player getting the GM push on crossing) should be
+fixed before any real game. The **UX items** (`40`–`42`) are quick wins that smooth the
+join/list flow; `45` (demo/screenshot parity) gates store submissions and can trail the
+bug fixes.
+
+**The 2026-06-05 tester feedback (`46`–`50`)** adds one headline feature and four smaller items.
+**`48` (player-visible checkpoints + the A–D visibility/reveal model)** is the big product change
+— "the biggest thing to change" — and the most schema/geofence work; it pairs with **`47`** (split
+the boundary and checkpoint editors so authoring richer checkpoints isn't fighting the boundary
+drag). **`49`** (GM per-player screen) starts with **targeted player messaging** (cheap — the
+`targetPlayerId` broadcast path exists) and grows per-player checkpoints / GM↔GM messaging later.
+**`50`** (orphaned-game cleanup) rides with the "Always ≥ 1 GM" invariant and `34`. **`46`**
+(polygon boundary) is explicitly low priority — the rectangle is fine for now.
