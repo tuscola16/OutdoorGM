@@ -2,6 +2,7 @@ import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
 import { sendArrivalPushNotifications, sendPushToTokens } from './notifications';
 import { sendArrivalSMS, TWILIO_SECRETS } from './sms';
+import { projectMarker } from './markers';
 
 // Mirror of types/index.ts (the RN/web shared types can't be imported into functions/).
 type CheckpointKind = 'hazard' | 'boon' | 'player-notify' | 'gm-only';
@@ -11,6 +12,12 @@ interface CheckpointEvent {
   kind: CheckpointKind;
   message?: string;
   audience?: EventAudience;
+}
+
+interface CheckpointReveal {
+  trigger?: 'game-time' | 'gm-manual' | 'on-crossing';
+  audience?: 'all' | 'specific-players' | 'triggerer';
+  recipientPlayerIds?: string[];
 }
 
 // Same-district trap suppression window (#5): if a tribute's same-district partner
@@ -153,6 +160,8 @@ export const onLocationUpdate = functions
         eventQueue?: CheckpointEvent[];
         opensAt?: admin.firestore.Timestamp | null;
         closesAt?: admin.firestore.Timestamp | null;
+        visibility?: 'gm-only' | 'always' | 'on-reveal';
+        reveal?: CheckpointReveal;
       };
 
       if (arrivedCheckpointIds.has(checkpointId)) continue;
@@ -249,6 +258,13 @@ export const onLocationUpdate = functions
           event: cp.event,
         });
       }
+      // Reveal-on-crossing (#48 case A): the trap this player just sprang becomes a
+      // marker visible to them only (and any prior triggerers — projectMarker merges).
+      // Carries label + location only, never the event payload.
+      if (cp.visibility === 'on-reveal' && cp.reveal?.trigger === 'on-crossing') {
+        await projectMarker(db, gameId, checkpointId, cp, [userId]);
+      }
+
       // Prevent duplicate arrivals within the same write
       arrivedCheckpointIds.add(checkpointId);
     }

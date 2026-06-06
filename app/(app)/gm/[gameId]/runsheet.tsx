@@ -17,7 +17,7 @@ import type { ScheduledEvent, ScheduledActionType } from '@/types';
 
 // The authoring UI presents one option per row; `player-count` is a templated
 // `broadcast`, so the UI key is richer than the stored `type`.
-type ActionKey = 'broadcast' | 'player-count' | 'gear-drop' | 'gm-reminder' | 'open-site' | 'close-site';
+type ActionKey = 'broadcast' | 'player-count' | 'gear-drop' | 'gm-reminder' | 'open-site' | 'close-site' | 'reveal-checkpoint';
 type Needs = 'message' | 'checkpoint' | 'none';
 
 const ACTIONS: {
@@ -34,6 +34,7 @@ const ACTIONS: {
   { key: 'gm-reminder', type: 'gm-reminder', label: 'GM reminder', icon: 'alarm-outline', needs: 'message' },
   { key: 'open-site', type: 'open-site', label: 'Open site', icon: 'lock-open-outline', needs: 'checkpoint' },
   { key: 'close-site', type: 'close-site', label: 'Close site', icon: 'lock-closed-outline', needs: 'checkpoint' },
+  { key: 'reveal-checkpoint', type: 'reveal-checkpoint', label: 'Reveal marker', icon: 'eye-outline', needs: 'checkpoint' },
 ];
 
 const actionFor = (key: ActionKey) => ACTIONS.find((a) => a.key === key)!;

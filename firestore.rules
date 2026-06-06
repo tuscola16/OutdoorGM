@@ -151,6 +151,21 @@ service cloud.firestore {
               && request.resource.data.status == 'pending');
         allow delete: if isGameGM(gameId);
       }
+
+      // Revealed checkpoint markers (#48) — the player-readable projection of a
+      // checkpoint's label + location once it's visible. The `checkpoints` collection
+      // stays GM-only (it holds coords + the secret event payload); this is the only
+      // checkpoint data a player ever sees. A player reads a marker if it's global
+      // (audiencePlayerIds null/absent) or names them (case A trap / case D sponsor).
+      // GMs may write (e.g. "reveal now"); Cloud Functions use the admin SDK and bypass.
+      // The `||` short-circuits so `in` is never evaluated against a null audience.
+      match /markers/{markerId} {
+        allow read: if isGameGM(gameId)
+          || (isSignedIn()
+              && (resource.data.get('audiencePlayerIds', null) == null
+                  || request.auth.uid in resource.data.audiencePlayerIds));
+        allow write: if isGameGM(gameId);
+      }
     }
   }
 }

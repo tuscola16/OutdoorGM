@@ -676,15 +676,22 @@ function SetupView({
         </Text>
 
         <ChecklistRow
-          icon="map-outline"
-          title="Set up the map"
-          sub={
-            boundarySet || checkpointCount > 0
-              ? `${boundarySet ? 'Boundary set' : 'No boundary'} · ${checkpointCount} checkpoint${checkpointCount === 1 ? '' : 's'}`
-              : 'View the map, set the play boundary, add checkpoints'
-          }
-          done={boundarySet || checkpointCount > 0}
+          icon="scan-outline"
+          title="Set the boundary"
+          sub={boundarySet ? 'Boundary set — tap to adjust' : 'Frame the play area on the map'}
+          done={boundarySet}
           onPress={() => router.push(`/(app)/gm/${gameId}/boundary`)}
+        />
+        <ChecklistRow
+          icon="location-outline"
+          title="Manage checkpoints"
+          sub={
+            checkpointCount > 0
+              ? `${checkpointCount} checkpoint${checkpointCount === 1 ? '' : 's'} — tap to edit`
+              : 'Long-press the map to drop checkpoints'
+          }
+          done={checkpointCount > 0}
+          onPress={() => router.push(`/(app)/gm/${gameId}/checkpoints`)}
         />
         <ChecklistRow
           icon="document-text-outline"

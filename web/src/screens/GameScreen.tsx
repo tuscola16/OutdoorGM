@@ -16,12 +16,13 @@ import {
   deleteGame, setGameArchived, reviewRation, rationInterval, setMemberDistrict,
   openCheckpointNow, closeCheckpointNow, clearCheckpointWindow, checkpointWindowState,
   addScheduledEvent, updateScheduledEvent, deleteScheduledEvent,
+  revealCheckpointNow, setRevealSchedule,
 } from '@/services/gameService';
-import { KIND_META, KIND_ORDER, checkpointKind, buildEvent } from '@/services/checkpointKinds';
+import { KIND_META, KIND_ORDER, checkpointKind, buildEvent, VIS_META, VIS_ORDER } from '@/services/checkpointKinds';
 import { deleteField } from 'firebase/firestore';
 import type {
   Arrival, Checkpoint, CheckpointEvent, CheckpointKind, EventAudience, GameMember, MapBoundary, PlayerLocation, RationSubmission,
-  ScheduledEvent, ScheduledActionType,
+  ScheduledEvent, ScheduledActionType, CheckpointVisibility, RevealTrigger, RevealAudience, CheckpointReveal,
 } from '@shared/types';
 
 const PHASE_LABEL: Record<string, string> = {
@@ -269,7 +270,8 @@ function SetupView({
   onEditSettings: () => void;
   onDelete: () => void;
 }) {
-  const { game, checkpoints } = useGame();
+  const { game, checkpoints, members } = useGame();
+  const playerMembers = members.filter((m) => m.role === 'player');
   const [drawing, setDrawing] = useState(false);
   const [cpModal, setCpModal] = useState<{ coord: { latitude: number; longitude: number }; edit?: Checkpoint } | null>(null);
   const [showRules, setShowRules] = useState(false);
@@ -389,6 +391,7 @@ function SetupView({
           coord={cpModal.coord}
           edit={cpModal.edit}
           existingCount={checkpoints.length}
+          players={playerMembers}
           onClose={() => setCpModal(null)}
         />
       )}
@@ -451,17 +454,37 @@ function AudienceToggle({ value, onChange }: { value: EventAudience; onChange: (
 }
 
 function CheckpointModal({
-  gameId, coord, edit, existingCount, onClose,
+  gameId, coord, edit, existingCount, players, onClose,
 }: {
   gameId: string;
   coord: { latitude: number; longitude: number };
   edit?: Checkpoint;
   existingCount: number;
+  players: GameMember[];
   onClose: () => void;
 }) {
   const [name, setName] = useState(edit?.name ?? `Checkpoint ${existingCount + 1}`);
   const [radius, setRadius] = useState(String(edit?.radius ?? 100));
   const [busy, setBusy] = useState(false);
+
+  // Player visibility / reveal (#48) — orthogonal to the event payload.
+  const [visibility, setVisibility] = useState<CheckpointVisibility>(edit?.visibility ?? 'gm-only');
+  const [revealTrigger, setRevealTrigger] = useState<RevealTrigger>(edit?.reveal?.trigger ?? 'on-crossing');
+  const [revealAudience, setRevealAudience] = useState<RevealAudience>(edit?.reveal?.audience ?? 'all');
+  const [revealOffset, setRevealOffset] = useState(edit?.reveal?.offsetMinutes != null ? String(edit.reveal.offsetMinutes) : '');
+  const [recipients, setRecipients] = useState<string[]>(edit?.reveal?.recipientPlayerIds ?? []);
+  const toggleRecipient = (id: string) =>
+    setRecipients((r) => (r.includes(id) ? r.filter((x) => x !== id) : [...r, id]));
+
+  /** Assemble the reveal config, or undefined for gm-only/always. */
+  function buildReveal(): CheckpointReveal | undefined {
+    if (visibility !== 'on-reveal') return undefined;
+    const audience: RevealAudience = revealTrigger === 'on-crossing' ? 'triggerer' : revealAudience;
+    const reveal: CheckpointReveal = { trigger: revealTrigger, audience };
+    if (revealTrigger === 'game-time') reveal.offsetMinutes = Math.max(0, Math.round(Number(revealOffset) || 0));
+    if (audience === 'specific-players') reveal.recipientPlayerIds = recipients;
+    return reveal;
+  }
 
   // What the checkpoint does. Single mode edits kind/message/audience; queue mode edits
   // an ordered list (one event per arrival ordinal).
@@ -499,8 +522,18 @@ function CheckpointModal({
       event = buildEvent(kind, message, audience);
     }
 
+    const reveal = buildReveal();
+    if (visibility === 'on-reveal' && reveal?.audience === 'specific-players' && recipients.length === 0) {
+      window.alert('Pick at least one player for a sponsor drop, or choose “All players”.');
+      return;
+    }
+    const revealOffsetMins = visibility === 'on-reveal' && revealTrigger === 'game-time'
+      ? Math.max(0, Math.round(Number(revealOffset) || 0))
+      : null;
+
     setBusy(true);
     try {
+      let checkpointId = edit?.id;
       if (edit) {
         // Clear whichever payload field isn't in use so a checkpoint never carries both.
         await updateCheckpoint(gameId, edit.id, {
@@ -508,18 +541,33 @@ function CheckpointModal({
           radius: r,
           event: (eventQueue ? deleteField() : event) as never,
           eventQueue: (eventQueue ?? deleteField()) as never,
+          visibility,
+          reveal: (reveal ?? deleteField()) as never,
         });
       } else {
         const created = await addCheckpoint(gameId, {
           name: name.trim(), latitude: coord.latitude, longitude: coord.longitude, radius: r,
+          visibility,
+          ...(reveal ? { reveal } : {}),
           ...(eventQueue ? { eventQueue } : { event }),
         });
+        checkpointId = created.id;
         // Apply the staged timed-window choice ('always' = leave unset, always live).
         if (windowChoice === 'open') await openCheckpointNow(gameId, created.id);
         else if (windowChoice === 'closed') await closeCheckpointNow(gameId, created.id);
       }
+      // Keep the paired game-time reveal run-sheet row in sync (#48).
+      if (checkpointId) await setRevealSchedule(gameId, checkpointId, revealOffsetMins);
       onClose();
     } catch (err) { window.alert(friendlyError(err)); setBusy(false); }
+  }
+
+  async function revealNow() {
+    if (!edit) return;
+    try {
+      await revealCheckpointNow(gameId, edit);
+      window.alert(`${edit.name} is now visible to players.`);
+    } catch (err) { window.alert(friendlyError(err)); }
   }
 
   async function remove() {
@@ -651,6 +699,92 @@ function CheckpointModal({
         )}
       </div>
 
+      {/* Player visibility (#48) — orthogonal to the event payload above */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <span style={labelStyle}>Player visibility</span>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {VIS_ORDER.map((v) => {
+            const active = v === visibility;
+            return (
+              <button
+                key={v}
+                type="button"
+                onClick={() => setVisibility(v)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 20,
+                  cursor: 'pointer', fontSize: 13, fontWeight: 600,
+                  border: `1px solid ${active ? 'var(--secondary)' : 'var(--border)'}`,
+                  background: active ? 'rgba(90,126,78,0.18)' : 'transparent',
+                  color: active ? 'var(--secondary)' : 'var(--text-secondary)',
+                }}
+              >
+                <span>{VIS_META[v].emoji}</span>{VIS_META[v].label}
+              </button>
+            );
+          })}
+        </div>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{VIS_META[visibility].hint}</span>
+
+        {visibility === 'on-reveal' && (
+          <>
+            <span style={labelStyle}>Reveal when</span>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {([
+                { v: 'on-crossing', label: 'On crossing' },
+                { v: 'game-time', label: 'At a set time' },
+                { v: 'gm-manual', label: 'When I tap' },
+              ] as { v: RevealTrigger; label: string }[]).map((o) => (
+                <button key={o.v} type="button" className={revealTrigger === o.v ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 10px', fontSize: 12 }} onClick={() => setRevealTrigger(o.v)}>{o.label}</button>
+              ))}
+            </div>
+
+            {revealTrigger === 'on-crossing' && (
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Becomes visible to the player who crosses it (a trap they now know).</span>
+            )}
+            {revealTrigger === 'game-time' && (
+              <div className="field">
+                <label>Minutes after start</label>
+                <input className="input" type="number" value={revealOffset} onChange={(e) => setRevealOffset(e.target.value)} placeholder="e.g. 60" />
+              </div>
+            )}
+
+            {revealTrigger !== 'on-crossing' && (
+              <>
+                <span style={labelStyle}>Reveal to</span>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {([
+                    { v: 'all', label: 'All players' },
+                    { v: 'specific-players', label: 'Specific players' },
+                  ] as { v: RevealAudience; label: string }[]).map((o) => (
+                    <button key={o.v} type="button" className={revealAudience === o.v ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 10px', fontSize: 12 }} onClick={() => setRevealAudience(o.v)}>{o.label}</button>
+                  ))}
+                </div>
+                {revealAudience === 'specific-players' && (
+                  players.length === 0 ? (
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No players have joined yet — they'll appear here once they do.</span>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, border: '1px solid var(--border)', borderRadius: 10, padding: 8 }}>
+                      {players.map((p) => (
+                        <label key={p.userId} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '4px 6px' }}>
+                          <input type="checkbox" checked={recipients.includes(p.userId)} onChange={() => toggleRecipient(p.userId)} />
+                          <span>{p.displayName}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )
+                )}
+              </>
+            )}
+
+            {edit && revealTrigger === 'gm-manual' && (
+              <button type="button" className="btn btn--secondary" onClick={revealNow}>
+                {edit.revealedAt ? 'Revealed — reveal again' : 'Reveal now'}
+              </button>
+            )}
+          </>
+        )}
+      </div>
+
       {edit ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <span style={labelStyle}>Timed site window</span>
@@ -741,6 +875,7 @@ const RUN_ACTIONS: RunAction[] = [
   { key: 'gm-reminder', type: 'gm-reminder', label: 'GM reminder', needs: 'message' },
   { key: 'open-site', type: 'open-site', label: 'Open site', needs: 'checkpoint' },
   { key: 'close-site', type: 'close-site', label: 'Close site', needs: 'checkpoint' },
+  { key: 'reveal-checkpoint', type: 'reveal-checkpoint', label: 'Reveal marker', needs: 'checkpoint' },
 ];
 const runActionFor = (key: string) => RUN_ACTIONS.find((a) => a.key === key)!;
 const runKeyForEvent = (ev: ScheduledEvent) => (ev.template === 'player-count' ? 'player-count' : ev.type);
@@ -1118,16 +1253,35 @@ function PlayersModal({
   phase: string;
   onClose: () => void;
 }) {
+  // A game must always keep ≥ 1 GM (#50): true when m is the only GM.
+  const isLastGM = (m: GameMember) =>
+    m.role === 'gm' && members.filter((x) => x.role === 'gm').length <= 1;
+
   async function toggleRole(m: GameMember) {
     const newRole = m.role === 'player' ? 'gm' : 'player';
+    if (newRole === 'player' && isLastGM(m)) {
+      window.alert('Can’t demote the last GM. Promote another player to GM first — every game needs at least one Game Master.');
+      return;
+    }
     const label = newRole === 'gm' ? 'Promote to GM' : 'Demote to Player';
     if (!window.confirm(`${label}? ${m.displayName} will ${newRole === 'gm' ? 'gain GM access and see all player locations.' : 'lose GM access.'}`)) return;
     try { await updateMemberRole(gameId, m.userId, newRole); }
     catch (err) { window.alert(friendlyError(err)); }
   }
   async function remove(m: GameMember) {
+    if (isLastGM(m)) {
+      window.alert('Can’t remove the last GM. Promote another player to GM first — every game needs at least one Game Master.');
+      return;
+    }
     if (!window.confirm(`Remove ${m.displayName}? They'll be removed and their location will no longer be tracked.`)) return;
     try { await removePlayer(gameId, m.userId); }
+    catch (err) { window.alert(friendlyError(err)); }
+  }
+  async function message(m: GameMember) {
+    // Targeted GM→player message (#49): a gm-message broadcast scoped to this player.
+    const text = window.prompt(`Private message to ${m.displayName} (only they see it):`);
+    if (text == null || !text.trim()) return;
+    try { await sendBroadcast(gameId, text.trim(), m.userId); }
     catch (err) { window.alert(friendlyError(err)); }
   }
   async function eliminate(m: GameMember) {
@@ -1220,6 +1374,9 @@ function PlayersModal({
               </span>
               {m.sos && (
                 <button className="btn btn--ghost" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => dismissSos(m)}>Clear SOS</button>
+              )}
+              {!isGM && (
+                <button className="btn btn--ghost" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => message(m)}>Message</button>
               )}
               {!isGM && !isOut && (
                 <button className="btn btn--danger" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => eliminate(m)}>Eliminate</button>

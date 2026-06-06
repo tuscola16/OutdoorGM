@@ -384,6 +384,81 @@ export async function deleteCheckpoint(gameId: string, checkpointId: string): Pr
     .collection(Collections.CHECKPOINTS)
     .doc(checkpointId)
     .delete();
+  // Drop any paired game-time reveal row (#48) so a deleted checkpoint can't be revealed.
+  await scheduledEventsCol(gameId).doc(revealEventId(checkpointId)).delete().catch(() => {});
+}
+
+/** Deterministic run-sheet doc id for a checkpoint's game-time reveal (#48), so the
+ * editor can upsert/clear it without hunting for a random-id row. */
+const revealEventId = (checkpointId: string) => `reveal_${checkpointId}`;
+
+/**
+ * Sync a checkpoint's game-time reveal (#48 case B/D `trigger: 'game-time'`) into the
+ * run-sheet as a deterministic `reveal-checkpoint` row, so the existing per-minute sweep
+ * fires it (no new index). Pass `offsetMinutes` to schedule the reveal at that many
+ * minutes after Start Game, or `null` to clear it (e.g. the GM switched the trigger to
+ * manual/on-crossing). Writing the row with `firedAt: null` (re)arms it.
+ */
+export async function setRevealSchedule(
+  gameId: string,
+  checkpointId: string,
+  offsetMinutes: number | null
+): Promise<void> {
+  const ref = scheduledEventsCol(gameId).doc(revealEventId(checkpointId));
+  if (offsetMinutes == null) {
+    await ref.delete().catch(() => {});
+    return;
+  }
+  await ref.set({
+    type: 'reveal-checkpoint',
+    checkpointId,
+    offsetMinutes,
+    firedAt: null,
+    createdAt: firestore.FieldValue.serverTimestamp(),
+  });
+}
+
+/** Resolve a reveal's player audience into a marker's `audiencePlayerIds` (#48):
+ * null = visible to all; an array = only those uids. Mirrors the server helper. */
+function revealAudienceIds(cp: Checkpoint): string[] | null {
+  const aud = cp.reveal?.audience ?? 'all';
+  if (aud === 'specific-players') return cp.reveal?.recipientPlayerIds ?? [];
+  // 'triggerer' has no meaning for a manual reveal (no crossing player) → treat as all.
+  return null;
+}
+
+/**
+ * GM manually reveals a checkpoint marker to players now (#48 `gm-manual` trigger).
+ * Projects the marker (label + location only — never the secret event payload) into the
+ * player-readable `markers` collection and latches `revealedAt` on the checkpoint. GMs are
+ * allowed to write markers (firestore.rules); the run-sheet/geofence do the timed/crossing
+ * reveals server-side.
+ */
+export async function revealCheckpointNow(gameId: string, cp: Checkpoint): Promise<void> {
+  const audience = revealAudienceIds(cp);
+  const gameRef = firestore().collection(Collections.GAMES).doc(gameId);
+  await gameRef.collection(Collections.MARKERS).doc(cp.id).set(
+    {
+      checkpointId: cp.id,
+      name: cp.name,
+      latitude: cp.latitude,
+      longitude: cp.longitude,
+      audiencePlayerIds:
+        audience === null
+          ? null
+          : audience.length === 0
+            ? []
+            : firestore.FieldValue.arrayUnion(...audience),
+      revealedAt: firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+  await gameRef.collection(Collections.CHECKPOINTS).doc(cp.id).update({
+    revealedAt: firestore.FieldValue.serverTimestamp(),
+    ...(audience && audience.length > 0
+      ? { revealedTo: firestore.FieldValue.arrayUnion(...audience) }
+      : {}),
+  });
 }
 
 // --- Timed site windows (#12) ---

@@ -7,11 +7,13 @@ import {
   getDoc,
   getDocs,
   addDoc,
+  setDoc,
   updateDoc,
   deleteDoc,
   writeBatch,
   serverTimestamp,
   deleteField,
+  arrayUnion,
 } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { db, functions, Collections } from './firebase';
@@ -266,6 +268,68 @@ export async function updateCheckpoint(
 
 export async function deleteCheckpoint(gameId: string, checkpointId: string): Promise<void> {
   await deleteDoc(doc(db, Collections.GAMES, gameId, Collections.CHECKPOINTS, checkpointId));
+  // Drop any paired game-time reveal row (#48) so a deleted checkpoint can't be revealed.
+  await deleteDoc(
+    doc(db, Collections.GAMES, gameId, Collections.SCHEDULED_EVENTS, `reveal_${checkpointId}`)
+  ).catch(() => {});
+}
+
+/** Resolve a reveal's player audience into a marker's `audiencePlayerIds` (#48):
+ * null = visible to all; an array = only those uids. Mirrors the server helper. */
+function revealAudienceIds(cp: Checkpoint): string[] | null {
+  const aud = cp.reveal?.audience ?? 'all';
+  if (aud === 'specific-players') return cp.reveal?.recipientPlayerIds ?? [];
+  return null; // 'triggerer' is meaningless for a manual reveal → treat as all
+}
+
+/**
+ * GM manually reveals a checkpoint marker to players now (#48 `gm-manual` trigger).
+ * Projects the marker (label + location only — never the secret payload) into the
+ * player-readable `markers` collection and latches `revealedAt`. GMs may write markers
+ * (firestore.rules); the run-sheet/geofence do the timed/crossing reveals server-side.
+ */
+export async function revealCheckpointNow(gameId: string, cp: Checkpoint): Promise<void> {
+  const audience = revealAudienceIds(cp);
+  await setDoc(
+    doc(db, Collections.GAMES, gameId, Collections.MARKERS, cp.id),
+    {
+      checkpointId: cp.id,
+      name: cp.name,
+      latitude: cp.latitude,
+      longitude: cp.longitude,
+      audiencePlayerIds: audience === null ? null : audience.length === 0 ? [] : arrayUnion(...audience),
+      revealedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+  await updateDoc(doc(db, Collections.GAMES, gameId, Collections.CHECKPOINTS, cp.id), {
+    revealedAt: serverTimestamp(),
+    ...(audience && audience.length > 0 ? { revealedTo: arrayUnion(...audience) } : {}),
+  });
+}
+
+/**
+ * Sync a checkpoint's game-time reveal (#48) into the run-sheet as a deterministic
+ * `reveal-checkpoint` row so the per-minute sweep fires it. Pass `offsetMinutes` to
+ * schedule, or `null` to clear. Mirrors the mobile setRevealSchedule.
+ */
+export async function setRevealSchedule(
+  gameId: string,
+  checkpointId: string,
+  offsetMinutes: number | null
+): Promise<void> {
+  const ref = doc(db, Collections.GAMES, gameId, Collections.SCHEDULED_EVENTS, `reveal_${checkpointId}`);
+  if (offsetMinutes == null) {
+    await deleteDoc(ref).catch(() => {});
+    return;
+  }
+  await setDoc(ref, {
+    type: 'reveal-checkpoint',
+    checkpointId,
+    offsetMinutes,
+    firedAt: null,
+    createdAt: serverTimestamp(),
+  });
 }
 
 // --- Timed site windows (#12) ---

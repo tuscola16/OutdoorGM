@@ -150,6 +150,42 @@ export interface CheckpointEvent {
   // requirePhoto?: boolean;
 }
 
+/**
+ * Whether (and when) a checkpoint's marker is shown to players (ROADMAP #48). This is
+ * ORTHOGONAL to its `event`/`eventQueue` payload: visibility = whether/when/to-whom the
+ * marker shows on the player map; the payload = what happens on crossing. A marker only
+ * ever carries the checkpoint's name + location (never the secret event body).
+ * - `gm-only` — never shown to players (the default; legacy invisible-to-players behavior).
+ * - `always`  — shown to all players from Start Game (case C: a named location whose
+ *               effect is still secret until crossed).
+ * - `on-reveal`— hidden until a `reveal` trigger fires (cases A trap, B drop, D sponsor).
+ */
+export type CheckpointVisibility = 'gm-only' | 'always' | 'on-reveal';
+
+/** How an `on-reveal` checkpoint becomes visible. */
+export type RevealTrigger =
+  | 'game-time' // revealed at `offsetMinutes` after startedAt (run-sheet reveal-checkpoint row)
+  | 'gm-manual' // GM taps "Reveal now"
+  | 'on-crossing'; // revealed the moment a player enters (case A trap)
+
+/** Who can see an `on-reveal` checkpoint once it's revealed. */
+export type RevealAudience =
+  | 'all' // every player (case B)
+  | 'specific-players' // a named subset, usually 1 (case D sponsor drop)
+  | 'triggerer'; // only the player who crossed (case A trap)
+
+/** For `visibility: 'on-reveal'` — how/when/to-whom the marker becomes visible. */
+export interface CheckpointReveal {
+  trigger: RevealTrigger;
+  audience: RevealAudience;
+  /** `game-time` trigger: minutes after the game's `startedAt`. */
+  offsetMinutes?: number | null;
+  /** `game-time` trigger: an absolute fire time (reserved; offsetMinutes is primary). */
+  revealAt?: FsTimestamp | null;
+  /** `specific-players` audience: member ids allowed to see it once revealed. */
+  recipientPlayerIds?: string[];
+}
+
 export interface Checkpoint {
   id: string;
   name: string;
@@ -177,6 +213,35 @@ export interface Checkpoint {
    */
   opensAt?: FsTimestamp | null;
   closesAt?: FsTimestamp | null;
+  /**
+   * Who can see this checkpoint's marker (ROADMAP #48). Absent → `gm-only` (legacy:
+   * invisible to players). Independent of the `event`/`eventQueue` payload above.
+   */
+  visibility?: CheckpointVisibility;
+  /** For `visibility: 'on-reveal'`: how/when/to-whom it becomes visible. */
+  reveal?: CheckpointReveal;
+  /** Latched when the reveal fires (set by the run-sheet / geofence / GM "reveal now"). */
+  revealedAt?: FsTimestamp | null;
+  /** For `specific-players`/`triggerer` audiences: member ids it's been revealed to so far. */
+  revealedTo?: string[];
+}
+
+/**
+ * A checkpoint marker projected into a player-readable surface (ROADMAP #48). The
+ * `checkpoints` collection stays GM-only-readable (it holds every objective's coords +
+ * secret payload); the server (and the trusted GM client) writes a marker here carrying
+ * ONLY the label + location once a checkpoint is visible to a player.
+ * Path: games/{gameId}/markers/{checkpointId}.
+ */
+export interface RevealedMarker {
+  checkpointId: string;
+  /** Marker label only — never the secret event payload (case C). */
+  name: string;
+  latitude: number;
+  longitude: number;
+  /** Null/absent = visible to all players; set = only these uids may read/see it (A/D). */
+  audiencePlayerIds?: string[] | null;
+  revealedAt: FsTimestamp;
 }
 
 export interface GameMember {
@@ -284,6 +349,7 @@ export type ScheduledActionType =
   | 'broadcast' // write a Broadcast (free text, or templated player-count)
   | 'open-site' // set a checkpoint's window live (#12)
   | 'close-site' // close a checkpoint's window (#12)
+  | 'reveal-checkpoint' // make a checkpoint marker visible to players (#48 game-time reveal)
   | 'gear-drop' // announce a drop location (a broadcast to all)
   | 'gm-reminder'; // GM-only nudge ("send Aaron to The Dock")
 

@@ -644,7 +644,7 @@ safety check (Safety nets) and the geofence both switch from the current min/max
 **point-in-polygon** test. Bennett asked for it; **deprioritized** — the rectangle is workable
 for now. Related to, but distinct from, the P3 "custom arena map overlay" item.
 
-### 47. Split boundary editing and checkpoint placement into separate screens *(UX defect)*
+### 47. Split boundary editing and checkpoint placement into separate screens *(UX defect — built)*
 On the combined map editor a tap meant to **place a checkpoint can accidentally drag the
 boundary** — Bennett moved the boundary several times while trying to drop checkpoints.
 Separate the two modes: a dedicated **Set Boundary** screen (`gm/[gameId]/boundary.tsx`) and a
@@ -652,7 +652,13 @@ dedicated **Add Checkpoints** screen, so a tap in one can never mutate the other
 noted the **desktop web GM dashboard** is the more comfortable place to do setup (easy to
 split-screen) — decoupling the mobile screens narrows that gap.
 
-### 48. Player-visible checkpoints + a visibility / reveal model *(the headline change)*
+> **Built.** `boundary.tsx` is now boundary-only (reticle + Set/Update Boundary, no checkpoint
+> affordances); a new `gm/[gameId]/checkpoints.tsx` shows the boundary **read-only** and owns
+> checkpoint placement/editing (long-press to add, edit modal). The GM setup checklist
+> (`gm/[gameId]/index.tsx`) now has two rows — **Set the boundary** and **Manage checkpoints**.
+> Mobile-only; the web dashboard already separated them.
+
+### 48. Player-visible checkpoints + a visibility / reveal model *(the headline change — built)*
 **Today every checkpoint is GM-only and invisible to players.** All four tester user stories
 turn on *players seeing (some) checkpoints, at the right time, with the right audience* — this
 is "the biggest thing to change." Build the **full A–D matrix**: a checkpoint gains a
@@ -679,7 +685,25 @@ player-readable surface** rather than opening the GM-only checkpoints collection
 a markers map layer they don't have today (see §17). Pairs with #47 (now that checkpoints carry
 real semantics, authoring them deserves its own screen).
 
-### 49. GM per-player screen + targeted player messaging *(messaging first)*
+> **Built (full A–D matrix, mobile + web).**
+> - **Schema** (`types/index.ts`): `CheckpointVisibility` (`gm-only`/`always`/`on-reveal`),
+>   `CheckpointReveal` (trigger `game-time`/`gm-manual`/`on-crossing`, audience
+>   `all`/`specific-players`/`triggerer`, `offsetMinutes`/`recipientPlayerIds`); `Checkpoint`
+>   gains `visibility`/`reveal`/`revealedAt`/`revealedTo`; new player-readable `RevealedMarker`;
+>   `MARKERS: 'markers'` in both `Collections` maps.
+> - **Server projection** (`functions/src/markers.ts`): `projectMarker()` writes a label+location
+>   marker (never the secret payload) to `games/{id}/markers/{checkpointId}`. `always` markers are
+>   projected at Start Game (`onGameStartProjectMarkers`); `on-crossing` (case A) by the geofence
+>   for the triggerer; `game-time` (case B/D) by a `reveal-checkpoint` run-sheet action; `gm-manual`
+>   by a GM-client `revealCheckpointNow()` write (GMs may write markers).
+> - **Player map layer**: audience-filtered `markers` listener in `context/GameContext.tsx` and
+>   `app/(app)/player/game.tsx`; `markers` prop on `components/GameMap.tsx`.
+> - **Rules** (`firestore.rules`): `markers` readable by the GM or a player in the audience
+>   (`audiencePlayerIds` null OR array-contains uid), GM-writable; `checkpoints` stays GM-only.
+> - **Authoring**: visibility/reveal fields in the mobile `checkpoints.tsx` editor and the web
+>   `CheckpointModal`, plus a `reveal-checkpoint` run-sheet action on both.
+
+### 49. GM per-player screen + targeted player messaging *(messaging — built)*
 A GM **per-player detail screen** (tap a player on the roster → their detail) is the natural
 home for **player-specific actions**. Build **targeted GM→player messaging first** —
 `Broadcast.targetPlayerId` already exists and players already filter targeted broadcasts, so
@@ -688,7 +712,13 @@ of bouncing to a separate messaging app mid-game. **Later sub-items on the same 
 authoring **per-player checkpoints** (the GM side of case D / #48) and **GM↔GM messaging** (new
 — broadcasts are GM→player only today; an explicit nice-to-have).
 
-### 50. Cleanup for orphaned / lost games *(no-GM games)*
+> **Built (messaging).** Mobile `gm/[gameId]/player/[playerId].tsx` — a per-player detail screen
+> (status: alive/out+cause, district, last-fix staleness, SOS) with a compose box that sends a
+> `targetPlayerId`-scoped `gm-message` via `sendBroadcast()`; the roster (`players.tsx`) links
+> players to it. Web parity: a **Message** action per player in the `PlayersModal`. The later
+> sub-items (per-player checkpoints, GM↔GM messaging) remain **outstanding**.
+
+### 50. Cleanup for orphaned / lost games *(no-GM games — built)*
 Bennett hit a dead game: as the **sole GM he removed himself from the players list**, then
 couldn't End Game ("no permissions"). **Prevention** is the existing **"Always ≥ 1 GM"**
 invariant (block the last GM from removing/demoting themselves) — landing in the next deploy.
@@ -697,6 +727,13 @@ auto-ends** any game left with **zero GMs** (`status: 'ended'`), which then trig
 existing end-of-game cleanup (#30 location/arrival purge, ration-photo deletion). No
 GM-transfer — an orphaned game is just closed out. Pairs with #34 (deleteAccount sole-GM
 orphans), which can reuse the same auto-end path.
+
+> **Built.** **Prevention:** the "Always ≥ 1 GM" guard now blocks removing or demoting the last
+> GM in the roster UI (mobile `players.tsx` + web `PlayersModal`). **Remediation:** the hourly
+> `sweepOrphanedGames` Cloud Function (`functions/src/orphans.ts`) auto-ends any active game with
+> zero GM members (`status: 'ended'`), which triggers the existing end-of-game cleanup (#30). No
+> GM transfer — an orphaned game is closed out. (Rules can't count collection members, so
+> prevention is client-side + the sweep, per the original framing.)
 
 ---
 
@@ -837,11 +874,10 @@ fixed before any real game. The **UX items** (`40`–`42`) are quick wins that s
 join/list flow; `45` (demo/screenshot parity) gates store submissions and can trail the
 bug fixes.
 
-**The 2026-06-05 tester feedback (`46`–`50`)** adds one headline feature and four smaller items.
-**`48` (player-visible checkpoints + the A–D visibility/reveal model)** is the big product change
-— "the biggest thing to change" — and the most schema/geofence work; it pairs with **`47`** (split
-the boundary and checkpoint editors so authoring richer checkpoints isn't fighting the boundary
-drag). **`49`** (GM per-player screen) starts with **targeted player messaging** (cheap — the
-`targetPlayerId` broadcast path exists) and grows per-player checkpoints / GM↔GM messaging later.
-**`50`** (orphaned-game cleanup) rides with the "Always ≥ 1 GM" invariant and `34`. **`46`**
-(polygon boundary) is explicitly low priority — the rectangle is fine for now.
+**The 2026-06-05 tester feedback (`46`–`50`):** **`47`, `48`, `49`, `50` are built** (see their
+notes above). **`48`** (player-visible checkpoints + the full A–D visibility/reveal model) shipped
+with the server-projected `markers` collection, the player map layer, and GM authoring on mobile +
+web; **`47`** split the boundary and checkpoint editors; **`49`** shipped targeted GM→player
+messaging on a new per-player screen (per-player checkpoints / GM↔GM messaging remain follow-ons);
+**`50`** added the last-GM guard + the `sweepOrphanedGames` auto-end. **`46`** (polygon boundary)
+remains **outstanding** — explicitly low priority; the rectangle is fine for now.

@@ -67,8 +67,18 @@ export default function PlayersScreen() {
     }
   }
 
+  /** A game must always keep ≥ 1 GM (#50). True when this member is the only GM. */
+  function isLastGM(member: GameMember): boolean {
+    return member.role === 'gm' && members.filter((m) => m.role === 'gm').length <= 1;
+  }
+
   function handleRoleToggle(member: GameMember) {
     const newRole = member.role === 'player' ? 'gm' : 'player';
+    // Block demoting the last GM — a game with no GM is unwatched and unwinnable (#50).
+    if (newRole === 'player' && isLastGM(member)) {
+      Alert.alert('Can’t demote the last GM', 'Promote another player to GM first — every game needs at least one Game Master.');
+      return;
+    }
     const label = newRole === 'gm' ? 'Promote to GM' : 'Demote to Player';
     Alert.alert(
       label,
@@ -91,6 +101,11 @@ export default function PlayersScreen() {
   }
 
   function handleRemove(member: GameMember) {
+    // Block removing the last GM — it would orphan the game (#50).
+    if (isLastGM(member)) {
+      Alert.alert('Can’t remove the last GM', 'Promote another player to GM first — every game needs at least one Game Master.');
+      return;
+    }
     Alert.alert(
       `Remove ${member.displayName}?`,
       'They will be removed from the game and their location will no longer be tracked.',
@@ -187,6 +202,16 @@ export default function PlayersScreen() {
             <Text style={styles.email}>{item.email}</Text>
           )}
         </View>
+
+        {/* Open the per-player detail screen (status + targeted message, #49). */}
+        {!isGM && (
+          <TouchableOpacity
+            onPress={() => router.push(`/(app)/gm/${gameId}/player/${item.userId}`)}
+            style={styles.iconBtn}
+          >
+            <Ionicons name="chatbubble-ellipses-outline" size={22} color={Colors.secondary} />
+          </TouchableOpacity>
+        )}
 
         {isOut ? (
           <View style={[styles.badge, styles.deadBadge]}>

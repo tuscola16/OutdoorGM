@@ -45,4 +45,5 @@ export const Collections = {
   BROADCASTS: 'broadcasts',
   RATIONS: 'rations',
   SCHEDULED_EVENTS: 'scheduledEvents',
+  MARKERS: 'markers',
 } as const;

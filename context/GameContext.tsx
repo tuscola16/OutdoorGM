@@ -13,6 +13,7 @@ import type {
   Broadcast,
   RationSubmission,
   ScheduledEvent,
+  RevealedMarker,
 } from '@/types';
 
 interface GameContextValue {
@@ -29,6 +30,9 @@ interface GameContextValue {
   rations: RationSubmission[];
   /** Run-sheet timed actions (GM only, #11). */
   scheduledEvents: ScheduledEvent[];
+  /** Revealed checkpoint markers (#48). Players see those they're the audience for;
+   * GMs see all. The player map's only checkpoint data. */
+  markers: RevealedMarker[];
   loadGame: (gameId: string, role: 'player' | 'gm') => void;
   clearGame: () => void;
 }
@@ -46,6 +50,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
   const [rations, setRations] = useState<RationSubmission[]>([]);
   const [scheduledEvents, setScheduledEvents] = useState<ScheduledEvent[]>([]);
+  const [markers, setMarkers] = useState<RevealedMarker[]>([]);
 
   const loadGame = useCallback((id: string, role: 'player' | 'gm') => {
     setGameId(id);
@@ -63,6 +68,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     setBroadcasts([]);
     setRations([]);
     setScheduledEvents([]);
+    setMarkers([]);
   }, []);
 
   // Subscribe to game document
@@ -219,9 +225,51 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
       );
   }, [gameId, myRole]);
 
+  // Subscribe to revealed checkpoint markers (#48). GMs see all; players see only
+  // markers they're the audience for (global `audiencePlayerIds == null`, plus ones
+  // that array-contain their uid). Firestore can't OR those in one query, so players
+  // run two listeners and merge — the same shape as the broadcasts subscription above.
+  useEffect(() => {
+    if (!gameId) return;
+    const col = firestore()
+      .collection(Collections.GAMES)
+      .doc(gameId)
+      .collection(Collections.MARKERS);
+
+    if (myRole === 'gm') {
+      return col.onSnapshot(
+        (snap) => setMarkers(snap.docs.map((d) => ({ ...d.data() } as RevealedMarker))),
+        (err) => console.error('[GameContext] markers listener error', err)
+      );
+    }
+
+    const uid = auth().currentUser?.uid;
+    const merged = new Map<string, RevealedMarker>();
+    const emit = () => setMarkers([...merged.values()]);
+    const handle = (snap: FirebaseFirestoreTypes.QuerySnapshot) => {
+      snap.docChanges().forEach((c) => {
+        if (c.type === 'removed') merged.delete(c.doc.id);
+        else merged.set(c.doc.id, { ...c.doc.data() } as RevealedMarker);
+      });
+      emit();
+    };
+    const unsubGlobal = col
+      .where('audiencePlayerIds', '==', null)
+      .onSnapshot(handle, (err) => console.error('[GameContext] global markers error', err));
+    const unsubMine = uid
+      ? col
+          .where('audiencePlayerIds', 'array-contains', uid)
+          .onSnapshot(handle, (err) => console.error('[GameContext] my markers error', err))
+      : () => {};
+    return () => {
+      unsubGlobal();
+      unsubMine();
+    };
+  }, [gameId, myRole]);
+
   return (
     <GameContext.Provider
-      value={{ game, phase: gamePhase(game), myRole, checkpoints, members, playerLocations, arrivals, broadcasts, rations, scheduledEvents, loadGame, clearGame }}
+      value={{ game, phase: gamePhase(game), myRole, checkpoints, members, playerLocations, arrivals, broadcasts, rations, scheduledEvents, markers, loadGame, clearGame }}
     >
       {children}
     </GameContext.Provider>

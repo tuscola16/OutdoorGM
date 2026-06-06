@@ -1,12 +1,19 @@
 import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
 import { sendPushToTokens } from './notifications';
+import { projectMarker, resolveRevealAudience, CheckpointDoc } from './markers';
 
 // The run-sheet (ROADMAP #11): a GM authors timed actions on
 // games/{gameId}/scheduledEvents; this function sweeps every minute for due,
 // unfired actions and executes them, stamping `firedAt` so each fires exactly once.
 
-type ScheduledActionType = 'broadcast' | 'open-site' | 'close-site' | 'gear-drop' | 'gm-reminder';
+type ScheduledActionType =
+  | 'broadcast'
+  | 'open-site'
+  | 'close-site'
+  | 'reveal-checkpoint'
+  | 'gear-drop'
+  | 'gm-reminder';
 
 interface ScheduledEventData {
   type: ScheduledActionType;
@@ -109,6 +116,31 @@ async function executeAction(
       gmTokens,
       ev.type === 'open-site' ? '🟢 Site opened' : '🔴 Site closed',
       `${cpName} is now ${ev.type === 'open-site' ? 'open' : 'closed'}.`
+    );
+    return;
+  }
+
+  // Reveal a checkpoint marker to players at a scheduled game-time (#48 case B/D). Project
+  // the marker (label + location only) for the configured audience and latch revealedAt.
+  if (ev.type === 'reveal-checkpoint') {
+    if (!ev.checkpointId) return;
+    const cpRef = gameRef.collection('checkpoints').doc(ev.checkpointId);
+    const cpSnap = await cpRef.get();
+    if (!cpSnap.exists) return;
+    const cp = cpSnap.data() as CheckpointDoc;
+    const audience = resolveRevealAudience(cp.reveal); // no triggerer for a timed reveal
+    await projectMarker(db, gameId, ev.checkpointId, cp, audience);
+    await cpRef.update({
+      revealedAt: admin.firestore.FieldValue.serverTimestamp(),
+      ...(audience && audience.length > 0
+        ? { revealedTo: admin.firestore.FieldValue.arrayUnion(...audience) }
+        : {}),
+    });
+    const gmTokens = await getGmTokens(db, gameId);
+    await sendPushToTokens(
+      gmTokens,
+      '👁️ Marker revealed',
+      `${cp.name ?? 'A site'} is now visible to players.`
     );
     return;
   }

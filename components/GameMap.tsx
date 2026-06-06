@@ -3,7 +3,7 @@ import { View, StyleSheet, Text } from 'react-native';
 import MapView, { Marker, Circle, Polygon, UrlTile, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import { Colors } from '@/constants/colors';
 import { TOPO_TILE_URL, TOPO_TILE_SIZE, TOPO_MAX_ZOOM, TOPO_MAX_NATIVE_ZOOM } from '@/constants/map';
-import type { Checkpoint, PlayerLocation, MapBoundary } from '@/types';
+import type { Checkpoint, PlayerLocation, MapBoundary, RevealedMarker } from '@/types';
 
 // Whole-US fallback, used only when there's no boundary/checkpoints/players to frame.
 const DEFAULT_REGION: Region = { latitude: 37.0902, longitude: -95.7129, latitudeDelta: 30, longitudeDelta: 30 };
@@ -48,6 +48,10 @@ interface GameMapProps {
   playerLocations: PlayerLocation[];
   boundary?: MapBoundary | null;
   deathMarkers?: DeathMarker[];
+  /** Player-visible checkpoint markers (#48): label + location only, no radius or
+   * secret payload. Rendered for the player's own map (the player never gets the full
+   * `checkpoints` collection). */
+  markers?: RevealedMarker[];
   onMapLongPress?: (coord: { latitude: number; longitude: number }) => void;
   onCheckpointPress?: (checkpoint: Checkpoint) => void;
   editMode?: boolean;
@@ -127,6 +131,7 @@ export function GameMap({
   playerLocations,
   boundary,
   deathMarkers = [],
+  markers = [],
   onMapLongPress,
   onCheckpointPress,
   editMode = false,
@@ -148,12 +153,13 @@ export function GameMap({
     const coords = [
       ...(boundary ? boundaryCorners(boundary) : []),
       ...checkpoints.map((c) => ({ latitude: c.latitude, longitude: c.longitude })),
+      ...markers.map((m) => ({ latitude: m.latitude, longitude: m.longitude })),
       ...playerLocations.map((p) => ({ latitude: p.latitude, longitude: p.longitude })),
     ];
     return regionFromCoords(coords) ?? (boundary ? regionFromBoundary(boundary) : DEFAULT_REGION);
     // Intentionally computed once for the initial mount; MapView ignores later
     // initialRegion changes.
-  }, [initialRegion, boundary, checkpoints, playerLocations]);
+  }, [initialRegion, boundary, checkpoints, markers, playerLocations]);
 
   // Best-effort dynamic re-fit as live data changes (e.g. players spreading out).
   // Harmless if it no-ops; initialRegion already gives a correct starting frame.
@@ -207,6 +213,16 @@ export function GameMap({
           checkpoint={cp}
           onPress={onCheckpointPress ? () => onCheckpointPress(cp) : undefined}
           editMode={editMode}
+        />
+      ))}
+      {markers.map((m) => (
+        <Marker
+          key={`marker-${m.checkpointId}`}
+          coordinate={{ latitude: m.latitude, longitude: m.longitude }}
+          title={m.name}
+          description="Revealed location"
+          pinColor={Colors.secondary}
+          tracksViewChanges={false}
         />
       ))}
       {playerLocations.map((pl) => (

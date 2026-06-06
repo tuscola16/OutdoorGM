@@ -23,7 +23,7 @@ import { friendlyError } from '@/services/errorUtils';
 import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
 import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
 import { Collections } from '@/services/firebase';
-import type { GameConfig, GamePhase, MapBoundary } from '@/types';
+import type { GameConfig, GamePhase, MapBoundary, RevealedMarker } from '@/types';
 
 type Ts = FirebaseFirestoreTypes.Timestamp | null;
 
@@ -36,6 +36,9 @@ export default function PlayerGameScreen() {
   const [phase, setPhase] = useState<GamePhase>('setup');
   const [rules, setRules] = useState<string>('');
   const [boundary, setBoundary] = useState<MapBoundary | null>(null);
+  // Revealed checkpoint markers (#48) this player is allowed to see — the only
+  // checkpoint data a player ever gets (the `checkpoints` collection stays GM-only).
+  const [markers, setMarkers] = useState<RevealedMarker[]>([]);
   const [startedAt, setStartedAt] = useState<Ts>(null);
   const [endedAt, setEndedAt] = useState<Ts>(null);
   const [durationMinutes, setDurationMinutes] = useState(gameConfig(null).durationMinutes);
@@ -136,6 +139,33 @@ export default function PlayerGameScreen() {
       );
 
     return () => { unsubGame(); unsubMember(); };
+  }, [gameId, user]);
+
+  // Subscribe to revealed checkpoint markers (#48) — global ones (audiencePlayerIds
+  // null) plus ones aimed at this player (array-contains uid). Firestore can't OR those
+  // in one query, so we run two listeners and merge (same shape as the broadcast feed).
+  useEffect(() => {
+    if (!gameId || !user) return;
+    const col = firestore()
+      .collection(Collections.GAMES)
+      .doc(gameId)
+      .collection(Collections.MARKERS);
+    const merged = new Map<string, RevealedMarker>();
+    const emit = () => setMarkers([...merged.values()]);
+    const handle = (snap: FirebaseFirestoreTypes.QuerySnapshot) => {
+      snap.docChanges().forEach((c) => {
+        if (c.type === 'removed') merged.delete(c.doc.id);
+        else merged.set(c.doc.id, { ...c.doc.data() } as RevealedMarker);
+      });
+      emit();
+    };
+    const unsubGlobal = col
+      .where('audiencePlayerIds', '==', null)
+      .onSnapshot(handle, (err) => console.error('[PlayerGame] global markers error', err));
+    const unsubMine = col
+      .where('audiencePlayerIds', 'array-contains', user.uid)
+      .onSnapshot(handle, (err) => console.error('[PlayerGame] my markers error', err));
+    return () => { unsubGlobal(); unsubMine(); };
   }, [gameId, user]);
 
   // Show the intro tutorial once per game, while waiting in the lobby.
@@ -398,8 +428,9 @@ export default function PlayerGameScreen() {
           {playTab === 'map' ? (
             <View style={styles.mapFull}>
               {boundary ? (
-                // Players see the play area + their own blue dot — never other players.
-                <GameMap checkpoints={[]} playerLocations={[]} boundary={boundary} showsUserLocation />
+                // Players see the play area, their own blue dot, and any checkpoint
+                // markers revealed to them (#48) — never other players or hidden sites.
+                <GameMap checkpoints={[]} playerLocations={[]} markers={markers} boundary={boundary} showsUserLocation />
               ) : (
                 <View style={[styles.map, styles.mapPlaceholder]}>
                   <Ionicons name="map-outline" size={40} color={Colors.textMuted} />

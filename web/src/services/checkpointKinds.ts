@@ -1,4 +1,6 @@
-import type { Checkpoint, CheckpointEvent, CheckpointKind, EventAudience } from '@shared/types';
+import type {
+  Checkpoint, CheckpointEvent, CheckpointKind, EventAudience, CheckpointVisibility,
+} from '@shared/types';
 
 /**
  * Per-kind presentation for checkpoints, mirroring the mobile app's KIND_META
@@ -44,3 +46,12 @@ export function buildEvent(
   if (kind === 'player-notify' && audience === 'all-players') e.audience = 'all-players';
   return e;
 }
+
+/** Player-visibility presentation (#48), mirroring the mobile checkpoints editor. */
+export const VIS_META: Record<CheckpointVisibility, { label: string; emoji: string; hint: string }> = {
+  'gm-only': { label: 'Hidden', emoji: '🙈', hint: 'Only you see it. Players never see this checkpoint.' },
+  always: { label: 'Always shown', emoji: '📍', hint: 'Players see this location from the start — but not what it does until they cross it.' },
+  'on-reveal': { label: 'Reveal later', emoji: '⏱️', hint: 'Hidden until a reveal trigger fires (trap, timed/triggered drop, or sponsor drop).' },
+};
+
+export const VIS_ORDER: CheckpointVisibility[] = ['gm-only', 'always', 'on-reveal'];
