@@ -5,11 +5,11 @@
 > doc is the *how* — root causes (with `file:line`), the fix, files to touch, schema deltas,
 > and verification. Built on a code read of the repo as of this commit.
 
-> **Status (shipped 2026-06-07):** #48, #49, #50, #51, #52, #55, #56 are **implemented**, plus
-> #54's backend (transition schema + run-sheet sweep + geofence integration). **Outstanding:**
-> #53 (checkpoint-authoring redesign) and #54's **GM authoring UI**. #49 still wants an on-device
-> locked-phone re-test. The sections below are kept as the implementation record / remaining-work
-> reference — see the roadmap Built callout for the canonical status.
+> **Status (shipped 2026-06-07):** all of #48–56 are **implemented** — the P0 fixes (#48–52), the
+> backend (#54/#55/#56), and the **#53 checkpoint-authoring redesign + #54 transition authoring UI**
+> (map places name+icon; full-screen behavior editor; run sheet as the hub). The only open item from
+> this plan is an **on-device locked-phone re-test for #49**. The sections below are kept as the
+> implementation record — see the roadmap Built callout for canonical status.
 
 ## Orientation — how the relevant pieces fit
 

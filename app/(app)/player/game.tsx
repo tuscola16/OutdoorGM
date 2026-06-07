@@ -130,8 +130,15 @@ export default function PlayerGameScreen() {
           // The membership doc vanishing means the GM removed us from the game.
           // Stop sharing location immediately and leave — without this, the
           // background task keeps uploading our position even after removal.
+          //
+          // BUT only trust a *server*-confirmed disappearance. On a poor connection
+          // (the norm in the field) RNFirebase can deliver a cache-sourced snapshot
+          // that momentarily reports our own member doc as absent before the server
+          // reconciles. Treating that as a removal bounced a flaky-signal player back
+          // to "My Games" every few seconds even though she was never actually removed.
+          // `metadata.fromCache` is false only once the server has spoken.
           if (!snap.exists) {
-            if (sawMemberRef.current) {
+            if (sawMemberRef.current && !snap.metadata.fromCache) {
               stopLocationTracking().catch(() => {});
               Alert.alert('Removed from game', 'The Game Master has removed you from this game.');
               router.replace('/(app)/games');

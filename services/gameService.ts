@@ -7,6 +7,8 @@ import {
   type Game,
   type GameConfig,
   type Checkpoint,
+  type CheckpointState,
+  type CheckpointKind,
   type GamePhase,
   type GameStatus,
   type MapBoundary,
@@ -594,6 +596,43 @@ export async function clearCheckpointWindow(gameId: string, checkpointId: string
     opensAt: firestore.FieldValue.delete(),
     closesAt: firestore.FieldValue.delete(),
   });
+}
+
+// --- Time-based checkpoint state transitions (#54) ---
+
+/** State → CheckpointKind, mirroring `applyCheckpointTransitions` in functions/src/runsheet.ts. */
+const STATE_TO_KIND: Record<Exclude<CheckpointState, 'closed'>, CheckpointKind> = {
+  boon: 'boon',
+  hazard: 'hazard',
+  notification: 'player-notify',
+};
+
+/**
+ * The checkpoint-doc fields that make a `CheckpointState` effective **immediately** (before
+ * the run-sheet sweep next runs), mirroring the server's transition application. `closed`
+ * shuts the window; the others map to a CheckpointKind and open the window. Used by the
+ * editor so a scheduled checkpoint's initial state is correct from game start (the sweep
+ * then handles the later, atMinute > 0 transitions). Values include FieldValue sentinels,
+ * so the caller spreads this into an `updateCheckpoint` payload (cast as needed).
+ */
+export function stateEventFields(
+  state: CheckpointState,
+  message?: string
+): Record<string, unknown> {
+  if (state === 'closed') {
+    return {
+      currentState: 'closed',
+      event: firestore.FieldValue.delete(),
+      opensAt: firestore.FieldValue.delete(),
+      closesAt: firestore.FieldValue.serverTimestamp(),
+    };
+  }
+  return {
+    currentState: state,
+    event: { kind: STATE_TO_KIND[state], ...(message ? { message } : {}) },
+    opensAt: firestore.FieldValue.serverTimestamp(),
+    closesAt: firestore.FieldValue.delete(),
+  };
 }
 
 // --- Run-sheet / scheduled events (#11) ---

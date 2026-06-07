@@ -13,7 +13,19 @@ import {
   addScheduledEvent, updateScheduledEvent, deleteScheduledEvent,
 } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
-import type { ScheduledEvent, ScheduledActionType } from '@/types';
+import { KIND_META, checkpointKind } from '@/components/checkpointForm';
+import { checkpointIcon } from '@/constants/checkpointIcons';
+import type { ScheduledEvent, ScheduledActionType, Checkpoint } from '@/types';
+
+/** One-line summary of what a checkpoint does, for the run-sheet list. */
+function behaviorSummary(cp: Checkpoint): string {
+  if (cp.transitions && cp.transitions.length > 0) {
+    return `Scheduled · ${cp.transitions.length} change${cp.transitions.length === 1 ? '' : 's'}`;
+  }
+  const steps = cp.eventQueue?.length ?? 0;
+  if (steps > 0) return `By arrival · ${steps} step${steps === 1 ? '' : 's'}`;
+  return KIND_META[checkpointKind(cp)].label;
+}
 
 // The authoring UI presents one option per row; `player-count` is a templated
 // `broadcast`, so the UI key is richer than the stored `type`.
@@ -168,10 +180,42 @@ export default function RunSheetScreen() {
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.list}
         ListHeaderComponent={
-          <Text style={styles.intro}>
-            Timed actions fire automatically, measured from when you Start the game. They run
-            only while the game is in play.
-          </Text>
+          <View>
+            <View style={styles.cpSection}>
+              <Text style={styles.cpHeading}>Checkpoints</Text>
+              {checkpoints.length === 0 ? (
+                <Text style={styles.cpEmptyText}>
+                  No checkpoints yet — add them on the Checkpoints map, then tap one here to set what it does.
+                </Text>
+              ) : (
+                checkpoints.map((cp) => {
+                  const color = KIND_META[checkpointKind(cp)].color;
+                  return (
+                    <TouchableOpacity
+                      key={cp.id}
+                      style={styles.cpRow}
+                      onPress={() => router.push(`/(app)/gm/${gameId}/checkpoint/${cp.id}`)}
+                    >
+                      <View style={[styles.cpIcon, { borderColor: color }]}>
+                        <Ionicons name={checkpointIcon(cp.icon)} size={16} color={color} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.cpName}>{cp.name}</Text>
+                        <Text style={styles.cpSummary}>{behaviorSummary(cp)}</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+                    </TouchableOpacity>
+                  );
+                })
+              )}
+            </View>
+
+            <Text style={styles.timedHeading}>Timed actions</Text>
+            <Text style={styles.intro}>
+              Timed actions fire automatically, measured from when you Start the game. They run
+              only while the game is in play.
+            </Text>
+          </View>
         }
         renderItem={({ item }) => {
           const a = actionFor(keyForEvent(item));
@@ -314,6 +358,21 @@ const styles = StyleSheet.create({
   count: { fontSize: 14, color: Colors.textSecondary },
   list: { paddingHorizontal: 16, paddingBottom: 24 },
   intro: { color: Colors.textSecondary, fontSize: 13, lineHeight: 19, marginBottom: 12 },
+  cpSection: { marginBottom: 16 },
+  cpHeading: { fontSize: 13, fontWeight: '700', color: Colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 },
+  cpEmptyText: { color: Colors.textMuted, fontSize: 13, lineHeight: 19 },
+  cpRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: Colors.surface, borderRadius: 10, padding: 12, marginBottom: 8,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  cpIcon: {
+    width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1.5, backgroundColor: Colors.surfaceElevated,
+  },
+  cpName: { fontSize: 15, fontWeight: '700', color: Colors.text },
+  cpSummary: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
+  timedHeading: { fontSize: 13, fontWeight: '700', color: Colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 },
   row: {
     flexDirection: 'row', alignItems: 'center',
     backgroundColor: Colors.surface, borderRadius: 10, padding: 12, marginBottom: 8,

@@ -1,5 +1,6 @@
 import type {
   Checkpoint, CheckpointEvent, CheckpointKind, EventAudience, CheckpointVisibility,
+  CheckpointState,
 } from '@shared/types';
 
 /**
@@ -55,3 +56,36 @@ export const VIS_META: Record<CheckpointVisibility, { label: string; emoji: stri
 };
 
 export const VIS_ORDER: CheckpointVisibility[] = ['gm-only', 'always', 'on-reveal'];
+
+/** Time-based checkpoint state presentation (#54), mirroring mobile STATE_META. */
+export const STATE_META: Record<CheckpointState, { label: string; emoji: string; color: string }> = {
+  closed: { label: 'Closed', emoji: '🔒', color: '#777777' },
+  boon: { label: 'Boon', emoji: '✨', color: '#6b8f5e' },
+  hazard: { label: 'Hazard', emoji: '⚠️', color: '#e8402a' },
+  notification: { label: 'Notify', emoji: '📢', color: '#4fc3f7' },
+};
+
+export const STATE_ORDER: CheckpointState[] = ['closed', 'boon', 'hazard', 'notification'];
+
+/** One-line summary of what a checkpoint does, matching mobile behaviorSummary. */
+export function behaviorSummary(cp: Checkpoint): string {
+  if (cp.transitions && cp.transitions.length > 0) {
+    return `Scheduled · ${cp.transitions.length} change${cp.transitions.length === 1 ? '' : 's'}`;
+  }
+  const steps = cp.eventQueue?.length ?? 0;
+  if (steps > 0) return `By arrival · ${steps} step${steps === 1 ? '' : 's'}`;
+  return KIND_META[checkpointKind(cp)].label;
+}
+
+/** Emoji map for the icon picker (#53). Keys match mobile CHECKPOINT_ICONS[].key. */
+export const CHECKPOINT_ICON_EMOJIS: Record<string, string> = {
+  flag: '🚩', pin: '📍', skull: '💀', cache: '🎁', water: '💧',
+  fire: '🔥', forest: '🌿', mountain: '⛰️', base: '🏠', trophy: '🏆',
+  medic: '🩺', star: '⭐',
+};
+
+export const DEFAULT_CHECKPOINT_ICON = 'flag';
+
+export function checkpointIconEmoji(key?: string): string {
+  return CHECKPOINT_ICON_EMOJIS[key ?? ''] ?? '📍';
+}

@@ -14,9 +14,9 @@ New fields stay **optional** so legacy games keep working. Timestamps use the pl
 Only items with a real data-model/infra delta appear here; pure logic/UI/enforcement items are
 listed under [No schema change](#no-schema-change-enforcement--logic-only). Built items (1–10,
 13–15, 17, 18, 19, 30, 31, 32, 33, 34, 36–40, and the **2026-06-07 field-test batch** 48–52, 54,
-55, 56) have shipped and been removed — their numbers are retired. (#53's `Checkpoint.icon` and
-#54's transition schema — `CheckpointState`/`CheckpointTransition`/`initialState`/`transitions`/
-`currentState` — also shipped; only their GM authoring UI remains, listed under
+53, 54, 55, 56) have shipped and been removed — their numbers are retired. (#53/#54 cover the
+`Checkpoint.icon` field and the transition schema — `CheckpointState`/`CheckpointTransition`/
+`initialState`/`transitions`/`currentState` — plus their GM authoring UI; see
 [No schema change](#no-schema-change-enforcement--logic-only).)
 
 ---
@@ -129,8 +129,8 @@ These items are pure logic, rules, client architecture, or ops — no new fields
 - **50** GPS fix-quality filtering — **built**: `GameConfig.minFixAccuracyMeters` (reject worse fixes from geofence eval) + `geofenceConfirmFixes` (N consecutive in-radius fixes debounce), enforced in `onLocationUpdate` via the `checkpointTrips` latch.
 - **51** Web polygon save — **built**: `GameMap` teardown commits the current polygon (`emitPolygonFromDraw`) before removing the draw control, so Done persists it.
 - **52** Ration window notification — **built**: eat-window reminders moved out of `RationPanel` into a `useRationReminders` hook mounted unconditionally during play, so they fire even when the player stays on the Map tab.
-- **53** Checkpoint authoring redesign — `Checkpoint.icon` shipped; remaining work is UI only: map authoring = name+icon, all behavior config moved to a full-screen run-sheet editor.
-- **54** Transition authoring — the data model (`transitions[]`/`currentState`) + run-sheet sweep (`applyCheckpointTransitions`) shipped; remaining work is the GM UI to author a checkpoint's transition schedule (folds into #53).
+- **53** Checkpoint authoring redesign — **built**: map screen places checkpoints (name + icon + radius) only; full-screen behavior editor (`app/(app)/gm/[gameId]/checkpoint/[checkpointId].tsx`) owns event/queue, visibility/reveal, timed window, and transitions; run sheet lists checkpoints as the hub. Uses `Checkpoint.icon`, a shared `components/checkpointForm.tsx`, and `constants/checkpointIcons.ts`.
+- **54** Transition authoring — **built**: the editor's "Changes over time" mode authors `initialState` + `transitions[]`; `gameService.stateEventFields` makes the initial state effective at game start while the run-sheet sweep applies later transitions.
 - **55** Re-trigger / re-notification — **built**: `GameConfig.reNotifyAwayCooldownMinutes` + the server-only `checkpointTrips/{playerId}_{checkpointId}` latch (`inside`/`insideStreak`/`lastEnterAt`/`lastExitAt`/`lastNotifiedState`); GM re-notified past the cooldown, player only on state change.
 - **56** Auto-end threshold — **built**: `GameConfig.autoEndThreshold` (`one`/`zero`/`manual`; legacy `winnerDetection:false` ⇒ `manual`) gating the `onMemberWrite` end/winner transaction.
 - **58** Single-game test checklist — a doc plus an optional `seedTestGame` helper; no new fields.

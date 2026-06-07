@@ -10,9 +10,10 @@ store launch. Items are grouped by tier, roughly in build order. Numbers are sta
 once an item lands; the list was **renumbered 2026-06-06** (a one-time reset after a large batch
 shipped — earlier `#`/`§` numbers are retired and don't map forward) and **trimmed 2026-06-07** when
 the batch below shipped (so it opens at Tier 4 / item 11). The **2026-06-07 field test** added items
-**48–58**; the P0 playtest fixes (**48–52**), the game-flow items (**55**, **56**), and **54**'s
-backend all shipped the same day (see the Built callout), leaving the checkpoint-authoring redesign
-(**53**, plus **54**'s authoring UI), test tooling (**58**), and per-GM teams (**57**).
+**48–58**; the P0 playtest fixes (**48–52**), the game-flow items (**55**, **56**), and the
+checkpoint-authoring redesign (**53**, **54**) all shipped (see the Built callout), leaving only test
+tooling (**58**) and per-GM teams (**57**). A follow-on field-test pass added **59** (a flaky-signal
+player bounced to *My Games* every few seconds — fixed, see the Built callout).
 
 > **Built & removed** (retired numbers, never reused — see git history + the
 > [README](README.md#features)):
@@ -34,10 +35,27 @@ backend all shipped the same day (see the Built callout), leaving the checkpoint
 >   **50** GPS fix-quality gate + N-consecutive-fix debounce; **51** web polygon commit-on-teardown;
 >   **52** ration eat-window reminders hoisted to `useRationReminders` (fire regardless of active
 >   tab); **54** declarative checkpoint `transitions[]` applied by the run-sheet sweep
->   (`currentState`) + geofence integration (**authoring UI still pending — see #54**); **55**
->   per-player/checkpoint trip latch (`checkpointTrips`) with GM away-cooldown + player
->   state-change re-notify; **56** `autoEndThreshold` (one/zero/manual). Players keep the self
->   mini-map (design decision, no code). **#49 still wants an on-device locked-phone re-test.**
+>   (`currentState`) + geofence integration; **55** per-player/checkpoint trip latch
+>   (`checkpointTrips`) with GM away-cooldown + player state-change re-notify; **56**
+>   `autoEndThreshold` (one/zero/manual). Players keep the self mini-map (design decision, no code).
+>   **#49 still wants an on-device locked-phone re-test.**
+> - **59** — **player bounced to "My Games" every few seconds** (2026-06-07 field test, follow-on):
+>   the player member-doc listener (`app/(app)/player/game.tsx`) treated *any* `snap.exists === false`
+>   as a GM removal and `router.replace`d to the games list. On a weak connection RNFirebase delivers
+>   cache-sourced snapshots that momentarily report the player's *own* member doc as absent, so a
+>   flaky-signal player was kicked every ~3–5 s (tracking her reconnect cycle) while a well-connected
+>   player was unaffected; she could always see her location on re-entry. Fixed by gating the removal
+>   on a **server**-confirmed snapshot (`!snap.metadata.fromCache`). Client-only — no rules/functions
+>   change. **Code-complete; needs an APK build to reach the field.** (Crashlytics sanity check found
+>   no matching crash loop — only two low-volume, unrelated FATALs; see git/console.)
+> - **53, 54 (authoring UI)** — **checkpoint authoring redesign**: the map screen
+>   (`gm/[gameId]/checkpoints.tsx`) now only *places* checkpoints (name + icon + radius); a new
+>   full-screen behavior editor (`gm/[gameId]/checkpoint/[checkpointId].tsx`) owns event/queue,
+>   visibility/reveal, the timed window, and the **#54** transition schedule ("Starts as" +
+>   timed "changes over time"); the run sheet lists checkpoints as the behavior hub. Adds a
+>   `Checkpoint.icon` picker (`constants/checkpointIcons.ts`), a shared `components/checkpointForm.tsx`,
+>   and `gameService.stateEventFields` (makes a scheduled checkpoint's initial state effective at
+>   start; the sweep handles later transitions).
 
 ---
 
@@ -112,25 +130,6 @@ player about to go dark (Rule 21) so they can be checked on before they vanish.
 
 ---
 
-## Tier 12 — Checkpoint authoring redesign
-
-The behavior backend these screens drive — time-based transitions (#54), the re-trigger latch
-(#55), and auto-end (#56) — shipped 2026-06-07; what's left is the GM authoring UX.
-
-**53. Split checkpoint authoring: map places, run sheet configures.** On the map the GM only
-*creates* a checkpoint — name + icon (the `Checkpoint.icon` field already shipped), nothing else.
-Everything a checkpoint *does* (event kind/queue, player visibility/reveal, timed window, and #54
-transitions) moves to the run sheet, promoted from a modal to its **own full screen**. The map view
-becomes a clean placement canvas.
-
-**54. Time-based transitions — authoring UI.** The backend shipped: declarative
-`Checkpoint.transitions[]` / `initialState` / `currentState`, applied by the run-sheet sweep
-(`applyCheckpointTransitions`), gating geofence firing and — via #48 — visibility. **Remaining:** a
-GM authoring UI to add/edit a checkpoint's transition schedule (boon @T1 → hazard @T2 → closed @T3),
-folded into #53's full-screen editor. Today transitions can only be written directly to Firestore.
-
----
-
 ## Tier 13 — Test tooling
 
 **58. Single-game test checklist.** A documented checklist (ideally backed by a one-tap "seed test
@@ -187,12 +186,10 @@ its bundle ID / SHA-1 and the Maps SDK in Cloud Console before wide release. Con
 
 ## Suggested order
 
-1. **Tier 12** (53 + #54 authoring UI) — the checkpoint-authoring redesign; the field-test backend
-   fixes (#48–52, #54–56) already shipped, so this surfaces the transition/behavior config to GMs.
-2. **Tier 4** (11–12) completes the ration loop.
-3. **Tier 6** (16) trims the last geofence read cost; **Tier 7** (20–28) — integrity invariants —
+1. **Tier 4** (11–12) completes the ration loop.
+2. **Tier 6** (16) trims the last geofence read cost; **Tier 7** (20–28) — integrity invariants —
    land alongside the features they protect.
-4. **Tier 8** (29, 35) trails as robustness/polish.
-5. **Tier 13** (58) — test tooling; useful throughout, build when convenient.
-6. **Tier 11** (41–45, 57) is P3 polish (43/45 and per-GM teams deprioritized).
-7. **Deferred** (46–47) waits for a real public-store launch.
+3. **Tier 8** (29, 35) trails as robustness/polish.
+4. **Tier 13** (58) — test tooling; useful throughout, build when convenient.
+5. **Tier 11** (41–45, 57) is P3 polish (43/45 and per-GM teams deprioritized).
+6. **Deferred** (46–47) waits for a real public-store launch.

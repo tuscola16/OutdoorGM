@@ -26,6 +26,8 @@ import {
   type GameConfig,
   type Broadcast,
   type Checkpoint,
+  type CheckpointKind,
+  type CheckpointState,
   type GamePhase,
   type GameStatus,
   type MapBoundary,
@@ -345,6 +347,38 @@ export async function updateCheckpoint(
     doc(db, Collections.GAMES, gameId, Collections.CHECKPOINTS, checkpointId),
     updates
   );
+}
+
+const STATE_TO_KIND: Record<Exclude<CheckpointState, 'closed'>, CheckpointKind> = {
+  boon: 'boon',
+  hazard: 'hazard',
+  notification: 'player-notify',
+};
+
+/**
+ * The checkpoint-doc fields that make a `CheckpointState` effective immediately
+ * (before the run-sheet sweep next runs), mirroring the mobile stateEventFields.
+ * `closed` shuts the window; others map to a CheckpointKind and open the window.
+ * Spread the result into an `updateCheckpoint` payload (cast as needed).
+ */
+export function stateEventFields(
+  state: CheckpointState,
+  message?: string
+): Record<string, unknown> {
+  if (state === 'closed') {
+    return {
+      currentState: 'closed',
+      event: deleteField(),
+      opensAt: deleteField(),
+      closesAt: serverTimestamp(),
+    };
+  }
+  return {
+    currentState: state,
+    event: { kind: STATE_TO_KIND[state], ...(message ? { message } : {}) },
+    opensAt: serverTimestamp(),
+    closesAt: deleteField(),
+  };
 }
 
 export async function deleteCheckpoint(gameId: string, checkpointId: string): Promise<void> {

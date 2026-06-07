@@ -11,7 +11,7 @@ import { friendlyError } from '@/services/errorUtils';
 import { stalenessLevel, stalenessColor, formatAgo, STALE_MS, unaccountedPlayers, unaccountedReasonText } from '@/services/locationStatus';
 import {
   openLobby, reopenSetup, startGame, endGame, updateGameConfig, gameConfig,
-  addCheckpoint, updateCheckpoint, deleteCheckpoint,
+  addCheckpoint, updateCheckpoint, deleteCheckpoint, stateEventFields,
   updateMemberRole, removePlayer, eliminatePlayer, clearSos, ackSos, sendBroadcast,
   deleteGame, setGameArchived, reviewRation, rationInterval, setMemberDistrict,
   openCheckpointNow, closeCheckpointNow, clearCheckpointWindow, checkpointWindowState,
@@ -19,11 +19,15 @@ import {
   revealCheckpointNow, setRevealSchedule, parseEventDate, formatEventDate,
   sendGmMessage, subscribeGmMessages,
 } from '@/services/gameService';
-import { KIND_META, KIND_ORDER, checkpointKind, buildEvent, VIS_META, VIS_ORDER } from '@/services/checkpointKinds';
+import {
+  KIND_META, KIND_ORDER, checkpointKind, buildEvent, VIS_META, VIS_ORDER,
+  STATE_META, STATE_ORDER, behaviorSummary, CHECKPOINT_ICON_EMOJIS, DEFAULT_CHECKPOINT_ICON, checkpointIconEmoji,
+} from '@/services/checkpointKinds';
 import { deleteField } from 'firebase/firestore';
 import type {
   Arrival, Checkpoint, CheckpointEvent, CheckpointKind, EventAudience, GameMember, MapBoundary, PlayerLocation, RationSubmission,
   ScheduledEvent, ScheduledActionType, CheckpointVisibility, RevealTrigger, RevealAudience, CheckpointReveal, FsTimestamp, Broadcast,
+  CheckpointState, CheckpointTransition,
 } from '@shared/types';
 
 const PHASE_LABEL: Record<string, string> = {
@@ -292,15 +296,18 @@ function SetupView({
   onEditSettings: () => void;
   onDelete: () => void;
 }) {
-  const { game, checkpoints, members } = useGame();
-  const playerMembers = members.filter((m) => m.role === 'player');
+  const { game, checkpoints } = useGame();
   const [drawing, setDrawing] = useState(false); // rectangle drag
   const [drawingPoly, setDrawingPoly] = useState(false); // polygon draw/edit (#39)
-  const [cpModal, setCpModal] = useState<{ coord: { latitude: number; longitude: number }; edit?: Checkpoint } | null>(null);
+  // Slim placement modal — new checkpoints only (name + icon + radius).
+  const [newCpCoord, setNewCpCoord] = useState<{ latitude: number; longitude: number } | null>(null);
+  // Full behavior editor — for existing checkpoints.
+  const [behaviorCheckpointId, setBehaviorCheckpointId] = useState<string | null>(null);
+  const behaviorCp = checkpoints.find((c) => c.id === behaviorCheckpointId) ?? null;
   const [showRules, setShowRules] = useState(false);
 
   function handleMapClick(coord: { latitude: number; longitude: number }) {
-    setCpModal({ coord });
+    setNewCpCoord(coord);
   }
 
   async function handleBoundaryDrawn(b: MapBoundary) {
@@ -321,7 +328,7 @@ function SetupView({
           drawingBoundary={drawing}
           drawingPolygon={drawingPoly}
           onMapClick={handleMapClick}
-          onCheckpointClick={(cp) => setCpModal({ coord: { latitude: cp.latitude, longitude: cp.longitude }, edit: cp })}
+          onCheckpointClick={(cp) => setBehaviorCheckpointId(cp.id)}
           onBoundaryDrawn={handleBoundaryDrawn}
         />
         {(drawing || drawingPoly) && (
@@ -376,27 +383,26 @@ function SetupView({
         <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <strong>Checkpoints ({checkpoints.length})</strong>
           <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-            Click anywhere on the map to add one.
+            Click the map to place a checkpoint. Click a name to configure its behavior.
           </span>
           {checkpoints.map((cp) => {
             const meta = KIND_META[checkpointKind(cp)];
-            const steps = cp.eventQueue?.length ?? 0;
-            const w = checkpointWindowState(cp);
+            const iconEmoji = checkpointIconEmoji(cp.icon);
             return (
-              <button
-                key={cp.id}
-                className="btn btn--ghost"
-                style={{ justifyContent: 'space-between', padding: '8px 12px' }}
-                onClick={() => setCpModal({ coord: { latitude: cp.latitude, longitude: cp.longitude }, edit: cp })}
-              >
-                <span>
-                  <span style={{ color: meta.color, marginRight: 6 }}>{meta.emoji}</span>
-                  {cp.name}
-                </span>
-                <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-                  {meta.label}{steps > 1 ? ` · ${steps} steps` : ''} · {cp.radius}m{w !== 'always' ? ` · ${w.toUpperCase()}` : ''}
-                </span>
-              </button>
+              <div key={cp.id} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                <button
+                  className="btn btn--ghost"
+                  style={{ flex: 1, justifyContent: 'flex-start', gap: 8, padding: '8px 10px', textAlign: 'left' }}
+                  onClick={() => setBehaviorCheckpointId(cp.id)}
+                >
+                  <span style={{ fontSize: 16, flexShrink: 0 }}>{iconEmoji}</span>
+                  <span style={{ flex: 1, fontWeight: 600 }}>{cp.name}</span>
+                  <span style={{ color: meta.color, fontSize: 11, flexShrink: 0 }}>{meta.emoji}</span>
+                  <span style={{ color: 'var(--text-muted)', fontSize: 11, flexShrink: 0 }}>
+                    {behaviorSummary(cp)} · {cp.radius}m
+                  </span>
+                </button>
+              </div>
             );
           })}
         </div>
@@ -432,14 +438,22 @@ function SetupView({
         </div>
       </aside>
 
-      {cpModal && (
-        <CheckpointModal
+      {newCpCoord && (
+        <NewCheckpointModal
           gameId={gameId}
-          coord={cpModal.coord}
-          edit={cpModal.edit}
+          coord={newCpCoord}
           existingCount={checkpoints.length}
-          players={playerMembers}
-          onClose={() => setCpModal(null)}
+          onClose={(andConfigure) => {
+            setNewCpCoord(null);
+            if (andConfigure) setBehaviorCheckpointId(andConfigure);
+          }}
+        />
+      )}
+      {behaviorCp && (
+        <CheckpointBehaviorModal
+          gameId={gameId}
+          cp={behaviorCp}
+          onClose={() => setBehaviorCheckpointId(null)}
         />
       )}
       {showRules && (
@@ -500,155 +514,37 @@ function AudienceToggle({ value, onChange }: { value: EventAudience; onChange: (
   );
 }
 
-function CheckpointModal({
-  gameId, coord, edit, existingCount, players, onClose,
+/** Slim placement modal — new checkpoints only (name + icon + radius). */
+function NewCheckpointModal({
+  gameId, coord, existingCount, onClose,
 }: {
   gameId: string;
   coord: { latitude: number; longitude: number };
-  edit?: Checkpoint;
   existingCount: number;
-  players: GameMember[];
-  onClose: () => void;
+  onClose: (andConfigure?: string) => void;
 }) {
-  const [name, setName] = useState(edit?.name ?? `Checkpoint ${existingCount + 1}`);
-  const [radius, setRadius] = useState(String(edit?.radius ?? 100));
+  const [name, setName] = useState(`Checkpoint ${existingCount + 1}`);
+  const [radius, setRadius] = useState('100');
+  const [icon, setIcon] = useState(DEFAULT_CHECKPOINT_ICON);
   const [busy, setBusy] = useState(false);
-
-  // Player visibility / reveal (#48) — orthogonal to the event payload.
-  const [visibility, setVisibility] = useState<CheckpointVisibility>(edit?.visibility ?? 'gm-only');
-  const [revealTrigger, setRevealTrigger] = useState<RevealTrigger>(edit?.reveal?.trigger ?? 'on-crossing');
-  const [revealAudience, setRevealAudience] = useState<RevealAudience>(edit?.reveal?.audience ?? 'all');
-  const [revealOffset, setRevealOffset] = useState(edit?.reveal?.offsetMinutes != null ? String(edit.reveal.offsetMinutes) : '');
-  const [recipients, setRecipients] = useState<string[]>(edit?.reveal?.recipientPlayerIds ?? []);
-  const toggleRecipient = (id: string) =>
-    setRecipients((r) => (r.includes(id) ? r.filter((x) => x !== id) : [...r, id]));
-
-  /** Assemble the reveal config, or undefined for gm-only/always. */
-  function buildReveal(): CheckpointReveal | undefined {
-    if (visibility !== 'on-reveal') return undefined;
-    const audience: RevealAudience = revealTrigger === 'on-crossing' ? 'triggerer' : revealAudience;
-    const reveal: CheckpointReveal = { trigger: revealTrigger, audience };
-    if (revealTrigger === 'game-time') reveal.offsetMinutes = Math.max(0, Math.round(Number(revealOffset) || 0));
-    if (audience === 'specific-players') reveal.recipientPlayerIds = recipients;
-    return reveal;
-  }
-
-  // What the checkpoint does. Single mode edits kind/message/audience; queue mode edits
-  // an ordered list (one event per arrival ordinal).
-  const hasQueue = (edit?.eventQueue?.length ?? 0) > 0;
-  const [mode, setMode] = useState<'single' | 'queue'>(hasQueue ? 'queue' : 'single');
-  const [kind, setKind] = useState<CheckpointKind>(edit?.event?.kind ?? 'gm-only');
-  const [message, setMessage] = useState(edit?.event?.message ?? '');
-  const [audience, setAudience] = useState<EventAudience>(edit?.event?.audience ?? 'crossing-player');
-  const [queue, setQueue] = useState<CheckpointEvent[]>(edit?.eventQueue ?? []);
-
-  // Timed site window for a *new* checkpoint (#12). Existing checkpoints write immediately by id
-  // (see windowAction below); a new one has no id yet, so we stage the choice and apply it right
-  // after the doc is created.
-  const [windowChoice, setWindowChoice] = useState<'always' | 'open' | 'closed'>('always');
-
-  const updateQueueItem = (i: number, patch: Partial<CheckpointEvent>) =>
-    setQueue((q) => q.map((e, idx) => (idx === i ? { ...e, ...patch } : e)));
-  const addQueueItem = () => setQueue((q) => [...q, { kind: 'hazard' }]);
-  const removeQueueItem = (i: number) => setQueue((q) => q.filter((_, idx) => idx !== i));
-
-  async function save() {
-    if (!name.trim()) { window.alert('Enter a checkpoint name'); return; }
-    const r = parseInt(radius, 10);
-    if (isNaN(r) || r < 10) { window.alert('Enter a valid radius (minimum 10m)'); return; }
-
-    let event: CheckpointEvent | undefined;
-    let eventQueue: CheckpointEvent[] | undefined;
-    if (mode === 'queue') {
-      if (queue.length === 0) {
-        window.alert('Add at least one step, or switch to “Same for everyone”.');
-        return;
-      }
-      eventQueue = queue.map((e) => buildEvent(e.kind, e.message ?? '', e.audience ?? 'crossing-player'));
-    } else {
-      event = buildEvent(kind, message, audience);
-    }
-
-    const reveal = buildReveal();
-    if (visibility === 'on-reveal' && reveal?.audience === 'specific-players' && recipients.length === 0) {
-      window.alert('Pick at least one player for a sponsor drop, or choose “All players”.');
-      return;
-    }
-    const revealOffsetMins = visibility === 'on-reveal' && revealTrigger === 'game-time'
-      ? Math.max(0, Math.round(Number(revealOffset) || 0))
-      : null;
-
-    setBusy(true);
-    try {
-      let checkpointId = edit?.id;
-      if (edit) {
-        // Clear whichever payload field isn't in use so a checkpoint never carries both.
-        await updateCheckpoint(gameId, edit.id, {
-          name: name.trim(),
-          radius: r,
-          event: (eventQueue ? deleteField() : event) as never,
-          eventQueue: (eventQueue ?? deleteField()) as never,
-          visibility,
-          reveal: (reveal ?? deleteField()) as never,
-        });
-      } else {
-        const created = await addCheckpoint(gameId, {
-          name: name.trim(), latitude: coord.latitude, longitude: coord.longitude, radius: r,
-          visibility,
-          ...(reveal ? { reveal } : {}),
-          ...(eventQueue ? { eventQueue } : { event }),
-        });
-        checkpointId = created.id;
-        // Apply the staged timed-window choice ('always' = leave unset, always live).
-        if (windowChoice === 'open') await openCheckpointNow(gameId, created.id);
-        else if (windowChoice === 'closed') await closeCheckpointNow(gameId, created.id);
-      }
-      // Keep the paired game-time reveal run-sheet row in sync (#48).
-      if (checkpointId) await setRevealSchedule(gameId, checkpointId, revealOffsetMins);
-      onClose();
-    } catch (err) { window.alert(friendlyError(err)); setBusy(false); }
-  }
-
-  async function revealNow() {
-    if (!edit) return;
-    try {
-      await revealCheckpointNow(gameId, edit);
-      window.alert(`${edit.name} is now visible to players.`);
-    } catch (err) { window.alert(friendlyError(err)); }
-  }
-
-  async function remove() {
-    if (!edit) return;
-    if (!window.confirm(`Delete "${edit.name}"? This cannot be undone.`)) return;
-    setBusy(true);
-    try { await deleteCheckpoint(gameId, edit.id); onClose(); }
-    catch (err) { window.alert(friendlyError(err)); setBusy(false); }
-  }
 
   const labelStyle = { fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: 0.5 } as const;
 
-  // Timed site window (#12). Re-derive from live context so the status updates after
-  // an open/close write; the buttons write immediately by id (existing checkpoints only).
-  const { checkpoints: liveCheckpoints } = useGame();
-  const liveCp = edit ? liveCheckpoints.find((c) => c.id === edit.id) ?? edit : null;
-  const windowState = liveCp ? checkpointWindowState(liveCp) : 'always';
-  const windowStatusText = {
-    always: 'Always live — fires whenever a player crosses.',
-    open: 'Open — firing now.',
-    pending: 'Scheduled — not open yet.',
-    closed: 'Closed — not firing.',
-  }[windowState];
-  async function windowAction(action: 'open' | 'close' | 'clear') {
-    if (!edit) return;
+  async function save(andConfigure = false) {
+    if (!name.trim()) { window.alert('Enter a checkpoint name'); return; }
+    const r = parseInt(radius, 10);
+    if (isNaN(r) || r < 10) { window.alert('Enter a valid radius (minimum 10m)'); return; }
+    setBusy(true);
     try {
-      if (action === 'open') await openCheckpointNow(gameId, edit.id);
-      else if (action === 'close') await closeCheckpointNow(gameId, edit.id);
-      else await clearCheckpointWindow(gameId, edit.id);
-    } catch (err) { window.alert(friendlyError(err)); }
+      const created = await addCheckpoint(gameId, {
+        name: name.trim(), latitude: coord.latitude, longitude: coord.longitude, radius: r, icon,
+      });
+      onClose(andConfigure ? created.id : undefined);
+    } catch (err) { window.alert(friendlyError(err)); setBusy(false); }
   }
 
   return (
-    <Modal title={edit ? 'Edit Checkpoint' : 'New Checkpoint'} onClose={onClose}>
+    <Modal title="New Checkpoint" onClose={() => onClose()}>
       <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
         📍 {coord.latitude.toFixed(5)}, {coord.longitude.toFixed(5)}
       </div>
@@ -660,179 +556,397 @@ function CheckpointModal({
         <label>Detection Radius (meters)</label>
         <input className="input" type="number" value={radius} onChange={(e) => setRadius(e.target.value)} />
       </div>
+      <div>
+        <div style={{ ...labelStyle, marginBottom: 8 }}>Map icon</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {Object.entries(CHECKPOINT_ICON_EMOJIS).map(([key, emoji]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setIcon(key)}
+              title={key}
+              style={{
+                width: 40, height: 40, borderRadius: 8, fontSize: 18, cursor: 'pointer',
+                border: `1px solid ${key === icon ? 'var(--primary)' : 'var(--border)'}`,
+                background: key === icon ? 'rgba(212,137,63,0.15)' : 'transparent',
+              }}
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
+      </div>
+      <button className="btn btn--block" onClick={() => save(true)} disabled={busy}>Add &amp; configure</button>
+      <div style={{ display: 'flex', gap: 12 }}>
+        <button className="btn btn--ghost" style={{ flex: 1 }} onClick={() => onClose()} disabled={busy}>Cancel</button>
+        <button className="btn btn--secondary" style={{ flex: 1 }} onClick={() => save(false)} disabled={busy}>Just add</button>
+      </div>
+    </Modal>
+  );
+}
 
+/** Full-screen behavior editor for an existing checkpoint — mirrors the mobile checkpoint/[checkpointId].tsx. */
+function CheckpointBehaviorModal({
+  gameId, cp, onClose,
+}: {
+  gameId: string;
+  cp: Checkpoint;
+  onClose: () => void;
+}) {
+  const { checkpoints: liveCheckpoints, members } = useGame();
+  const liveCp = liveCheckpoints.find((c) => c.id === cp.id) ?? cp;
+  const players = members.filter((m) => m.role === 'player');
+
+  const labelStyle = { fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: 0.5 } as const;
+
+  // Placement fields (also editable here, mirroring mobile's full-screen editor).
+  const [name, setName] = useState(liveCp.name);
+  const [radius, setRadius] = useState(String(liveCp.radius));
+  const [icon, setIcon] = useState(liveCp.icon ?? DEFAULT_CHECKPOINT_ICON);
+
+  // Behavior mode: static (same all game) vs scheduled (changes over time, #54).
+  const hasTransitions = (liveCp.transitions?.length ?? 0) > 0;
+  const [behaviorMode, setBehaviorMode] = useState<'static' | 'scheduled'>(hasTransitions ? 'scheduled' : 'static');
+
+  // Static behavior
+  const hasQueue = (liveCp.eventQueue?.length ?? 0) > 0;
+  const [mode, setMode] = useState<'single' | 'queue'>(hasQueue ? 'queue' : 'single');
+  const [kind, setKind] = useState<CheckpointKind>(liveCp.event?.kind ?? 'gm-only');
+  const [message, setMessage] = useState(liveCp.event?.message ?? '');
+  const [audience, setAudience] = useState<EventAudience>(liveCp.event?.audience ?? 'crossing-player');
+  const [queue, setQueue] = useState<CheckpointEvent[]>(liveCp.eventQueue ?? []);
+
+  // Scheduled behavior (#54)
+  const [initialState, setInitialState] = useState<CheckpointState>(liveCp.initialState ?? 'closed');
+  const [initialMessage, setInitialMessage] = useState('');
+  const [transitions, setTransitions] = useState<CheckpointTransition[]>(
+    [...(liveCp.transitions ?? [])].sort((a, b) => a.atMinute - b.atMinute)
+  );
+
+  // Visibility / reveal (#48)
+  const [visibility, setVisibility] = useState<CheckpointVisibility>(liveCp.visibility ?? 'gm-only');
+  const [revealTrigger, setRevealTrigger] = useState<RevealTrigger>(liveCp.reveal?.trigger ?? 'on-crossing');
+  const [revealAudience, setRevealAudience] = useState<RevealAudience>(liveCp.reveal?.audience ?? 'all');
+  const [revealOffset, setRevealOffset] = useState(liveCp.reveal?.offsetMinutes != null ? String(liveCp.reveal.offsetMinutes) : '');
+  const [recipients, setRecipients] = useState<string[]>(liveCp.reveal?.recipientPlayerIds ?? []);
+  const toggleRecipient = (id: string) =>
+    setRecipients((r) => (r.includes(id) ? r.filter((x) => x !== id) : [...r, id]));
+
+  const [busy, setBusy] = useState(false);
+
+  const updateQueueItem = (i: number, patch: Partial<CheckpointEvent>) =>
+    setQueue((q) => q.map((e, idx) => (idx === i ? { ...e, ...patch } : e)));
+  const addQueueItem = () => setQueue((q) => [...q, { kind: 'hazard' }]);
+  const removeQueueItem = (i: number) => setQueue((q) => q.filter((_, idx) => idx !== i));
+
+  function addTransition() {
+    const lastMin = transitions.length > 0 ? transitions[transitions.length - 1].atMinute + 30 : 30;
+    setTransitions((t) => [...t, { atMinute: lastMin, state: 'boon' }]);
+  }
+  function updateTransition(i: number, patch: Partial<CheckpointTransition>) {
+    setTransitions((t) => t.map((x, idx) => (idx === i ? { ...x, ...patch } : x)));
+  }
+  function removeTransition(i: number) {
+    setTransitions((t) => t.filter((_, idx) => idx !== i));
+  }
+
+  function buildReveal(): CheckpointReveal | undefined {
+    if (visibility !== 'on-reveal') return undefined;
+    const aud: RevealAudience = revealTrigger === 'on-crossing' ? 'triggerer' : revealAudience;
+    const reveal: CheckpointReveal = { trigger: revealTrigger, audience: aud };
+    if (revealTrigger === 'game-time') reveal.offsetMinutes = Math.max(0, Math.round(Number(revealOffset) || 0));
+    if (aud === 'specific-players') reveal.recipientPlayerIds = recipients;
+    return reveal;
+  }
+
+  async function save() {
+    if (!name.trim()) { window.alert('Enter a checkpoint name'); return; }
+    const r = parseInt(radius, 10);
+    if (isNaN(r) || r < 10) { window.alert('Enter a valid radius (minimum 10m)'); return; }
+
+    const reveal = buildReveal();
+    if (visibility === 'on-reveal' && reveal?.audience === 'specific-players' && recipients.length === 0) {
+      window.alert('Pick at least one player for a sponsor drop, or choose "All players".');
+      return;
+    }
+    const revealOffsetMins = visibility === 'on-reveal' && revealTrigger === 'game-time'
+      ? Math.max(0, Math.round(Number(revealOffset) || 0))
+      : null;
+
+    const updates: Record<string, unknown> = {
+      name: name.trim(),
+      radius: r,
+      icon,
+      visibility,
+      reveal: reveal ?? deleteField(),
+    };
+
+    if (behaviorMode === 'scheduled') {
+      if (transitions.length === 0) { window.alert('Add at least one timed change, or switch to "Same all game".'); return; }
+      const cleaned = [...transitions].sort((a, b) => a.atMinute - b.atMinute)
+        .map((t) => ({ atMinute: t.atMinute, state: t.state, ...(t.message ? { message: t.message } : {}) }));
+      updates.initialState = initialState;
+      updates.transitions = cleaned;
+      updates.eventQueue = deleteField();
+      // Make the initial state effective immediately (sweep handles later transitions).
+      Object.assign(updates, stateEventFields(initialState, initialMessage.trim() || undefined));
+    } else {
+      updates.transitions = deleteField();
+      updates.initialState = deleteField();
+      updates.currentState = deleteField();
+      let event: CheckpointEvent | undefined;
+      let eventQueue: CheckpointEvent[] | undefined;
+      if (mode === 'queue') {
+        if (queue.length === 0) { window.alert('Add at least one step, or switch to "Same for everyone".'); return; }
+        eventQueue = queue.map((e) => buildEvent(e.kind, e.message ?? '', e.audience ?? 'crossing-player'));
+      } else {
+        event = buildEvent(kind, message, audience);
+      }
+      updates.event = eventQueue ? deleteField() : event;
+      updates.eventQueue = eventQueue ?? deleteField();
+    }
+
+    setBusy(true);
+    try {
+      await updateCheckpoint(gameId, cp.id, updates as Partial<Omit<Checkpoint, 'id'>>);
+      await setRevealSchedule(gameId, cp.id, revealOffsetMins);
+      onClose();
+    } catch (err) { window.alert(friendlyError(err)); setBusy(false); }
+  }
+
+  async function remove() {
+    if (!window.confirm(`Delete "${liveCp.name}"? This cannot be undone.`)) return;
+    setBusy(true);
+    try { await deleteCheckpoint(gameId, cp.id); onClose(); }
+    catch (err) { window.alert(friendlyError(err)); setBusy(false); }
+  }
+
+  async function revealNow() {
+    try {
+      await revealCheckpointNow(gameId, liveCp);
+      window.alert(`${liveCp.name} is now visible to players.`);
+    } catch (err) { window.alert(friendlyError(err)); }
+  }
+
+  const windowState = checkpointWindowState(liveCp);
+  const windowStatusText = { always: 'Always live — fires whenever a player crosses.', open: 'Open — firing now.', pending: 'Scheduled — not open yet.', closed: 'Closed — not firing.' }[windowState];
+  async function windowAction(action: 'open' | 'close' | 'clear') {
+    try {
+      if (action === 'open') await openCheckpointNow(gameId, cp.id);
+      else if (action === 'close') await closeCheckpointNow(gameId, cp.id);
+      else await clearCheckpointWindow(gameId, cp.id);
+    } catch (err) { window.alert(friendlyError(err)); }
+  }
+
+  return (
+    <Modal title={`${liveCp.name} — Configure`} onClose={onClose}>
+      {/* Placement */}
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+        📍 {liveCp.latitude.toFixed(5)}, {liveCp.longitude.toFixed(5)}
+      </div>
+      <div className="field">
+        <label>Name</label>
+        <input className="input" value={name} autoFocus onChange={(e) => setName(e.target.value)} />
+      </div>
+      <div className="field">
+        <label>Detection Radius (meters)</label>
+        <input className="input" type="number" value={radius} onChange={(e) => setRadius(e.target.value)} />
+      </div>
+      <div>
+        <div style={{ ...labelStyle, marginBottom: 8 }}>Map icon</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {Object.entries(CHECKPOINT_ICON_EMOJIS).map(([key, emoji]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setIcon(key)}
+              title={key}
+              style={{
+                width: 40, height: 40, borderRadius: 8, fontSize: 18, cursor: 'pointer',
+                border: `1px solid ${key === icon ? 'var(--primary)' : 'var(--border)'}`,
+                background: key === icon ? 'rgba(212,137,63,0.15)' : 'transparent',
+              }}
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Behavior mode */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         <span style={labelStyle}>What happens here?</span>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button
-            type="button"
-            className={mode === 'single' ? 'btn' : 'btn btn--ghost'}
-            style={{ flex: 1, padding: '8px 12px' }}
-            onClick={() => setMode('single')}
-          >
-            Same for everyone
-          </button>
-          <button
-            type="button"
-            className={mode === 'queue' ? 'btn' : 'btn btn--ghost'}
-            style={{ flex: 1, padding: '8px 12px' }}
-            onClick={() => setMode('queue')}
-          >
-            By arrival order
-          </button>
+          <button type="button" className={behaviorMode === 'static' ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 12px' }} onClick={() => setBehaviorMode('static')}>Same all game</button>
+          <button type="button" className={behaviorMode === 'scheduled' ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 12px' }} onClick={() => setBehaviorMode('scheduled')}>Changes over time</button>
         </div>
 
-        {mode === 'single' ? (
+        {behaviorMode === 'static' ? (
           <>
-            <KindChips value={kind} onChange={setKind} />
-            {kind !== 'gm-only' && (
-              <textarea
-                className="input"
-                rows={2}
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                placeholder={KIND_META[kind].placeholder}
-                style={{ resize: 'vertical' }}
-              />
-            )}
-            {kind === 'player-notify' && <AudienceToggle value={audience} onChange={setAudience} />}
-            {kind === 'gm-only' && (
-              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                Only you (the GM) are alerted. The player sees nothing.
-              </span>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="button" className={mode === 'single' ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 10px', fontSize: 13 }} onClick={() => setMode('single')}>Same for everyone</button>
+              <button type="button" className={mode === 'queue' ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 10px', fontSize: 13 }} onClick={() => setMode('queue')}>By arrival order</button>
+            </div>
+            {mode === 'single' ? (
+              <>
+                <KindChips value={kind} onChange={setKind} />
+                {kind !== 'gm-only' && <textarea className="input" rows={2} value={message} onChange={(e) => setMessage(e.target.value)} placeholder={KIND_META[kind].placeholder} style={{ resize: 'vertical' }} />}
+                {kind === 'player-notify' && <AudienceToggle value={audience} onChange={setAudience} />}
+                {kind === 'gm-only' && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Only you (the GM) are alerted. The player sees nothing.</span>}
+              </>
+            ) : (
+              <>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Each arriver, in order, triggers the next step. Once the steps run out, later arrivers just ping you.</span>
+                {queue.map((e, i) => (
+                  <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 12, borderRadius: 10, border: '1px solid var(--border)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <strong style={{ fontSize: 13 }}>{ordinalLabel(i)}</strong>
+                      <button type="button" onClick={() => removeQueueItem(i)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 18 }}>✕</button>
+                    </div>
+                    <KindChips value={e.kind} onChange={(k) => updateQueueItem(i, { kind: k })} />
+                    {e.kind !== 'gm-only' && <textarea className="input" rows={2} value={e.message ?? ''} onChange={(ev) => updateQueueItem(i, { message: ev.target.value })} placeholder={KIND_META[e.kind].placeholder} style={{ resize: 'vertical' }} />}
+                    {e.kind === 'player-notify' && <AudienceToggle value={e.audience ?? 'crossing-player'} onChange={(a) => updateQueueItem(i, { audience: a })} />}
+                  </div>
+                ))}
+                <button type="button" className="btn btn--ghost" onClick={addQueueItem}>+ Add step</button>
+              </>
             )}
           </>
         ) : (
+          // Scheduled / time-based transitions (#54)
           <>
             <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-              Each arriver, in order, triggers the next step. Once the steps run out, later arrivers just ping you.
+              The checkpoint starts in one state and flips at set times after Start. A "Closed" state is hidden and won't fire.
             </span>
-            {queue.map((e, i) => (
-              <div
-                key={i}
-                style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 12, borderRadius: 10, border: '1px solid var(--border)' }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <strong style={{ fontSize: 13 }}>{ordinalLabel(i)}</strong>
-                  <button
-                    type="button"
-                    onClick={() => removeQueueItem(i)}
-                    style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 18 }}
-                  >
-                    ✕
-                  </button>
-                </div>
-                <KindChips value={e.kind} onChange={(k) => updateQueueItem(i, { kind: k })} />
-                {e.kind !== 'gm-only' && (
-                  <textarea
-                    className="input"
-                    rows={2}
-                    value={e.message ?? ''}
-                    onChange={(ev) => updateQueueItem(i, { message: ev.target.value })}
-                    placeholder={KIND_META[e.kind].placeholder}
-                    style={{ resize: 'vertical' }}
-                  />
-                )}
-                {e.kind === 'player-notify' && (
-                  <AudienceToggle
-                    value={e.audience ?? 'crossing-player'}
-                    onChange={(a) => updateQueueItem(i, { audience: a })}
-                  />
-                )}
+            <div>
+              <span style={{ ...labelStyle, display: 'block', marginBottom: 6 }}>Starts as</span>
+              <StateChips value={initialState} onChange={setInitialState} />
+              {initialState !== 'closed' && (
+                <input
+                  className="input"
+                  value={initialMessage}
+                  onChange={(e) => setInitialMessage(e.target.value)}
+                  placeholder="Optional message"
+                  style={{ marginTop: 8 }}
+                />
+              )}
+            </div>
+            <div>
+              <span style={{ ...labelStyle, display: 'block', marginBottom: 6 }}>Then changes</span>
+              {transitions.length === 0 && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No timed changes yet.</span>}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {transitions.map((t, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8, flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <input
+                        className="input"
+                        type="number"
+                        value={t.atMinute}
+                        onChange={(e) => updateTransition(i, { atMinute: Math.max(1, Number(e.target.value)) })}
+                        style={{ width: 64, padding: '4px 8px' }}
+                      />
+                      <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>min →</span>
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {STATE_ORDER.map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          onClick={() => updateTransition(i, { state: s })}
+                          style={{
+                            padding: '4px 8px', borderRadius: 12, fontSize: 12, cursor: 'pointer',
+                            border: `1px solid ${t.state === s ? STATE_META[s].color : 'var(--border)'}`,
+                            background: t.state === s ? `${STATE_META[s].color}26` : 'transparent',
+                            color: t.state === s ? STATE_META[s].color : 'var(--text-secondary)',
+                          }}
+                        >
+                          {STATE_META[s].emoji} {STATE_META[s].label}
+                        </button>
+                      ))}
+                    </div>
+                    {t.state !== 'closed' && (
+                      <input
+                        className="input"
+                        value={t.message ?? ''}
+                        onChange={(e) => updateTransition(i, { message: e.target.value })}
+                        placeholder="Message (optional)"
+                        style={{ flex: 1, minWidth: 120, padding: '4px 8px' }}
+                      />
+                    )}
+                    <button type="button" onClick={() => removeTransition(i)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 16, padding: '2px 4px' }}>✕</button>
+                  </div>
+                ))}
               </div>
-            ))}
-            <button type="button" className="btn btn--ghost" onClick={addQueueItem}>+ Add step</button>
+              <button type="button" className="btn btn--ghost" style={{ marginTop: 8 }} onClick={addTransition}>+ Add timed change</button>
+            </div>
           </>
         )}
       </div>
 
-      {/* Player visibility (#48) — orthogonal to the event payload above */}
+      {/* Player visibility (#48) */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <span style={labelStyle}>Player visibility</span>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           {VIS_ORDER.map((v) => {
             const active = v === visibility;
             return (
-              <button
-                key={v}
-                type="button"
-                onClick={() => setVisibility(v)}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 20,
-                  cursor: 'pointer', fontSize: 13, fontWeight: 600,
-                  border: `1px solid ${active ? 'var(--secondary)' : 'var(--border)'}`,
-                  background: active ? 'rgba(90,126,78,0.18)' : 'transparent',
-                  color: active ? 'var(--secondary)' : 'var(--text-secondary)',
-                }}
-              >
+              <button key={v} type="button" onClick={() => setVisibility(v)} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 20, cursor: 'pointer', fontSize: 13, fontWeight: 600, border: `1px solid ${active ? 'var(--secondary)' : 'var(--border)'}`, background: active ? 'rgba(90,126,78,0.18)' : 'transparent', color: active ? 'var(--secondary)' : 'var(--text-secondary)' }}>
                 <span>{VIS_META[v].emoji}</span>{VIS_META[v].label}
               </button>
             );
           })}
         </div>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{VIS_META[visibility].hint}</span>
-
         {visibility === 'on-reveal' && (
           <>
             <span style={labelStyle}>Reveal when</span>
             <div style={{ display: 'flex', gap: 8 }}>
-              {([
-                { v: 'on-crossing', label: 'On crossing' },
-                { v: 'game-time', label: 'At a set time' },
-                { v: 'gm-manual', label: 'When I tap' },
-              ] as { v: RevealTrigger; label: string }[]).map((o) => (
+              {([{ v: 'on-crossing', label: 'On crossing' }, { v: 'game-time', label: 'At a set time' }, { v: 'gm-manual', label: 'When I tap' }] as { v: RevealTrigger; label: string }[]).map((o) => (
                 <button key={o.v} type="button" className={revealTrigger === o.v ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 10px', fontSize: 12 }} onClick={() => setRevealTrigger(o.v)}>{o.label}</button>
               ))}
             </div>
-
-            {revealTrigger === 'on-crossing' && (
-              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Becomes visible to the player who crosses it (a trap they now know).</span>
-            )}
+            {revealTrigger === 'on-crossing' && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Becomes visible to the player who crosses it (a trap they now know).</span>}
             {revealTrigger === 'game-time' && (
               <div className="field">
                 <label>Minutes after start</label>
                 <input className="input" type="number" value={revealOffset} onChange={(e) => setRevealOffset(e.target.value)} placeholder="e.g. 60" />
               </div>
             )}
-
             {revealTrigger !== 'on-crossing' && (
               <>
                 <span style={labelStyle}>Reveal to</span>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  {([
-                    { v: 'all', label: 'All players' },
-                    { v: 'specific-players', label: 'Specific players' },
-                  ] as { v: RevealAudience; label: string }[]).map((o) => (
+                  {([{ v: 'all', label: 'All players' }, { v: 'specific-players', label: 'Specific players' }] as { v: RevealAudience; label: string }[]).map((o) => (
                     <button key={o.v} type="button" className={revealAudience === o.v ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 10px', fontSize: 12 }} onClick={() => setRevealAudience(o.v)}>{o.label}</button>
                   ))}
                 </div>
                 {revealAudience === 'specific-players' && (
-                  players.length === 0 ? (
-                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No players have joined yet — they'll appear here once they do.</span>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, border: '1px solid var(--border)', borderRadius: 10, padding: 8 }}>
-                      {players.map((p) => (
-                        <label key={p.userId} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '4px 6px' }}>
-                          <input type="checkbox" checked={recipients.includes(p.userId)} onChange={() => toggleRecipient(p.userId)} />
-                          <span>{p.displayName}</span>
-                        </label>
-                      ))}
-                    </div>
-                  )
+                  players.length === 0
+                    ? <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No players have joined yet — they'll appear here once they do.</span>
+                    : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, border: '1px solid var(--border)', borderRadius: 10, padding: 8 }}>
+                        {players.map((p) => (
+                          <label key={p.userId} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '4px 6px' }}>
+                            <input type="checkbox" checked={recipients.includes(p.userId)} onChange={() => toggleRecipient(p.userId)} />
+                            <span>{p.displayName}</span>
+                          </label>
+                        ))}
+                      </div>
+                    )
                 )}
               </>
             )}
-
-            {edit && revealTrigger === 'gm-manual' && (
+            {revealTrigger === 'gm-manual' && (
               <button type="button" className="btn btn--secondary" onClick={revealNow}>
-                {edit.revealedAt ? 'Revealed — reveal again' : 'Reveal now'}
+                {liveCp.revealedAt ? 'Revealed — reveal again' : 'Reveal now'}
               </button>
             )}
           </>
         )}
       </div>
 
-      {edit ? (
+      {/* Timed site window — only for static checkpoints; scheduled ones own the window via stateEventFields */}
+      {behaviorMode === 'static' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <span style={labelStyle}>Timed site window</span>
           <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{windowStatusText}</span>
@@ -842,32 +956,41 @@ function CheckpointModal({
             <button type="button" className={windowState === 'always' ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 10px' }} onClick={() => windowAction('clear')}>Always live</button>
           </div>
         </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <span style={labelStyle}>Timed site window</span>
-          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-            {windowChoice === 'open'
-              ? 'Starts open — fires as soon as a player crosses.'
-              : windowChoice === 'closed'
-                ? 'Starts closed — won’t fire until you open it (here or from the run-sheet).'
-                : 'Always live — fires whenever a player crosses.'}
-          </span>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button type="button" className={windowChoice === 'open' ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 10px' }} onClick={() => setWindowChoice('open')}>Start open</button>
-            <button type="button" className={windowChoice === 'closed' ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 10px' }} onClick={() => setWindowChoice('closed')}>Start closed</button>
-            <button type="button" className={windowChoice === 'always' ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 10px' }} onClick={() => setWindowChoice('always')}>Always live</button>
-          </div>
-        </div>
       )}
 
       <div style={{ display: 'flex', gap: 12 }}>
         <button className="btn btn--ghost" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
-        <button className="btn" style={{ flex: 1 }} onClick={save} disabled={busy}>{edit ? 'Save' : 'Add'}</button>
+        <button className="btn" style={{ flex: 1 }} onClick={save} disabled={busy}>Save</button>
       </div>
-      {edit && (
-        <button className="btn btn--danger" onClick={remove} disabled={busy}>Delete checkpoint</button>
-      )}
+      <button className="btn btn--danger" onClick={remove} disabled={busy}>Delete checkpoint</button>
     </Modal>
+  );
+}
+
+function StateChips({ value, onChange }: { value: CheckpointState; onChange: (s: CheckpointState) => void }) {
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+      {STATE_ORDER.map((s) => {
+        const meta = STATE_META[s];
+        const active = s === value;
+        return (
+          <button
+            key={s}
+            type="button"
+            onClick={() => onChange(s)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 20,
+              cursor: 'pointer', fontSize: 13, fontWeight: 600,
+              border: `1px solid ${active ? meta.color : 'var(--border)'}`,
+              background: active ? `${meta.color}26` : 'transparent',
+              color: active ? meta.color : 'var(--text-secondary)',
+            }}
+          >
+            <span>{meta.emoji}</span>{meta.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -941,6 +1064,7 @@ function RunSheetModal({
   const [message, setMessage] = useState('');
   const [checkpointId, setCheckpointId] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
+  const [behaviorCheckpointId, setBehaviorCheckpointId] = useState<string | null>(null);
   const action = runActionFor(actionKey);
 
   function reset() {
@@ -989,12 +1113,47 @@ function RunSheetModal({
   }
   const sorted = [...events].sort((a, b) => (a.offsetMinutes ?? Infinity) - (b.offsetMinutes ?? Infinity));
 
+  const behaviorCp = behaviorCheckpointId ? checkpoints.find((c) => c.id === behaviorCheckpointId) ?? null : null;
+
+  if (behaviorCp) {
+    return (
+      <CheckpointBehaviorModal
+        gameId={gameId}
+        cp={behaviorCp}
+        onClose={() => setBehaviorCheckpointId(null)}
+      />
+    );
+  }
+
   return (
     <Modal title="Run-sheet" onClose={onClose}>
-      <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: 13 }}>
-        Timed actions fire automatically, measured from when you Start the game. They run only while the game is in play.
-      </p>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 240, overflowY: 'auto' }}>
+      {/* Checkpoint hub — mirrors mobile runsheet.tsx */}
+      {checkpoints.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Checkpoints</span>
+          {checkpoints.map((cp) => (
+            <button
+              key={cp.id}
+              type="button"
+              onClick={() => setBehaviorCheckpointId(cp.id)}
+              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderRadius: 8, background: 'var(--card)', border: '1px solid var(--border)', cursor: 'pointer', textAlign: 'left', width: '100%' }}
+            >
+              <span style={{ fontSize: 20 }}>{checkpointIconEmoji(cp.icon)}</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>{cp.name}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{behaviorSummary(cp)}</div>
+              </div>
+              <span style={{ color: 'var(--text-muted)', fontSize: 16 }}>›</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div style={{ borderTop: checkpoints.length > 0 ? '1px solid var(--border)' : 'none', paddingTop: checkpoints.length > 0 ? 12 : 0 }}>
+        <p style={{ margin: '0 0 8px', color: 'var(--text-secondary)', fontSize: 13 }}>
+          Timed actions fire automatically, measured from when you Start the game. They run only while the game is in play.
+        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 240, overflowY: 'auto' }}>
         {sorted.length === 0 && <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>No timed actions yet.</span>}
         {sorted.map((ev) => {
           const a = runActionFor(runKeyForEvent(ev));
@@ -1054,6 +1213,7 @@ function RunSheetModal({
           {editId && <button className="btn btn--ghost" style={{ flex: 1 }} onClick={reset}>Cancel edit</button>}
           <button className="btn" style={{ flex: 1 }} onClick={save} disabled={busy}>{editId ? 'Save action' : 'Add action'}</button>
         </div>
+      </div>
       </div>
     </Modal>
   );
@@ -1317,7 +1477,7 @@ function PlayersModal({
   async function toggleRole(m: GameMember) {
     const newRole = m.role === 'player' ? 'gm' : 'player';
     if (newRole === 'player' && isLastGM(m)) {
-      window.alert('Can’t demote the last GM. Promote another player to GM first — every game needs at least one Game Master.');
+      window.alert(`Can't demote the last GM. Promote another player to GM first — every game needs at least one Game Master.`);
       return;
     }
     const label = newRole === 'gm' ? 'Promote to GM' : 'Demote to Player';
@@ -1327,7 +1487,7 @@ function PlayersModal({
   }
   async function remove(m: GameMember) {
     if (isLastGM(m)) {
-      window.alert('Can’t remove the last GM. Promote another player to GM first — every game needs at least one Game Master.');
+      window.alert(`Can't remove the last GM. Promote another player to GM first — every game needs at least one Game Master.`);
       return;
     }
     if (!window.confirm(`Remove ${m.displayName}? They'll be removed and their location will no longer be tracked.`)) return;
