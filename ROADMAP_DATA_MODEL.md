@@ -44,7 +44,7 @@ Redeploy with `firebase deploy --only firestore:indexes`.
 
 > **Built** (commit `7a03cf4`): the field override above is present in `firestore.indexes.json`.
 
-## 5. SOS persists & must be acknowledged
+## 5. SOS persists & must be acknowledged — ✅ BUILT
 
 ```ts
 export interface GameMember {
@@ -56,6 +56,13 @@ export interface GameMember {
 
 `sosAckAt` is **GM-write-only** (`firestore.rules`). The SOS UI treats `sos === true &&
 sosAckAt == null` as the live, escalating state; nothing auto-clears it.
+
+> **Built:** field added. `ackSos()` (mobile + web) stamps `sosAckAt`; `raiseSos()` nulls it (fresh
+> SOS); `clearSos()` sets `sos:false, sosAckAt:null`. Rule: a player self-update keeps `sosAckAt`
+> unchanged **or** sets it to null, never a timestamp — so a player can't forge an ack but can reset
+> on a re-raise. UI: Acknowledge → Clear two-step with an amber acknowledged state across the GM
+> roster, per-player screen, and web dashboard. `onMemberWrite`'s SOS push/SMS fires only on the
+> `sos` false→true rise, so an ack write doesn't re-alert.
 
 ## 7. Player-left-the-boundary alert — ✅ BUILT
 

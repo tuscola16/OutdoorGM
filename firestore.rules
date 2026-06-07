@@ -78,13 +78,17 @@ service cloud.firestore {
         // A GM may promote/demote/edit any member. A user may update their OWN
         // member doc (mark out, refresh fcmToken, rename) but never change role,
         // userId, or district — that closes the privilege-escalation path and keeps
-        // tribute pairing (district, #10) GM-assigned only.
+        // tribute pairing (district, #10) GM-assigned only. They also can't forge an
+        // SOS acknowledgement (sosAckAt is GM-write-only, #5): a self-update may leave
+        // it unchanged or reset it to null (raising a fresh SOS), never set a timestamp.
         allow update: if isGameGM(gameId)
           || (isSignedIn()
               && request.auth.uid == memberId
               && request.resource.data.role == resource.data.role
               && request.resource.data.userId == resource.data.userId
-              && request.resource.data.get('district', null) == resource.data.get('district', null));
+              && request.resource.data.get('district', null) == resource.data.get('district', null)
+              && (request.resource.data.get('sosAckAt', null) == resource.data.get('sosAckAt', null)
+                  || request.resource.data.get('sosAckAt', null) == null));
 
         // A GM may remove anyone; a user may remove their own membership (leave /
         // delete account).

@@ -53,6 +53,13 @@ dead zone doesn't mean a missed ration (= wrongful starvation) or a silently dro
 **5. SOS persists and must be acknowledged.** A raised SOS escalates and stays open until a GM
 explicitly acks it (`sosAckAt`) — nothing auto-clears it.
 
+> **Built:** `sosAckAt` added to `GameMember`. `ackSos()` (mobile + web `gameService`) stamps it;
+> `raiseSos()` resets it to null so a fresh SOS is live again; `clearSos()` stands the SOS down
+> (`sos:false` + `sosAckAt:null`). `firestore.rules` makes `sosAckAt` GM-write-only (a player
+> self-update may leave it unchanged or null it, never set a timestamp). The live, escalating state
+> is `sos === true && sosAckAt == null`; the GM roster + per-player screen + web dashboard show a
+> two-step **Acknowledge → Clear** with a distinct acknowledged (amber) state. Consumed by item 6.
+
 **6. Block End Game while a player is unaccounted-for.** Refuse End Game (hard override only) when
 a player has an open unacked SOS or hasn't reported a fix in N minutes.
 

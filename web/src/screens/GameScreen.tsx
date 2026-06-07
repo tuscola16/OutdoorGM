@@ -12,7 +12,7 @@ import { stalenessLevel, stalenessColor, formatAgo, STALE_MS } from '@/services/
 import {
   openLobby, reopenSetup, startGame, endGame, updateGameConfig, gameConfig,
   addCheckpoint, updateCheckpoint, deleteCheckpoint,
-  updateMemberRole, removePlayer, eliminatePlayer, clearSos, sendBroadcast,
+  updateMemberRole, removePlayer, eliminatePlayer, clearSos, ackSos, sendBroadcast,
   deleteGame, setGameArchived, reviewRation, rationInterval, setMemberDistrict,
   openCheckpointNow, closeCheckpointNow, clearCheckpointWindow, checkpointWindowState,
   addScheduledEvent, updateScheduledEvent, deleteScheduledEvent,
@@ -186,6 +186,7 @@ export function GameScreen() {
             pendingRations={pendingRations}
             onOpenRations={() => setShowRations(true)}
             onBroadcast={() => setShowBroadcast(true)}
+            onAckSos={(userId) => run(() => ackSos(gameId!, userId))}
             onClearSos={(userId) => run(() => clearSos(gameId!, userId))}
             onOpenPlayers={() => setShowPlayers(true)}
             onEnd={() => {
@@ -1054,7 +1055,7 @@ function PlayView({
   remaining, aliveCount, activeCount, arrivalsCount, notReporting, sosPlayers,
   checkpoints, playerLocations, deathMarkers, boundary, arrivals, members, busy,
   rationsEnabled, pendingRations, onOpenRations,
-  onBroadcast, onClearSos, onOpenPlayers, onEnd,
+  onBroadcast, onAckSos, onClearSos, onOpenPlayers, onEnd,
 }: {
   remaining: number | null;
   aliveCount: number;
@@ -1073,6 +1074,7 @@ function PlayView({
   pendingRations: number;
   onOpenRations: () => void;
   onBroadcast: () => void;
+  onAckSos: (userId: string) => void;
   onClearSos: (userId: string) => void;
   onOpenPlayers: () => void;
   onEnd: () => void;
@@ -1093,16 +1095,25 @@ function PlayView({
           <Stat label="Arrivals" value={String(arrivalsCount)} />
         </div>
 
-        {/* Safety alerts — most urgent, surfaced first. */}
-        {sosPlayers.map((p) => (
-          <div key={p.userId} className="card" style={{ borderColor: 'var(--danger)', background: 'rgba(232,64,42,0.1)', display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 18 }}>🆘</span>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 700, color: 'var(--danger)' }}>{p.displayName} needs assistance</div>
+        {/* Safety alerts — most urgent, surfaced first. Unacked is the live, escalating
+            state (#5); acknowledging stops the escalation but keeps it open until cleared. */}
+        {sosPlayers.map((p) => {
+          const acked = !!p.sosAckAt;
+          return (
+            <div key={p.userId} className="card" style={{ borderColor: acked ? 'var(--warning, #D4893F)' : 'var(--danger)', background: acked ? 'rgba(212,137,63,0.1)' : 'rgba(232,64,42,0.1)', display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 18 }}>🆘</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700, color: acked ? 'var(--warning, #D4893F)' : 'var(--danger)' }}>
+                  {p.displayName} {acked ? 'needs assistance (acknowledged)' : 'needs assistance'}
+                </div>
+              </div>
+              {!acked && (
+                <button className="btn btn--ghost" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => onAckSos(p.userId)}>Acknowledge</button>
+              )}
+              <button className="btn btn--ghost" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => onClearSos(p.userId)}>Clear</button>
             </div>
-            <button className="btn btn--ghost" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => onClearSos(p.userId)}>Clear</button>
-          </div>
-        ))}
+          );
+        })}
 
         {notReporting > 0 && (
           <button
@@ -1289,6 +1300,10 @@ function PlayersModal({
     try { await eliminatePlayer(gameId, m.userId, 'gm-other'); }
     catch (err) { window.alert(friendlyError(err)); }
   }
+  async function acknowledgeSos(m: GameMember) {
+    try { await ackSos(gameId, m.userId); }
+    catch (err) { window.alert(friendlyError(err)); }
+  }
   async function dismissSos(m: GameMember) {
     try { await clearSos(gameId, m.userId); }
     catch (err) { window.alert(friendlyError(err)); }
@@ -1336,7 +1351,7 @@ function PlayersModal({
           const fixMs = lastFixByUser.get(m.userId) ?? null;
           const level = showFix ? stalenessLevel(fixMs == null ? null : now - fixMs) : 'none';
           return (
-            <div key={m.userId} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderColor: m.sos ? 'var(--danger)' : undefined, background: m.sos ? 'rgba(232,64,42,0.08)' : undefined }}>
+            <div key={m.userId} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderColor: m.sos ? (m.sosAckAt ? 'var(--warning, #D4893F)' : 'var(--danger)') : undefined, background: m.sos ? (m.sosAckAt ? 'rgba(212,137,63,0.08)' : 'rgba(232,64,42,0.08)') : undefined }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <span style={{ fontWeight: 700, textDecoration: isOut ? 'line-through' : undefined, color: isOut ? 'var(--text-secondary)' : undefined }}>{m.displayName}</span>
@@ -1356,7 +1371,11 @@ function PlayersModal({
                   )}
                 </div>
                 {m.sos ? (
-                  <div style={{ fontSize: 12, color: 'var(--danger)', fontWeight: 600 }}>🆘 Needs assistance</div>
+                  <div style={{ fontSize: 12, color: m.sosAckAt ? 'var(--warning, #D4893F)' : 'var(--danger)', fontWeight: 600 }}>
+                    {m.sosAckAt ? '🆘 Acknowledged · stand down when resolved' : '🆘 Needs assistance'}
+                  </div>
+                ) : !isGM && !isOut && m.outOfBounds ? (
+                  <div style={{ fontSize: 12, color: 'var(--warning, #D4893F)', fontWeight: 600 }}>🚧 Outside the play area</div>
                 ) : showFix ? (
                   <div style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, color: level === 'stale' ? 'var(--danger)' : 'var(--text-secondary)' }}>
                     <span style={{ width: 8, height: 8, borderRadius: 4, background: stalenessColor(level), display: 'inline-block' }} />
@@ -1372,6 +1391,9 @@ function PlayersModal({
               }}>
                 {isOut ? 'DEAD' : isGM ? 'GM' : 'PLAYER'}
               </span>
+              {m.sos && !m.sosAckAt && (
+                <button className="btn btn--ghost" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => acknowledgeSos(m)}>Acknowledge</button>
+              )}
               {m.sos && (
                 <button className="btn btn--ghost" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => dismissSos(m)}>Clear SOS</button>
               )}

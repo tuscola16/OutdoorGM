@@ -7,7 +7,7 @@ import { useGame } from '@/context/GameContext';
 import { Colors } from '@/constants/colors';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
-import { sendBroadcast, eliminatePlayer, clearSos } from '@/services/gameService';
+import { sendBroadcast, eliminatePlayer, clearSos, ackSos } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
 import { useNow } from '@/hooks/useNow';
 import { stalenessLevel, stalenessColor, formatAgo } from '@/services/locationStatus';
@@ -113,8 +113,15 @@ export default function PlayerDetailScreen() {
             )}
             {member.sos && (
               <View style={styles.sosBanner}>
-                <Ionicons name="alert-circle" size={18} color={Colors.danger} />
-                <Text style={styles.sosText}>Needs assistance</Text>
+                <Ionicons name="alert-circle" size={18} color={member.sosAckAt ? Colors.warning : Colors.danger} />
+                <Text style={[styles.sosText, member.sosAckAt ? styles.sosAckedText : null]}>
+                  {member.sosAckAt ? 'Acknowledged' : 'Needs assistance'}
+                </Text>
+                {!member.sosAckAt && (
+                  <TouchableOpacity onPress={() => ackSos(gameId!, member.userId).catch(() => {})}>
+                    <Text style={styles.ackSos}>Acknowledge</Text>
+                  </TouchableOpacity>
+                )}
                 <TouchableOpacity onPress={() => clearSos(gameId!, member.userId).catch(() => {})}>
                   <Text style={styles.clearSos}>Clear</Text>
                 </TouchableOpacity>
@@ -166,6 +173,8 @@ const styles = StyleSheet.create({
     borderTopWidth: 1, borderTopColor: Colors.border,
   },
   sosText: { flex: 1, color: Colors.danger, fontWeight: '700', fontSize: 14 },
+  sosAckedText: { color: Colors.warning },
+  ackSos: { color: Colors.warning, fontWeight: '700', fontSize: 13, marginRight: 14 },
   clearSos: { color: Colors.textSecondary, fontWeight: '700', fontSize: 13 },
   sectionLabel: { color: Colors.textSecondary, fontSize: 13, fontWeight: '500', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 8 },
   hint: { color: Colors.textMuted, fontSize: 12, lineHeight: 17 },

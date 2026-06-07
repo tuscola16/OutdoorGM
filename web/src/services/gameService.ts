@@ -171,9 +171,21 @@ export async function markPlayerOut(gameId: string, userId: string): Promise<voi
   await eliminatePlayer(gameId, userId, 'self');
 }
 
-/** GM clears a resolved safety alert (Rules 22, 27, 28). */
+/** GM acknowledges a safety alert (#5): stamps `sosAckAt` so it stops being the live,
+ * escalating state but the SOS stays open until cleared. GM-write-only (firestore.rules). */
+export async function ackSos(gameId: string, userId: string): Promise<void> {
+  await updateDoc(doc(db, Collections.GAMES, gameId, Collections.MEMBERS, userId), {
+    sosAckAt: serverTimestamp(),
+  });
+}
+
+/** GM stands down a resolved safety alert (Rules 22, 27, 28); clears the flag and the
+ * acknowledgement so the next SOS starts clean (#5). */
 export async function clearSos(gameId: string, userId: string): Promise<void> {
-  await updateDoc(doc(db, Collections.GAMES, gameId, Collections.MEMBERS, userId), { sos: false });
+  await updateDoc(doc(db, Collections.GAMES, gameId, Collections.MEMBERS, userId), {
+    sos: false,
+    sosAckAt: null,
+  });
 }
 
 /** GM sends a one-way message to players. Omit `targetPlayerId` to broadcast to

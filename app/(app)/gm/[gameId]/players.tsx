@@ -8,7 +8,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useGame } from '@/context/GameContext';
 import { Colors } from '@/constants/colors';
-import { updateMemberRole, removePlayer, eliminatePlayer, clearSos, setMemberDistrict } from '@/services/gameService';
+import { updateMemberRole, removePlayer, eliminatePlayer, clearSos, ackSos, setMemberDistrict } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
 import { useNow } from '@/hooks/useNow';
 import { stalenessLevel, stalenessColor, formatAgo } from '@/services/locationStatus';
@@ -149,6 +149,15 @@ export default function PlayersScreen() {
     );
   }
 
+  async function handleAckSos(member: GameMember) {
+    if (!gameId) return;
+    try {
+      await ackSos(gameId, member.userId);
+    } catch (err) {
+      Alert.alert('Error', friendlyError(err));
+    }
+  }
+
   async function handleClearSos(member: GameMember) {
     if (!gameId) return;
     try {
@@ -161,6 +170,9 @@ export default function PlayersScreen() {
   function renderMember({ item }: { item: GameMember }) {
     const isGM = item.role === 'gm';
     const isOut = !!item.out;
+    // SOS state (#5): live & escalating until a GM acks (sosAckAt). Ack stops the
+    // escalation but keeps the SOS open; Clear stands it down.
+    const sosAcked = !!item.sosAckAt;
     // Stale-fix indicator: only meaningful for a living player during active play
     // (out players intentionally stop reporting; GMs aren't tracked).
     const showFix = !isGM && !isOut && phase === 'play';
@@ -168,7 +180,7 @@ export default function PlayersScreen() {
     const fixMs = lastFixByUser.get(item.userId) ?? null;
     const level = showFix ? stalenessLevel(fixMs == null ? null : now - fixMs) : 'none';
     return (
-      <View style={[styles.row, item.sos ? styles.sosRow : null]}>
+      <View style={[styles.row, item.sos ? (sosAcked ? styles.sosAckedRow : styles.sosRow) : null]}>
         <View style={[styles.avatar, isGM ? styles.gmAvatar : styles.playerAvatar, isOut ? styles.outAvatar : null]}>
           <Text style={styles.avatarText}>
             {item.displayName.charAt(0).toUpperCase()}
@@ -190,7 +202,11 @@ export default function PlayersScreen() {
             )}
           </View>
           {item.sos ? (
-            <Text style={styles.sosLabel}>🆘 Needs assistance — tap the alert icon to clear</Text>
+            <Text style={[styles.sosLabel, sosAcked && styles.sosAckedLabel]}>
+              {sosAcked
+                ? '🆘 Acknowledged · stand down when resolved'
+                : '🆘 Needs assistance — tap ✓ to acknowledge'}
+            </Text>
           ) : !isGM && !isOut && item.outOfBounds ? (
             <Text style={styles.oobLabel}>🚧 Outside the play area</Text>
           ) : showFix ? (
@@ -225,9 +241,15 @@ export default function PlayersScreen() {
           </View>
         )}
 
+        {item.sos && !sosAcked && (
+          <TouchableOpacity onPress={() => handleAckSos(item)} style={styles.iconBtn}>
+            <Ionicons name="checkmark-circle" size={24} color={Colors.warning} />
+          </TouchableOpacity>
+        )}
+
         {item.sos && (
           <TouchableOpacity onPress={() => handleClearSos(item)} style={styles.iconBtn}>
-            <Ionicons name="alert-circle" size={24} color={Colors.danger} />
+            <Ionicons name={sosAcked ? 'close-circle' : 'alert-circle'} size={24} color={Colors.danger} />
           </TouchableOpacity>
         )}
 
@@ -375,6 +397,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   sosRow: { borderColor: Colors.danger, backgroundColor: Colors.danger + '14' },
+  sosAckedRow: { borderColor: Colors.warning, backgroundColor: Colors.warning + '12' },
+  sosAckedLabel: { color: Colors.warning },
   outAvatar: { opacity: 0.5 },
   outName: { textDecorationLine: 'line-through', color: Colors.textSecondary },
   sosLabel: { fontSize: 12, color: Colors.danger, marginTop: 1, fontWeight: '600' },

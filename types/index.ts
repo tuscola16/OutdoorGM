@@ -269,6 +269,13 @@ export interface GameMember {
   sosAt?: FsTimestamp | null;
   sosLocation?: { latitude: number; longitude: number } | null;
   /**
+   * GM acknowledged this member's SOS (ROADMAP #5). The SOS stays the live, escalating
+   * state — `sos === true && sosAckAt == null` — until a GM sets this; nothing auto-clears
+   * it. GM-write-only (firestore.rules); raising a fresh SOS resets it to null. Blocks End
+   * Game while any player has an open, unacked SOS (#6).
+   */
+  sosAckAt?: FsTimestamp | null;
+  /**
    * Latched true while the player is outside `game.boundary` (ROADMAP #7). Set by the
    * geofence Cloud Function on exit (fires the GM alert once) and cleared on re-entry,
    * so a player straying outside the play area pings the GM exactly once per excursion.

@@ -165,7 +165,8 @@ export async function setDeathLocation(
 }
 
 /** Raise a safety alert to the GM (Rules 22, 27, 28). The onMemberWrite function
- * pushes the alert + the player's location to all GMs. */
+ * pushes the alert + the player's location to all GMs. Resets `sosAckAt` so a fresh
+ * SOS starts as the live, unacknowledged state (#5) even if a prior one was acked. */
 export async function raiseSos(
   gameId: string,
   userId: string,
@@ -180,17 +181,31 @@ export async function raiseSos(
       sos: true,
       sosAt: firestore.FieldValue.serverTimestamp(),
       sosLocation: coords ?? null,
+      sosAckAt: null,
     });
 }
 
-/** GM clears a resolved safety alert. */
+/** GM acknowledges a safety alert (#5): stamps `sosAckAt` so it stops being the live,
+ * escalating state but the SOS record stays open (the GM still resolves it with
+ * `clearSos`). GM-write-only — players can't forge an ack (firestore.rules). */
+export async function ackSos(gameId: string, userId: string): Promise<void> {
+  await firestore()
+    .collection(Collections.GAMES)
+    .doc(gameId)
+    .collection(Collections.MEMBERS)
+    .doc(userId)
+    .update({ sosAckAt: firestore.FieldValue.serverTimestamp() });
+}
+
+/** GM stands down a resolved safety alert: clears the flag and the acknowledgement so
+ * the next SOS starts clean (#5). */
 export async function clearSos(gameId: string, userId: string): Promise<void> {
   await firestore()
     .collection(Collections.GAMES)
     .doc(gameId)
     .collection(Collections.MEMBERS)
     .doc(userId)
-    .update({ sos: false });
+    .update({ sos: false, sosAckAt: null });
 }
 
 /** GM sends a one-way message to players. Omit `targetPlayerId` to broadcast to
