@@ -141,7 +141,7 @@ export default function RationsScreen() {
                 {item.status === 'valid' && <Text style={styles.statusValid}>✓ Accepted</Text>}
                 {item.status === 'rejected' && <Text style={styles.statusRejected}>✕ Rejected</Text>}
               </View>
-              {item.status === 'pending' ? (
+              {item.status === 'pending' && (
                 <View style={styles.actions}>
                   <TouchableOpacity
                     style={[styles.actionBtn, styles.rejectBtn]}
@@ -158,16 +158,6 @@ export default function RationsScreen() {
                     <Ionicons name="checkmark" size={20} color={Colors.success} />
                   </TouchableOpacity>
                 </View>
-              ) : (
-                <TouchableOpacity
-                  style={styles.undoBtn}
-                  disabled={busyId === item.id}
-                  onPress={() => review(item, item.status === 'valid' ? 'rejected' : 'valid')}
-                >
-                  <Text style={styles.undoText}>
-                    {item.status === 'valid' ? 'Reject' : 'Accept'}
-                  </Text>
-                </TouchableOpacity>
               )}
             </View>
           );
@@ -227,8 +217,6 @@ const styles = StyleSheet.create({
   },
   rejectBtn: { borderColor: Colors.danger },
   validBtn: { borderColor: Colors.success },
-  undoBtn: { paddingHorizontal: 12, paddingVertical: 8 },
-  undoText: { color: Colors.textSecondary, fontSize: 13, fontWeight: '600' },
   empty: { alignItems: 'center', justifyContent: 'center', gap: 10, paddingTop: 64 },
   emptyText: { color: Colors.textMuted, fontSize: 14 },
   lightboxOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center', gap: 16 },

@@ -1478,20 +1478,11 @@ function RationsModal({
                 {r.status === 'valid' && <div style={{ color: 'var(--success)', fontSize: 12, fontWeight: 600 }}>✓ Accepted</div>}
                 {r.status === 'rejected' && <div style={{ color: 'var(--danger)', fontSize: 12, fontWeight: 600 }}>✕ Rejected</div>}
               </div>
-              {r.status === 'pending' ? (
+              {r.status === 'pending' && (
                 <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
                   <button className="btn btn--ghost" style={{ padding: '6px 10px' }} disabled={busyId === r.id} onClick={() => review(r, 'rejected')}>Reject</button>
                   <button className="btn" style={{ padding: '6px 10px' }} disabled={busyId === r.id} onClick={() => review(r, 'valid')}>Accept</button>
                 </div>
-              ) : (
-                <button
-                  className="btn btn--ghost"
-                  style={{ padding: '6px 10px', flexShrink: 0 }}
-                  disabled={busyId === r.id}
-                  onClick={() => review(r, r.status === 'valid' ? 'rejected' : 'valid')}
-                >
-                  {r.status === 'valid' ? 'Reject' : 'Accept'}
-                </button>
               )}
             </div>
           );

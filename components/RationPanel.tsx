@@ -108,6 +108,28 @@ export function RationPanel({
     );
   }
 
+  // Approved: treat the window as effectively closed for this player — no more captures.
+  if (status === 'valid') {
+    const hasNext = intervalIndex + 1 < interval.total;
+    const nextOpensInSecs = hasNext
+      ? Math.max(0, Math.floor((interval.windowStartsAt + config.rationIntervalMinutes * 60_000 - now) / 1000))
+      : null;
+    return (
+      <View style={[styles.card, styles.cardClosed]}>
+        <View style={styles.headerRow}>
+          <Ionicons name="checkmark-circle" size={18} color={Colors.success} />
+          <Text style={styles.titleMuted}>Ration check</Text>
+          <View style={{ flex: 1 }} />
+          {nextOpensInSecs != null && (
+            <Text style={styles.countdown}>next in {formatDuration(nextOpensInSecs)}</Text>
+          )}
+        </View>
+        <Text style={styles.statusApproved}>Ration accepted — you're fed this window.</Text>
+        {notifDebug ? <Text style={styles.debug}>{notifDebug}</Text> : null}
+      </View>
+    );
+  }
+
   const remainingSecs = Math.max(0, Math.floor((interval.windowEndsAt - now) / 1000));
 
   // Open the in-app camera (CameraCapture). Using our own camera view instead of
@@ -166,7 +188,7 @@ export function RationPanel({
     }
   }
 
-  const submitted = status === 'pending' || status === 'valid';
+  const submitted = status === 'pending';
   const danger = remainingSecs <= 5 * 60 && !submitted;
 
   return (
@@ -180,12 +202,7 @@ export function RationPanel({
         </Text>
       </View>
 
-      {status === 'valid' ? (
-        <View style={styles.statusRow}>
-          <Ionicons name="checkmark-circle" size={20} color={Colors.success} />
-          <Text style={styles.statusValid}>Ration accepted — you're fed this window.</Text>
-        </View>
-      ) : status === 'pending' ? (
+      {status === 'pending' ? (
         <View style={styles.statusRow}>
           <ActivityIndicator size="small" color={Colors.primary} />
           <Text style={styles.statusPending}>Sent — waiting for your Game Master to verify.</Text>
@@ -253,6 +270,7 @@ const styles = StyleSheet.create({
   countdownDanger: { color: Colors.danger },
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   statusValid: { color: Colors.success, fontSize: 14, fontWeight: '600', flex: 1 },
+  statusApproved: { color: Colors.success, fontSize: 14, fontWeight: '600' },
   statusPending: { color: Colors.textSecondary, fontSize: 14, flex: 1 },
   rejected: { color: Colors.danger, fontSize: 13, fontWeight: '600' },
   hint: { color: Colors.textSecondary, fontSize: 13, lineHeight: 18 },
