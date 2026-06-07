@@ -324,14 +324,16 @@ export default function PlayerGameScreen() {
         {
           text: 'Send alert',
           style: 'destructive',
-          onPress: async () => {
+          onPress: () => {
             if (!gameId || !user) return;
-            try {
-              await raiseSos(gameId, user.uid);
-              Alert.alert('Alert sent', 'The Game Master has been notified and can see your location.');
-            } catch (err) {
-              Alert.alert('Error', friendlyError(err));
-            }
+            // Fire-and-persist (#4): Firestore offline persistence durably queues the
+            // write and delivers it on reconnect, so confirm immediately rather than
+            // blocking on the network — a safety alert must feel instant in a dead zone.
+            raiseSos(gameId, user.uid).catch((err) => console.error('[SOS] raiseSos failed', err));
+            Alert.alert(
+              'Alert sent',
+              "The Game Master has been notified and can see your location. If you're offline, it sends the moment you reconnect."
+            );
           },
         },
       ]

@@ -15,7 +15,14 @@ initAppCheck();
 // unavailable) throws and aborts the whole write — which silently dropped member
 // docs and made games disappear from "My Games". Must run before any other
 // Firestore use (this module is the first to touch firestore()).
-firestore().settings({ ignoreUndefinedProperties: true });
+//
+// `persistence: true` is the RN-Firebase default, set explicitly here for #4
+// (offline / poor-signal resilience): location, ration-doc, and SOS writes are
+// applied to the on-device cache immediately and the SDK flushes them to the
+// server when connectivity returns — so a dead zone never silently drops a fix or
+// a safety alert. The one write the SDK can't queue is the ration *photo* upload
+// (Firebase Storage), which has its own durable retry in services/rationQueue.ts.
+firestore().settings({ ignoreUndefinedProperties: true, persistence: true });
 
 if (__DEV__ && process.env.EXPO_PUBLIC_USE_EMULATOR === 'true') {
   // The emulators run on the dev machine. How the app reaches that machine depends

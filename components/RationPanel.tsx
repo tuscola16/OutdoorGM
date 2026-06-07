@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, TextInput, Alert, ActivityIndicator, Keyboard } from 'react-native';
+import { View, Text, StyleSheet, TextInput, Alert, ActivityIndicator, Keyboard, AppState } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Notifications from 'expo-notifications';
 import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
 import { Collections } from '@/services/firebase';
 import { submitRation, rationInterval } from '@/services/gameService';
 import { uploadRationPhoto } from '@/services/storage';
+import { enqueueRation, flushRationQueue } from '@/services/rationQueue';
 import { friendlyError } from '@/services/errorUtils';
 import { useNow } from '@/hooks/useNow';
 import { formatDuration } from '@/hooks/useElapsed';
@@ -45,6 +46,9 @@ export function RationPanel({
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<RationStatus | null>(null);
   const [showCamera, setShowCamera] = useState(false);
+  // The interval whose capture is sitting in the offline retry queue (#4) — drives the
+  // "saved offline" interim state until the flush succeeds (status then becomes pending).
+  const [offlineForInterval, setOfflineForInterval] = useState<number | null>(null);
   // On-screen diagnostics so a field tester can see what the camera + reminder
   // scheduling actually did, without needing a logcat. Surfaced as muted lines.
   const [camDebug, setCamDebug] = useState('');
@@ -70,6 +74,18 @@ export function RationPanel({
         (err) => console.error('[RationPanel] submission listener error', err)
       );
   }, [gameId, player.userId, intervalIndex]);
+
+  // Flush any ration captures queued while offline (#4): once on mount and whenever the
+  // app returns to the foreground (the most likely moment signal has come back). A
+  // successful flush writes the submission doc, so the listener above flips status to
+  // 'pending' and the panel leaves its "saved offline" state on its own.
+  useEffect(() => {
+    flushRationQueue().catch(() => {});
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') flushRationQueue().catch(() => {});
+    });
+    return () => sub.remove();
+  }, []);
 
   // Alert the player the moment each future eat-window opens — scheduled as local
   // notifications so they fire even when the app is backgrounded or the phone is locked.
@@ -185,20 +201,38 @@ export function RationPanel({
     setShowCamera(false);
     setBusy(true);
     setCamDebug('uploading…');
+    const card = requireCard ? cardNumber.trim() : cardNumber.trim() || undefined;
     try {
       const url = await uploadRationPhoto(gameId, player.userId, intervalIndex!, uri);
-      await submitRation(
-        gameId,
-        player,
-        intervalIndex!,
-        url,
-        requireCard ? cardNumber.trim() : cardNumber.trim() || undefined
-      );
+      await submitRation(gameId, player, intervalIndex!, url, card);
       setCardNumber('');
+      setOfflineForInterval(null);
       setCamDebug('submitted ✓');
     } catch (err) {
-      setCamDebug(`error: ${err instanceof Error ? err.message : String(err)}`);
-      Alert.alert('Could not submit', friendlyError(err));
+      // Offline / poor signal (#4): the Storage upload isn't SDK-queued, so persist the
+      // capture durably and flush on reconnect/foreground — a dead zone shouldn't cost
+      // the player a ration (= wrongful starvation).
+      try {
+        await enqueueRation({
+          gameId,
+          userId: player.userId,
+          displayName: player.displayName,
+          intervalIndex: intervalIndex!,
+          localUri: uri,
+          cardNumber: card,
+          queuedAt: Date.now(),
+        });
+        setCardNumber('');
+        setOfflineForInterval(intervalIndex!);
+        setCamDebug('saved offline — will upload when you reconnect');
+        Alert.alert(
+          'Saved offline',
+          "No signal right now — your ration photo is saved and uploads automatically when you're back online."
+        );
+      } catch (qerr) {
+        setCamDebug(`error: ${err instanceof Error ? err.message : String(err)}`);
+        Alert.alert('Could not submit', friendlyError(err));
+      }
     } finally {
       setBusy(false);
     }
@@ -227,6 +261,13 @@ export function RationPanel({
         <View style={styles.statusRow}>
           <ActivityIndicator size="small" color={Colors.primary} />
           <Text style={styles.statusPending}>Sent — waiting for your Game Master to verify.</Text>
+        </View>
+      ) : offlineForInterval === intervalIndex ? (
+        <View style={styles.statusRow}>
+          <Ionicons name="cloud-offline-outline" size={20} color={Colors.warning} />
+          <Text style={styles.statusPending}>
+            Saved offline — your ration photo uploads automatically when you reconnect.
+          </Text>
         </View>
       ) : (
         <>

@@ -50,6 +50,15 @@ the SOS must degrade to SMS (Twilio) so an injured player can always reach the G
 **4. Offline / poor-signal resilience.** Queue location/ration writes and flush on reconnect, so a
 dead zone doesn't mean a missed ration (= wrongful starvation) or a silently dropped SOS.
 
+> **Built** (SDK + thin retry): Firestore offline persistence is made explicit in
+> `services/firebase.ts` (`persistence: true`) — location, ration-doc, and SOS writes are cached
+> on-device and flushed on reconnect by the SDK, so none are silently dropped. The one write the SDK
+> can't queue is the ration **photo** upload (Firebase Storage); `services/rationQueue.ts` is a
+> durable AsyncStorage-backed retry for it — a failed submit persists the capture and `RationPanel`
+> flushes it on mount + app-foreground, showing a "saved offline" state until it lands (idempotent
+> via the deterministic submission id). The player SOS button now confirms optimistically (the write
+> is durably queued), so it feels instant in a dead zone and still reaches the GM on reconnect.
+
 **5. SOS persists and must be acknowledged.** A raised SOS escalates and stays open until a GM
 explicitly acks it (`sosAckAt`) — nothing auto-clears it.
 

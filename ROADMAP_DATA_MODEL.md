@@ -222,7 +222,7 @@ verified. Add a per-UID throttle to `joinGameByCode`: an internal, admin-SDK-onl
 These items are pure logic, rules, client architecture, or ops — no new fields or collections:
 
 - **3** ✅ BUILT — SOS → SMS fallback: `handleSos` (`members.ts`) fires GM push + Twilio SMS in parallel on every raised SOS; the SOS-write-must-land link is covered by item 4.
-- **4** Offline resilience — client write-queue + flush on reconnect.
+- **4** ✅ BUILT — Offline resilience (SDK + thin retry): explicit Firestore `persistence: true` (`firebase.ts`) queues location/ration-doc/SOS writes; `services/rationQueue.ts` durably retries the Storage ration-photo upload (the one non-SDK-queued write); the SOS button confirms optimistically.
 - **6** ✅ BUILT — Block End Game while unaccounted-for: `unaccountedPlayers()` (`locationStatus.ts`, mobile + web) flags living players with an open unacked SOS or no fix within `STALE_MS`; the End-Game handler hard-warns with an "End anyway" override. Client guard (trusted GMs).
 - **8** ✅ BUILT — Winner detection GM-exclusion: every roster pass in `members.ts` filters `role !== 'gm'`, so a sole-GM survivor is the zero-survivor "no winner" path.
 - **9** ✅ BUILT — Crossing-player double-push: `onLocationUpdate` (`geofence.ts`) drops the crossing player's `fcmToken` from `gmTokens`. `allPlayerTokens` is left intact (the crosser is a legitimate all-players recipient and that audience has no separate direct push, so no double occurs).
