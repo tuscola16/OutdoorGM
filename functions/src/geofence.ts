@@ -39,6 +39,64 @@ function resolveAudience(event: CheckpointEvent): EventAudience {
   }
 }
 
+// Play-area boundary (#7), mirrored from types/index.ts MapBoundary. A polygon (≥3
+// verts) wins when present; otherwise the min/max rectangle is used.
+interface MapBoundary {
+  minLat: number;
+  maxLat: number;
+  minLng: number;
+  maxLng: number;
+  polygon?: { latitude: number; longitude: number }[];
+}
+
+/** Ray-casting point-in-polygon test (#39's geofence half, used by #7). `poly` is an
+ * ordered ring of {latitude, longitude}; longitude is x, latitude is y. */
+function pointInPolygon(
+  lat: number,
+  lng: number,
+  poly: { latitude: number; longitude: number }[]
+): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const yi = poly[i].latitude;
+    const xi = poly[i].longitude;
+    const yj = poly[j].latitude;
+    const xj = poly[j].longitude;
+    const intersects =
+      yi > lat !== yj > lat && lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+/** Is a coordinate inside the play area? Polygon (≥3 verts) wins; else the bbox (#7). */
+function pointInBoundary(lat: number, lng: number, b: MapBoundary): boolean {
+  if (Array.isArray(b.polygon) && b.polygon.length >= 3) {
+    return pointInPolygon(lat, lng, b.polygon);
+  }
+  return lat >= b.minLat && lat <= b.maxLat && lng >= b.minLng && lng <= b.maxLng;
+}
+
+/** GM FCM tokens + phones for a game, optionally excluding one token (the crossing
+ * player's own device, #9). One read; reused by the boundary-exit alert (#7). */
+async function getGmRecipients(
+  db: admin.firestore.Firestore,
+  gameId: string,
+  excludeToken?: string
+): Promise<{ tokens: string[]; phones: string[] }> {
+  const snap = await db
+    .collection('games').doc(gameId).collection('members')
+    .where('role', '==', 'gm').get();
+  const tokens: string[] = [];
+  const phones: string[] = [];
+  for (const d of snap.docs) {
+    const m = d.data();
+    if (m.fcmToken && m.fcmToken !== excludeToken) tokens.push(m.fcmToken as string);
+    if (m.phone) phones.push(m.phone as string);
+  }
+  return { tokens, phones };
+}
+
 /** Haversine formula — returns distance in meters between two coordinates. */
 function distanceMeters(
   lat1: number, lng1: number,
@@ -125,6 +183,35 @@ export const onLocationUpdate = functions
 
     const db = admin.firestore();
     const arrivalsCol = db.collection('games').doc(gameId).collection('arrivals');
+
+    // Player-left-the-boundary alert (#7). Runs before the checkpoint work so it fires
+    // even in a game with zero checkpoints. A per-member `outOfBounds` latch flips on the
+    // boundary transition, so the GM is pinged exactly once on exit and once on re-entry
+    // (no per-fix spam). Reuses gameData/memberSnap already in hand — no extra reads on
+    // the steady-state in-bounds path; a read for GM recipients happens only on a flip.
+    const boundary = gameData.boundary as MapBoundary | undefined;
+    if (boundary) {
+      const inside = pointInBoundary(location.latitude, location.longitude, boundary);
+      const wasOut = memberSnap.data()?.outOfBounds === true;
+      if (!inside && !wasOut) {
+        await memberSnap.ref.update({ outOfBounds: true });
+        const { tokens, phones } = await getGmRecipients(db, gameId, playerFcmToken);
+        const body = `${location.displayName} left the play area`;
+        await Promise.allSettled([
+          sendPushToTokens(tokens, '🚧 Player left the area', body, 'arrivals'),
+          sendArrivalSMS(phones, `BOUNDARY: ${body}`),
+        ]);
+      } else if (inside && wasOut) {
+        await memberSnap.ref.update({ outOfBounds: false });
+        const { tokens } = await getGmRecipients(db, gameId, playerFcmToken);
+        await sendPushToTokens(
+          tokens,
+          '✅ Back in the area',
+          `${location.displayName} re-entered the play area`,
+          'arrivals'
+        );
+      }
+    }
 
     // Fetch checkpoints (cached, #29) and this player's existing arrivals (always fresh)
     // in parallel — they're independent, so this trims the trigger's wall-time.
@@ -284,7 +371,15 @@ export const onLocationUpdate = functions
 
     for (const gmDoc of gmsSnap.docs) {
       const gm = gmDoc.data();
-      if (gm.fcmToken) gmTokens.push(gm.fcmToken as string);
+      // Never push GM-internal text to the crossing player's own device (#9). On a
+      // device signed into both a player and a GM account, both member docs carry the
+      // same per-install FCM token, so an unfiltered GM alert would land on the crosser —
+      // a double push (alongside their player-facing push) that also leaks GM-only text
+      // ("X hit a hazard at Y"). Dropping their token from gmTokens is sufficient: the
+      // crossing player still gets their crossing-player push directly, and the
+      // all-players push (where the crosser is a legitimate recipient, with no separate
+      // direct push) via allPlayerTokens — so exactly one push reaches the device.
+      if (gm.fcmToken && gm.fcmToken !== playerFcmToken) gmTokens.push(gm.fcmToken as string);
       if (gm.phone) gmPhones.push(gm.phone as string);
     }
 

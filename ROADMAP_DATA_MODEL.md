@@ -57,7 +57,7 @@ export interface GameMember {
 `sosAckAt` is **GM-write-only** (`firestore.rules`). The SOS UI treats `sos === true &&
 sosAckAt == null` as the live, escalating state; nothing auto-clears it.
 
-## 7. Player-left-the-boundary alert
+## 7. Player-left-the-boundary alert — ✅ BUILT
 
 ```ts
 export interface GameMember {
@@ -70,6 +70,12 @@ export interface GameMember {
 The location/geofence function sets `outOfBounds` when a player leaves `game.boundary` and emits a
 GM-only alert (reuses the existing GM broadcast/push path — no new collection). Clears when they
 re-enter. With item 39's polygon, the in/out test becomes point-in-polygon.
+
+> **Built:** `outOfBounds` added to `GameMember` (`types/index.ts`). `onLocationUpdate`
+> (`geofence.ts`) latches it on the boundary transition and pushes/SMSes the GMs on exit (and a
+> quiet push on re-entry), excluding the crossing player's own token (#9). The in/out test is
+> `pointInBoundary` → ray-cast `pointInPolygon` when `polygon` is set, else the bbox; this is the
+> geofence half of #39's point-in-polygon. GM roster shows a "🚧 Outside the play area" flag.
 
 ## 11. Auto-starvation sweep *(function logic; no new schema)*
 
@@ -211,7 +217,7 @@ These items are pure logic, rules, client architecture, or ops — no new fields
 - **3** ✅ BUILT — SOS → SMS fallback: `handleSos` (`members.ts`) fires GM push + Twilio SMS in parallel on every raised SOS; the SOS-write-must-land link is covered by item 4.
 - **4** Offline resilience — client write-queue + flush on reconnect.
 - **8** ✅ BUILT — Winner detection GM-exclusion: every roster pass in `members.ts` filters `role !== 'gm'`, so a sole-GM survivor is the zero-survivor "no winner" path.
-- **9** Crossing-player double-push — filter `crossingPlayerToken` out of `gmTokens`/`allPlayerTokens` in `dispatchCheckpointEvent`.
+- **9** ✅ BUILT — Crossing-player double-push: `onLocationUpdate` (`geofence.ts`) drops the crossing player's `fcmToken` from `gmTokens`. `allPlayerTokens` is left intact (the crosser is a legitimate all-players recipient and that audience has no separate direct push, so no double occurs).
 - **10** ✅ BUILT — Transactional single-event dedup: the single-`event` write now runs inside `db.runTransaction` (`geofence.ts`), mirroring the `eventQueue` path.
 - **12** Auto per-interval count — a `playerCountBroadcast` toggle seeds repeating run-sheet rows (existing `template:'player-count'`).
 - **13–15** Ration review/submit UX — render off the existing `RationSubmission.status`; `resizeMode:'contain'` + scroll; one-doc-per-window state machine.

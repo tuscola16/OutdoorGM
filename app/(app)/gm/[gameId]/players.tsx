@@ -191,6 +191,8 @@ export default function PlayersScreen() {
           </View>
           {item.sos ? (
             <Text style={styles.sosLabel}>🆘 Needs assistance — tap the alert icon to clear</Text>
+          ) : !isGM && !isOut && item.outOfBounds ? (
+            <Text style={styles.oobLabel}>🚧 Outside the play area</Text>
           ) : showFix ? (
             <View style={styles.fixRow}>
               <View style={[styles.fixDot, { backgroundColor: stalenessColor(level) }]} />
@@ -376,6 +378,7 @@ const styles = StyleSheet.create({
   outAvatar: { opacity: 0.5 },
   outName: { textDecorationLine: 'line-through', color: Colors.textSecondary },
   sosLabel: { fontSize: 12, color: Colors.danger, marginTop: 1, fontWeight: '600' },
+  oobLabel: { fontSize: 12, color: Colors.warning, marginTop: 1, fontWeight: '600' },
   deadBadge: { backgroundColor: Colors.danger + '33' },
   fixRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
   fixDot: { width: 8, height: 8, borderRadius: 4 },

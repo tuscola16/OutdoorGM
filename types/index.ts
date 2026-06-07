@@ -268,6 +268,12 @@ export interface GameMember {
   sos?: boolean;
   sosAt?: FsTimestamp | null;
   sosLocation?: { latitude: number; longitude: number } | null;
+  /**
+   * Latched true while the player is outside `game.boundary` (ROADMAP #7). Set by the
+   * geofence Cloud Function on exit (fires the GM alert once) and cleared on re-entry,
+   * so a player straying outside the play area pings the GM exactly once per excursion.
+   */
+  outOfBounds?: boolean;
   /** This member hid the game from their own "My Games" list (finished games only). */
   archived?: boolean;
   /**

@@ -59,6 +59,13 @@ a player has an open unacked SOS or hasn't reported a fix in N minutes.
 **7. Player-left-the-boundary alert.** When a tracked player exits `game.boundary`, alert the GM
 (distinct from a checkpoint crossing). A per-member `outOfBounds` latch fires it once on exit.
 
+> **Built:** `onLocationUpdate` (`geofence.ts`) runs a boundary test before the checkpoint work
+> (so it fires even with zero checkpoints). A per-member `outOfBounds` latch flips on the
+> boundary transition: on exit it pushes + SMSes the GMs ("X left the play area") once; on re-entry
+> it clears and sends a quiet "back in the area" GM push. The test is point-in-polygon (ray-cast)
+> when `boundary.polygon` is set, else the min/max bbox — this is the geofence half of #39. The GM
+> roster (`gm/[gameId]/players.tsx`) shows a "🚧 Outside the play area" flag.
+
 ---
 
 ## Tier 3 — Correctness bugs (fix before a real game)
@@ -78,6 +85,12 @@ stale transaction snapshot; add a regression guard.
 (`functions/src/geofence.ts`), filter the crossing player's token out of `gmTokens` (and
 `allPlayerTokens`) so a device signed into both accounts doesn't get both the player and GM pushes
 (which also leaks GM-internal text).
+
+> **Built:** `onLocationUpdate` drops the crossing player's `fcmToken` from `gmTokens` when building
+> the GM recipient list, so the shared-device GM alert (and the GM-only arrival ping) never lands on
+> the crosser. `allPlayerTokens` is intentionally **left** containing the crosser — they're a valid
+> recipient of an all-players event, which has no separate direct push, so filtering `gmTokens`
+> alone yields exactly one push to the device with no GM-text leak.
 
 **10. Make single-event arrival dedup transactional.** The `eventQueue` path guards double-fire
 with a transaction; the single-`event` path relies on a non-transactional read, so concurrent
