@@ -15,7 +15,7 @@ import {
   setTestStep, rearmCheckpoint, rationInterval,
 } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
-import type { CheckpointEvent } from '@/types';
+import type { RunbookEffect } from '@/types';
 
 /** The walkthrough is a fixed, ordered list of steps. Each is `auto` (a live Firestore
  * predicate must be satisfied before Next enables), or `manual` (no signal — the GM reads
@@ -62,15 +62,15 @@ const STEPS: { id: StepId; title: string; instruction: string }[] = [
 ];
 const LAST = STEPS.length - 1;
 
-/** Friendly label for a queued checkpoint event (what fires for the next arriver). */
-function eventLabel(ev: CheckpointEvent | undefined): string {
+/** Friendly label for a queued runbook effect (what fires for the next arriver). */
+function eventLabel(ev: RunbookEffect | null | undefined): string {
   if (!ev) return 'GM-only ping (queue exhausted)';
   switch (ev.kind) {
     case 'hazard': return 'Hazard ⚠️';
     case 'boon': return 'Boon ✨';
-    case 'player-notify':
+    case 'notify':
       return ev.audience === 'all-players' ? 'Message to all players 📢' : 'Message to crossing player 💬';
-    case 'gm-only': return 'GM-only ping 📍';
+    case 'gm-notify': return 'GM-only ping 📍';
     default: return ev.kind;
   }
 }
@@ -84,7 +84,7 @@ function mmss(ms: number): string {
 export default function TestRunnerScreen() {
   const { gameId } = useLocalSearchParams<{ gameId: string }>();
   const {
-    game, phase, checkpoints, members, playerLocations, arrivals, broadcasts, rations, loadGame,
+    game, phase, checkpoints, runbookEntries, members, playerLocations, arrivals, broadcasts, rations, loadGame,
   } = useGame();
   const router = useRouter();
   const now = useNow(1000);
@@ -120,7 +120,9 @@ export default function TestRunnerScreen() {
   // Real (non-tombstone) arrivals — used to pick who to re-arm and show who has crossed.
   const realArrivals = cpArrivals.filter((a) => players.some((p) => p.userId === a.playerId));
   const consumed = cpArrivals.length; // queue position consumed (real + re-armed tombstones)
-  const queue = cp?.eventQueue ?? [];
+  // The test checkpoint's fixed-order runbook entry holds the demo arrival queue (#60).
+  const testEntry = cp ? runbookEntries.find((e) => e.checkpointId === cp.id && e.trigger === 'fixed-order') : undefined;
+  const queue = testEntry?.queueSlots ?? [];
 
   const ri = rationInterval(game, now);
   const rationIdx = ri?.index ?? -1;

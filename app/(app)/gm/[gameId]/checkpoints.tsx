@@ -16,7 +16,7 @@ import { addCheckpoint, updateCheckpoint, deleteCheckpoint } from '@/services/ga
 import { friendlyError } from '@/services/errorUtils';
 import { KIND_META, checkpointKind, hexToRgba } from '@/components/checkpointForm';
 import { CHECKPOINT_ICONS, checkpointIcon, DEFAULT_CHECKPOINT_ICON } from '@/constants/checkpointIcons';
-import type { MapBoundary, Checkpoint } from '@/types';
+import type { MapBoundary, Checkpoint, RunbookEntry } from '@/types';
 
 const DEFAULT_RADIUS = 100;
 const DEFAULT_REGION: Region = { latitude: 37.0902, longitude: -95.7129, latitudeDelta: 0.05, longitudeDelta: 0.05 };
@@ -33,21 +33,27 @@ function corners(b: MapBoundary) {
   ];
 }
 
-/** One-line summary of what a checkpoint does, for the list. */
-function behaviorSummary(cp: Checkpoint): string {
-  if (cp.transitions && cp.transitions.length > 0) {
-    return `Scheduled · ${cp.transitions.length} change${cp.transitions.length === 1 ? '' : 's'}`;
-  }
-  const steps = cp.eventQueue?.length ?? 0;
-  if (steps > 0) return `By arrival · ${steps} step${steps === 1 ? '' : 's'}`;
-  return KIND_META[checkpointKind(cp)].label;
+/** One-line summary of a checkpoint's runbook, for the list (#60). */
+function behaviorSummary(entries: RunbookEntry[]): string {
+  if (!entries || entries.length === 0) return 'No behavior yet';
+  if (entries.length === 1) return KIND_META[entries[0].effect?.kind ?? 'gm-notify'].label;
+  return `${entries.length} runbook entries`;
 }
 
 export default function CheckpointsScreen() {
   const { gameId } = useLocalSearchParams<{ gameId: string }>();
-  const { game, checkpoints, loadGame } = useGame();
+  const { game, checkpoints, runbookEntries, loadGame } = useGame();
   const router = useRouter();
   const boundary: MapBoundary | undefined = game?.boundary;
+
+  // Runbook entries grouped by checkpoint, for pin color + list summaries (#60).
+  const entriesByCp = new Map<string, RunbookEntry[]>();
+  for (const e of runbookEntries) {
+    const list = entriesByCp.get(e.checkpointId) ?? [];
+    list.push(e);
+    entriesByCp.set(e.checkpointId, list);
+  }
+  const cpEntries = (id: string): RunbookEntry[] => entriesByCp.get(id) ?? [];
 
   const [displayRegion, setDisplayRegion] = useState<Region | null>(null);
   const [renderKey, setRenderKey] = useState(0);
@@ -236,8 +242,8 @@ export default function CheckpointsScreen() {
                 : null
             }
             renderItem={({ item }) => {
-              const color = KIND_META[checkpointKind(item)].color;
-              const vis = item.visibility ?? 'gm-only';
+              const color = KIND_META[checkpointKind(cpEntries(item.id))].color;
+              const vis = item.visibility ?? 'hidden';
               return (
                 <TouchableOpacity style={styles.checkpointRow} onPress={() => goToEditor(item.id)}>
                   <View style={[styles.listIcon, { borderColor: color }]}>
@@ -246,7 +252,7 @@ export default function CheckpointsScreen() {
                   <View style={styles.cpInfo}>
                     <Text style={styles.cpName}>{item.name}</Text>
                     <Text style={styles.cpSub}>
-                      {behaviorSummary(item)} · {item.radius}m{vis !== 'gm-only' ? ' · shown to players' : ''}
+                      {behaviorSummary(cpEntries(item.id))} · {item.radius}m{vis !== 'hidden' ? ' · shown to players' : ''}
                     </Text>
                   </View>
                   <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
@@ -294,7 +300,7 @@ export default function CheckpointsScreen() {
                   <Polygon coordinates={corners(boundary)} strokeColor={Colors.secondary} strokeWidth={2} fillColor="rgba(212, 137, 63, 0.08)" />
                 )}
                 {checkpoints.map((cp) => {
-                  const color = KIND_META[checkpointKind(cp)].color;
+                  const color = KIND_META[checkpointKind(cpEntries(cp.id))].color;
                   return (
                     <Circle
                       key={`c-${cp.id}`}
@@ -307,7 +313,7 @@ export default function CheckpointsScreen() {
                   );
                 })}
                 {checkpoints.map((cp) => {
-                  const color = KIND_META[checkpointKind(cp)].color;
+                  const color = KIND_META[checkpointKind(cpEntries(cp.id))].color;
                   return (
                     <Marker
                       key={`m-${cp.id}`}

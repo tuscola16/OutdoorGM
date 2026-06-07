@@ -21,7 +21,7 @@ export function iconFor(b: Broadcast): keyof typeof Ionicons.glyphMap {
           return 'warning-outline';
         case 'boon':
           return 'sparkles-outline';
-        case 'player-notify':
+        case 'notify':
           return 'megaphone-outline';
         default:
           return 'flash-outline';
@@ -66,7 +66,7 @@ export function titleFor(b: Broadcast): string {
           return 'Hazard!';
         case 'boon':
           return 'A boon';
-        case 'player-notify':
+        case 'notify':
           return 'Message';
         default:
           return 'Event';

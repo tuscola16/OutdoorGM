@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, Alert, ScrollView, ActivityIndicator,
+  View, Text, StyleSheet, TouchableOpacity, Alert, ScrollView, ActivityIndicator, Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -11,30 +11,22 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Colors } from '@/constants/colors';
 import {
-  updateCheckpoint, deleteCheckpoint, setRevealSchedule, stateEventFields,
-  openCheckpointNow, closeCheckpointNow, clearCheckpointWindow, checkpointWindowState,
-  revealCheckpointNow,
+  updateCheckpoint, deleteCheckpoint, setRevealSchedule, revealCheckpointNow, fireRunbookEntry,
 } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
-import { useNow } from '@/hooks/useNow';
 import {
-  KIND_META, VIS_META, VIS_ORDER, STATE_META, STATE_ORDER, hexToRgba, buildEvent, ordinalLabel,
-  KindChips, AudienceToggle,
+  KIND_META, VIS_META, VIS_ORDER, TRIGGER_META, hexToRgba,
 } from '@/components/checkpointForm';
 import { CHECKPOINT_ICONS, DEFAULT_CHECKPOINT_ICON } from '@/constants/checkpointIcons';
 import type {
-  Checkpoint, CheckpointEvent, CheckpointKind, EventAudience, CheckpointVisibility,
-  RevealTrigger, RevealAudience, CheckpointReveal, CheckpointState, CheckpointTransition,
+  Checkpoint, CheckpointVisibility, RevealTrigger, RevealAudience, CheckpointReveal,
+  RunbookEntry, TimedBound,
 } from '@/types';
-
-type BehaviorMode = 'static' | 'scheduled';
-type TransitionRow = { atMinute: string; state: CheckpointState; message: string };
 
 export default function CheckpointEditorScreen() {
   const { gameId, checkpointId } = useLocalSearchParams<{ gameId: string; checkpointId: string }>();
-  const { checkpoints, members, loadGame } = useGame();
+  const { checkpoints, runbookEntries, members, loadGame } = useGame();
   const router = useRouter();
-  const now = useNow(10000);
   const players = members.filter((m) => m.role === 'player');
 
   useEffect(() => {
@@ -42,29 +34,18 @@ export default function CheckpointEditorScreen() {
   }, [gameId]);
 
   const cp = checkpoints.find((c) => c.id === checkpointId) ?? null;
+  const entries = runbookEntries
+    .filter((e) => e.checkpointId === checkpointId)
+    .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
 
   // Form state — populated once the checkpoint doc first loads.
   const [name, setName] = useState('');
   const [radius, setRadius] = useState('100');
   const [icon, setIcon] = useState<string>(DEFAULT_CHECKPOINT_ICON);
 
-  const [behaviorMode, setBehaviorMode] = useState<BehaviorMode>('static');
-
-  // Static behavior
-  const [cpMode, setCpMode] = useState<'single' | 'queue'>('single');
-  const [cpKind, setCpKind] = useState<CheckpointKind>('gm-only');
-  const [cpMessage, setCpMessage] = useState('');
-  const [cpAudience, setCpAudience] = useState<EventAudience>('crossing-player');
-  const [cpQueue, setCpQueue] = useState<CheckpointEvent[]>([]);
-
-  // Scheduled behavior (#54)
-  const [initialState, setInitialState] = useState<CheckpointState>('closed');
-  const [initialMessage, setInitialMessage] = useState('');
-  const [transitions, setTransitions] = useState<TransitionRow[]>([]);
-
-  // Visibility / reveal (#48)
-  const [cpVisibility, setCpVisibility] = useState<CheckpointVisibility>('gm-only');
-  const [cpRevealTrigger, setCpRevealTrigger] = useState<RevealTrigger>('on-crossing');
+  // Visibility / reveal (#60)
+  const [cpVisibility, setCpVisibility] = useState<CheckpointVisibility>('hidden');
+  const [cpRevealTrigger, setCpRevealTrigger] = useState<RevealTrigger>('player');
   const [cpRevealAudience, setCpRevealAudience] = useState<RevealAudience>('all');
   const [cpRevealOffset, setCpRevealOffset] = useState('');
   const [cpRecipients, setCpRecipients] = useState<string[]>([]);
@@ -72,67 +53,37 @@ export default function CheckpointEditorScreen() {
   const [saving, setSaving] = useState(false);
   const loadedRef = useRef(false);
 
-  // Initialize the form from the checkpoint doc the first time it resolves.
+  // GM-prompted fire modal
+  const [fireEntry, setFireEntry] = useState<RunbookEntry | null>(null);
+  const [fireTargets, setFireTargets] = useState<string[]>([]);
+  const [firing, setFiring] = useState(false);
+
   useEffect(() => {
     if (!cp || loadedRef.current) return;
     loadedRef.current = true;
     setName(cp.name);
     setRadius(String(cp.radius));
     setIcon(cp.icon ?? DEFAULT_CHECKPOINT_ICON);
-
-    if (cp.transitions && cp.transitions.length > 0) {
-      setBehaviorMode('scheduled');
-      setInitialState(cp.initialState ?? 'closed');
-      setTransitions(
-        [...cp.transitions]
-          .sort((a, b) => a.atMinute - b.atMinute)
-          .map((t) => ({ atMinute: String(t.atMinute), state: t.state, message: t.message ?? '' }))
-      );
-    } else {
-      setBehaviorMode('static');
-      if (cp.eventQueue && cp.eventQueue.length > 0) {
-        setCpMode('queue');
-        setCpQueue(cp.eventQueue);
-      } else {
-        setCpMode('single');
-        setCpKind(cp.event?.kind ?? 'gm-only');
-        setCpMessage(cp.event?.message ?? '');
-        setCpAudience(cp.event?.audience ?? 'crossing-player');
-      }
-    }
-
-    setCpVisibility(cp.visibility ?? 'gm-only');
-    setCpRevealTrigger(cp.reveal?.trigger ?? 'on-crossing');
+    setCpVisibility(cp.visibility ?? 'hidden');
+    setCpRevealTrigger(cp.reveal?.trigger ?? 'player');
     setCpRevealAudience(cp.reveal?.audience ?? 'all');
     setCpRevealOffset(cp.reveal?.offsetMinutes != null ? String(cp.reveal.offsetMinutes) : '');
     setCpRecipients(cp.reveal?.recipientPlayerIds ?? []);
   }, [cp]);
 
-  function updateQueueItem(index: number, patch: Partial<CheckpointEvent>) {
-    setCpQueue((q) => q.map((e, i) => (i === index ? { ...e, ...patch } : e)));
-  }
-  const addQueueItem = () => setCpQueue((q) => [...q, { kind: 'hazard' }]);
-  const removeQueueItem = (index: number) => setCpQueue((q) => q.filter((_, i) => i !== index));
   function toggleRecipient(id: string) {
     setCpRecipients((r) => (r.includes(id) ? r.filter((x) => x !== id) : [...r, id]));
   }
-
-  function addTransition() {
-    setTransitions((t) => [...t, { atMinute: '', state: 'hazard', message: '' }]);
-  }
-  function updateTransition(i: number, patch: Partial<TransitionRow>) {
-    setTransitions((t) => t.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
-  }
-  function removeTransition(i: number) {
-    setTransitions((t) => t.filter((_, idx) => idx !== i));
+  function toggleFireTarget(id: string) {
+    setFireTargets((r) => (r.includes(id) ? r.filter((x) => x !== id) : [...r, id]));
   }
 
-  /** Assemble the reveal config from the form, or undefined for gm-only/always. */
+  /** Assemble the reveal config from the form, or undefined for hidden/shown. */
   function buildReveal(): CheckpointReveal | undefined {
-    if (cpVisibility !== 'on-reveal') return undefined;
-    const audience: RevealAudience = cpRevealTrigger === 'on-crossing' ? 'triggerer' : cpRevealAudience;
+    if (cpVisibility !== 'shown-on-trigger') return undefined;
+    const audience: RevealAudience = cpRevealTrigger === 'player' ? 'triggerer' : cpRevealAudience;
     const reveal: CheckpointReveal = { trigger: cpRevealTrigger, audience };
-    if (cpRevealTrigger === 'game-time') {
+    if (cpRevealTrigger === 'timed') {
       reveal.offsetMinutes = Math.max(0, Math.round(Number(cpRevealOffset) || 0));
     }
     if (audience === 'specific-players') reveal.recipientPlayerIds = cpRecipients;
@@ -146,7 +97,7 @@ export default function CheckpointEditorScreen() {
     if (isNaN(rad) || rad < 10) { Alert.alert('Enter a valid radius (minimum 10m)'); return; }
 
     const reveal = buildReveal();
-    if (cpVisibility === 'on-reveal' && reveal?.audience === 'specific-players' && cpRecipients.length === 0) {
+    if (cpVisibility === 'shown-on-trigger' && reveal?.audience === 'specific-players' && cpRecipients.length === 0) {
       Alert.alert('Pick at least one player', 'A sponsor drop needs at least one recipient, or choose “All players”.');
       return;
     }
@@ -159,46 +110,8 @@ export default function CheckpointEditorScreen() {
       reveal: reveal ?? firestore.FieldValue.delete(),
     };
 
-    if (behaviorMode === 'scheduled') {
-      // Validate + normalize the timed transitions (#54).
-      const rows = transitions
-        .map((r) => ({ atMinute: Math.round(Number(r.atMinute)), state: r.state, message: r.message.trim() }))
-        .filter((r) => !isNaN(r.atMinute));
-      if (rows.some((r) => r.atMinute <= 0)) {
-        Alert.alert('Transition times must be after start', 'Use “Starts as” for the state at minute 0; each change needs a positive minute.');
-        return;
-      }
-      const cleaned: CheckpointTransition[] = rows
-        .sort((a, b) => a.atMinute - b.atMinute)
-        .map((r) => ({ atMinute: r.atMinute, state: r.state, ...(r.message ? { message: r.message } : {}) }));
-      updates.initialState = initialState;
-      updates.transitions = cleaned;
-      updates.eventQueue = firestore.FieldValue.delete();
-      // Make the initial state effective immediately (the sweep handles later transitions).
-      Object.assign(updates, stateEventFields(initialState, initialMessage.trim() || undefined));
-    } else {
-      // Static behavior — clear any scheduled-mode artifacts.
-      updates.transitions = firestore.FieldValue.delete();
-      updates.initialState = firestore.FieldValue.delete();
-      updates.currentState = firestore.FieldValue.delete();
-      // If leaving scheduled mode, also clear the window it may have set.
-      if (cp.transitions && cp.transitions.length > 0) {
-        updates.opensAt = firestore.FieldValue.delete();
-        updates.closesAt = firestore.FieldValue.delete();
-      }
-      if (cpMode === 'queue') {
-        const cleaned = cpQueue.map((e) => buildEvent(e.kind, e.message ?? '', e.audience ?? 'crossing-player'));
-        if (cleaned.length === 0) { Alert.alert('Add at least one step, or switch to “Same for everyone”.'); return; }
-        updates.eventQueue = cleaned;
-        updates.event = firestore.FieldValue.delete();
-      } else {
-        updates.event = buildEvent(cpKind, cpMessage, cpAudience);
-        updates.eventQueue = firestore.FieldValue.delete();
-      }
-    }
-
-    // Game-time reveal pairs to a deterministic run-sheet row (#48).
-    const revealOffset = cpVisibility === 'on-reveal' && cpRevealTrigger === 'game-time'
+    // A timed reveal pairs to a deterministic run-sheet row (#60).
+    const revealOffset = cpVisibility === 'shown-on-trigger' && cpRevealTrigger === 'timed'
       ? Math.max(0, Math.round(Number(cpRevealOffset) || 0))
       : null;
 
@@ -214,17 +127,6 @@ export default function CheckpointEditorScreen() {
     }
   }
 
-  async function handleWindowAction(action: 'open' | 'close' | 'clear') {
-    if (!gameId || !checkpointId) return;
-    try {
-      if (action === 'open') await openCheckpointNow(gameId, checkpointId);
-      else if (action === 'close') await closeCheckpointNow(gameId, checkpointId);
-      else await clearCheckpointWindow(gameId, checkpointId);
-    } catch (err) {
-      Alert.alert('Error', friendlyError(err));
-    }
-  }
-
   async function handleRevealNow() {
     if (!gameId || !cp) return;
     try {
@@ -235,9 +137,30 @@ export default function CheckpointEditorScreen() {
     }
   }
 
+  function openFire(entry: RunbookEntry) {
+    setFireEntry(entry);
+    setFireTargets([]);
+    setFiring(false);
+  }
+
+  async function handleFire() {
+    if (!gameId || !fireEntry) return;
+    setFiring(true);
+    try {
+      await fireRunbookEntry(gameId, fireEntry.id, fireTargets.length > 0 ? fireTargets : undefined);
+      const who = fireTargets.length > 0 ? `${fireTargets.length} player(s)` : 'all players';
+      setFireEntry(null);
+      Alert.alert('Fired', `“${fireEntry.name}” sent to ${who}.`);
+    } catch (err) {
+      Alert.alert('Error', friendlyError(err));
+    } finally {
+      setFiring(false);
+    }
+  }
+
   function confirmDelete() {
     if (!gameId || !cp) return;
-    Alert.alert(`Delete "${cp.name}"?`, 'This cannot be undone.', [
+    Alert.alert(`Delete "${cp.name}"?`, 'This also deletes its runbook entries. This cannot be undone.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete', style: 'destructive',
@@ -249,13 +172,6 @@ export default function CheckpointEditorScreen() {
     ]);
   }
 
-  const windowState = cp ? checkpointWindowState(cp, now) : 'always';
-  const windowStatusText = {
-    always: 'Always live — fires whenever a player crosses.',
-    open: 'Open — firing now.',
-    pending: 'Scheduled — not open yet.',
-    closed: 'Closed — not firing.',
-  }[windowState];
   const isRevealed = !!cp?.revealedAt;
 
   if (!cp) {
@@ -289,7 +205,7 @@ export default function CheckpointEditorScreen() {
         <Input label="Name" value={name} onChangeText={setName} placeholder="e.g. Cornucopia" />
         <Input label="Detection Radius (meters)" value={radius} onChangeText={setRadius} keyboardType="number-pad" placeholder="100" />
 
-        {/* Icon picker (#53) */}
+        {/* Icon picker */}
         <Text style={styles.sectionLabel}>Map icon</Text>
         <View style={styles.iconGrid}>
           {CHECKPOINT_ICONS.map((opt) => {
@@ -306,107 +222,7 @@ export default function CheckpointEditorScreen() {
           })}
         </View>
 
-        {/* Behavior mode (#53/#54) */}
-        <Text style={styles.sectionLabel}>What happens here?</Text>
-        <View style={styles.segment}>
-          <TouchableOpacity onPress={() => setBehaviorMode('static')} style={[styles.segBtn, behaviorMode === 'static' && styles.segBtnActive]}>
-            <Text style={[styles.segText, behaviorMode === 'static' && styles.segTextActive]}>Same all game</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => setBehaviorMode('scheduled')} style={[styles.segBtn, behaviorMode === 'scheduled' && styles.segBtnActive]}>
-            <Text style={[styles.segText, behaviorMode === 'scheduled' && styles.segTextActive]}>Changes over time</Text>
-          </TouchableOpacity>
-        </View>
-
-        {behaviorMode === 'static' ? (
-          <>
-            <View style={styles.segment}>
-              <TouchableOpacity onPress={() => setCpMode('single')} style={[styles.segBtn, cpMode === 'single' && styles.segBtnActive]}>
-                <Text style={[styles.segText, cpMode === 'single' && styles.segTextActive]}>Same for everyone</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => setCpMode('queue')} style={[styles.segBtn, cpMode === 'queue' && styles.segBtnActive]}>
-                <Text style={[styles.segText, cpMode === 'queue' && styles.segTextActive]}>By arrival order</Text>
-              </TouchableOpacity>
-            </View>
-
-            {cpMode === 'single' ? (
-              <>
-                <KindChips value={cpKind} onChange={setCpKind} />
-                {cpKind !== 'gm-only' && (
-                  <Input label="Message" value={cpMessage} onChangeText={setCpMessage} placeholder={KIND_META[cpKind].placeholder} multiline style={styles.messageInput} />
-                )}
-                {cpKind === 'player-notify' && <AudienceToggle value={cpAudience} onChange={setCpAudience} />}
-                {cpKind === 'gm-only' && <Text style={styles.hintSmall}>Only you (the GM) are alerted. The player sees nothing.</Text>}
-              </>
-            ) : (
-              <>
-                <Text style={styles.hintSmall}>Each arriver, in order, triggers the next step. Once the steps run out, later arrivers just ping you.</Text>
-                {cpQueue.map((e, i) => (
-                  <View key={i} style={styles.queueRow}>
-                    <View style={styles.queueRowHead}>
-                      <Text style={styles.queueLabel}>{ordinalLabel(i)}</Text>
-                      <TouchableOpacity onPress={() => removeQueueItem(i)} hitSlop={8}>
-                        <Ionicons name="close-circle" size={20} color={Colors.textMuted} />
-                      </TouchableOpacity>
-                    </View>
-                    <KindChips value={e.kind} onChange={(k) => updateQueueItem(i, { kind: k })} />
-                    {e.kind !== 'gm-only' && (
-                      <Input value={e.message ?? ''} onChangeText={(t) => updateQueueItem(i, { message: t })} placeholder={KIND_META[e.kind].placeholder} multiline style={styles.messageInput} />
-                    )}
-                    {e.kind === 'player-notify' && (
-                      <AudienceToggle value={e.audience ?? 'crossing-player'} onChange={(a) => updateQueueItem(i, { audience: a })} />
-                    )}
-                  </View>
-                ))}
-                <TouchableOpacity onPress={addQueueItem} style={styles.addStep}>
-                  <Ionicons name="add-circle-outline" size={18} color={Colors.primary} />
-                  <Text style={styles.addStepText}>Add step</Text>
-                </TouchableOpacity>
-              </>
-            )}
-          </>
-        ) : (
-          // Scheduled / time-based transitions (#54)
-          <>
-            <Text style={styles.hintSmall}>
-              The checkpoint starts in one state and flips at set times after Start. A “Closed” state is hidden and won’t fire.
-            </Text>
-            <Text style={styles.subLabel}>Starts as</Text>
-            <StateChips value={initialState} onChange={setInitialState} />
-            {initialState !== 'closed' && (
-              <Input value={initialMessage} onChangeText={setInitialMessage} placeholder="Optional message" multiline style={styles.messageInput} />
-            )}
-
-            <Text style={styles.subLabel}>Then changes</Text>
-            {transitions.length === 0 && <Text style={styles.hintSmall}>No timed changes yet.</Text>}
-            {transitions.map((row, i) => (
-              <View key={i} style={styles.queueRow}>
-                <View style={styles.queueRowHead}>
-                  <Text style={styles.queueLabel}>Change {i + 1}</Text>
-                  <TouchableOpacity onPress={() => removeTransition(i)} hitSlop={8}>
-                    <Ionicons name="close-circle" size={20} color={Colors.textMuted} />
-                  </TouchableOpacity>
-                </View>
-                <Input
-                  label="Minutes after start"
-                  value={row.atMinute}
-                  onChangeText={(t) => updateTransition(i, { atMinute: t })}
-                  keyboardType="number-pad"
-                  placeholder="e.g. 30"
-                />
-                <StateChips value={row.state} onChange={(s) => updateTransition(i, { state: s })} />
-                {row.state !== 'closed' && (
-                  <Input value={row.message} onChangeText={(t) => updateTransition(i, { message: t })} placeholder="Optional message" multiline style={styles.messageInput} />
-                )}
-              </View>
-            ))}
-            <TouchableOpacity onPress={addTransition} style={styles.addStep}>
-              <Ionicons name="add-circle-outline" size={18} color={Colors.primary} />
-              <Text style={styles.addStepText}>Add timed change</Text>
-            </TouchableOpacity>
-          </>
-        )}
-
-        {/* Player visibility (#48) */}
+        {/* Player visibility (#60) */}
         <Text style={styles.sectionLabel}>Player visibility</Text>
         <View style={styles.chips}>
           {VIS_ORDER.map((v) => {
@@ -425,14 +241,14 @@ export default function CheckpointEditorScreen() {
         </View>
         <Text style={styles.hintSmall}>{VIS_META[cpVisibility].hint}</Text>
 
-        {cpVisibility === 'on-reveal' && (
+        {cpVisibility === 'shown-on-trigger' && (
           <>
             <Text style={styles.sectionLabel}>Reveal when</Text>
             <View style={styles.segment}>
               {([
-                { v: 'on-crossing', label: 'On crossing' },
-                { v: 'game-time', label: 'At a set time' },
-                { v: 'gm-manual', label: 'When I tap' },
+                { v: 'player', label: 'On crossing' },
+                { v: 'timed', label: 'At a set time' },
+                { v: 'gm', label: 'When I tap' },
               ] as { v: RevealTrigger; label: string }[]).map((o) => (
                 <TouchableOpacity key={o.v} onPress={() => setCpRevealTrigger(o.v)} style={[styles.segBtn, cpRevealTrigger === o.v && styles.segBtnActive]}>
                   <Text style={[styles.segText, cpRevealTrigger === o.v && styles.segTextActive]}>{o.label}</Text>
@@ -440,14 +256,14 @@ export default function CheckpointEditorScreen() {
               ))}
             </View>
 
-            {cpRevealTrigger === 'on-crossing' && (
+            {cpRevealTrigger === 'player' && (
               <Text style={styles.hintSmall}>Becomes visible to the player who crosses it (a trap they now know).</Text>
             )}
-            {cpRevealTrigger === 'game-time' && (
+            {cpRevealTrigger === 'timed' && (
               <Input label="Minutes after start" value={cpRevealOffset} onChangeText={setCpRevealOffset} keyboardType="number-pad" placeholder="e.g. 60" />
             )}
 
-            {cpRevealTrigger !== 'on-crossing' && (
+            {cpRevealTrigger !== 'player' && (
               <>
                 <Text style={styles.sectionLabel}>Reveal to</Text>
                 <View style={styles.segment}>
@@ -480,7 +296,7 @@ export default function CheckpointEditorScreen() {
               </>
             )}
 
-            {cpRevealTrigger === 'gm-manual' && (
+            {cpRevealTrigger === 'gm' && (
               <TouchableOpacity onPress={handleRevealNow} style={[styles.chip, { alignSelf: 'flex-start', borderColor: Colors.secondary }]}>
                 <Ionicons name={isRevealed ? 'eye' : 'eye-outline'} size={14} color={Colors.secondary} />
                 <Text style={[styles.chipText, { color: Colors.secondary }]}>{isRevealed ? 'Revealed — reveal again' : 'Reveal now'}</Text>
@@ -489,26 +305,39 @@ export default function CheckpointEditorScreen() {
           </>
         )}
 
-        {/* Timed site window (#12) — only for static checkpoints; scheduled ones own the window */}
-        {behaviorMode === 'static' && (
-          <>
-            <Text style={styles.sectionLabel}>Timed site window</Text>
-            <Text style={styles.hintSmall}>{windowStatusText}</Text>
-            <View style={styles.chips}>
-              <TouchableOpacity onPress={() => handleWindowAction('open')} style={[styles.chip, windowState === 'open' && { borderColor: Colors.success, backgroundColor: hexToRgba(Colors.success, 0.15) }]}>
-                <Ionicons name="lock-open-outline" size={14} color={windowState === 'open' ? Colors.success : Colors.textSecondary} />
-                <Text style={[styles.chipText, windowState === 'open' && { color: Colors.success }]}>Open now</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => handleWindowAction('close')} style={[styles.chip, windowState === 'closed' && { borderColor: Colors.danger, backgroundColor: hexToRgba(Colors.danger, 0.15) }]}>
-                <Ionicons name="lock-closed-outline" size={14} color={windowState === 'closed' ? Colors.danger : Colors.textSecondary} />
-                <Text style={[styles.chipText, windowState === 'closed' && { color: Colors.danger }]}>Close now</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => handleWindowAction('clear')} style={[styles.chip, windowState === 'always' && { borderColor: Colors.primary, backgroundColor: hexToRgba(Colors.primary, 0.15) }]}>
-                <Ionicons name="infinite-outline" size={14} color={windowState === 'always' ? Colors.primary : Colors.textSecondary} />
-                <Text style={[styles.chipText, windowState === 'always' && { color: Colors.primary }]}>Always live</Text>
-              </TouchableOpacity>
-            </View>
-          </>
+        {/* Runbook entries — authored on the web dashboard, read-only here (#60) */}
+        <Text style={styles.sectionLabel}>Runbook ({entries.length})</Text>
+        <Text style={styles.hintSmall}>
+          Author runbook entries on the web GM dashboard. You can fire GM-prompted entries here.
+        </Text>
+        {entries.length === 0 ? (
+          <Text style={styles.hintSmall}>No runbook entries for this checkpoint yet.</Text>
+        ) : (
+          entries.map((e) => {
+            const kindMeta = KIND_META[e.effect?.kind ?? 'gm-notify'];
+            const trig = TRIGGER_META[e.trigger];
+            return (
+              <View key={e.id} style={styles.entryRow}>
+                <View style={[styles.entryIcon, { borderColor: kindMeta.color }]}>
+                  <Ionicons name={kindMeta.icon} size={16} color={kindMeta.color} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.entryName}>{e.name}</Text>
+                  <Text style={styles.entrySub}>
+                    {trig.label} · {kindMeta.label} · priority {e.priority ?? 0}
+                    {e.trigger === 'fixed-order' && e.queueSlots ? ` · ${e.queueSlots.length} slots` : ''}
+                    {e.trigger === 'timed' ? ` · ${timedSummary(e.startAt, e.endAt)}` : ''}
+                  </Text>
+                </View>
+                {e.trigger === 'gm-prompted' && (
+                  <TouchableOpacity onPress={() => openFire(e)} style={styles.fireBtn}>
+                    <Ionicons name="flash" size={14} color={Colors.white} />
+                    <Text style={styles.fireBtnText}>Fire</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            );
+          })
         )}
 
         <View style={styles.actions}>
@@ -520,29 +349,53 @@ export default function CheckpointEditorScreen() {
           <Text style={styles.deleteText}>Delete checkpoint</Text>
         </TouchableOpacity>
       </ScrollView>
+
+      {/* GM-prompted fire: pick targets (#60) */}
+      <Modal visible={!!fireEntry} transparent animationType="slide" onRequestClose={() => setFireEntry(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalSheet}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Fire “{fireEntry?.name}”</Text>
+              <Text style={styles.hintSmall}>
+                Leave everyone unchecked to send to all living players, or pick specific recipients.
+              </Text>
+              {players.length === 0 ? (
+                <Text style={styles.hintSmall}>No players have joined yet.</Text>
+              ) : (
+                <View style={styles.recipientList}>
+                  {players.map((p) => {
+                    const on = fireTargets.includes(p.userId);
+                    return (
+                      <TouchableOpacity key={p.userId} style={styles.recipientRow} onPress={() => toggleFireTarget(p.userId)}>
+                        <Ionicons name={on ? 'checkbox' : 'square-outline'} size={20} color={on ? Colors.secondary : Colors.textSecondary} />
+                        <Text style={styles.recipientName}>{p.displayName}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
+              <View style={styles.actions}>
+                <Button title="Cancel" onPress={() => setFireEntry(null)} variant="ghost" fullWidth={false} style={{ flex: 1 }} />
+                <Button title="Fire" onPress={handleFire} loading={firing} fullWidth={false} style={{ flex: 1 }} />
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
 
-function StateChips({ value, onChange }: { value: CheckpointState; onChange: (s: CheckpointState) => void }) {
-  return (
-    <View style={styles.chips}>
-      {STATE_ORDER.map((s) => {
-        const meta = STATE_META[s];
-        const active = s === value;
-        return (
-          <TouchableOpacity
-            key={s}
-            onPress={() => onChange(s)}
-            style={[styles.chip, active && { borderColor: meta.color, backgroundColor: hexToRgba(meta.color, 0.15) }]}
-          >
-            <Ionicons name={meta.icon} size={14} color={active ? meta.color : Colors.textSecondary} />
-            <Text style={[styles.chipText, active && { color: meta.color }]}>{meta.label}</Text>
-          </TouchableOpacity>
-        );
-      })}
-    </View>
-  );
+/** Compact label for a timed entry's window. */
+function timedSummary(start?: TimedBound, end?: TimedBound): string {
+  const label = (b: TimedBound | undefined, fallback: string): string => {
+    if (!b) return fallback;
+    if (b.kind === 'game-start') return 'start';
+    if (b.kind === 'game-end') return 'end';
+    if (typeof b.atMinute === 'number') return `+${b.atMinute}m`;
+    return fallback;
+  };
+  return `${label(start, 'start')}→${label(end, 'end')}`;
 }
 
 const styles = StyleSheet.create({
@@ -554,7 +407,6 @@ const styles = StyleSheet.create({
   content: { padding: 24, paddingBottom: 48, gap: 12 },
   coords: { fontSize: 12, color: Colors.textSecondary },
   sectionLabel: { color: Colors.textSecondary, fontSize: 13, fontWeight: '500', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 8 },
-  subLabel: { color: Colors.text, fontSize: 14, fontWeight: '700', marginTop: 4 },
   iconGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   iconChip: {
     width: 44, height: 44, borderRadius: 10, alignItems: 'center', justifyContent: 'center',
@@ -572,17 +424,21 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.surfaceElevated,
   },
   chipText: { color: Colors.textSecondary, fontSize: 13, fontWeight: '600' },
-  messageInput: { minHeight: 70, paddingTop: 12, textAlignVertical: 'top' },
   hintSmall: { color: Colors.textMuted, fontSize: 12, lineHeight: 17 },
-  queueRow: { backgroundColor: Colors.surfaceElevated, borderRadius: 12, padding: 12, gap: 10, borderWidth: 1, borderColor: Colors.border },
-  queueRowHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  queueLabel: { color: Colors.text, fontSize: 14, fontWeight: '700' },
-  addStep: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 6 },
-  addStepText: { color: Colors.primary, fontSize: 14, fontWeight: '600' },
+  entryRow: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: Colors.surfaceElevated, borderRadius: 12, padding: 12, borderWidth: 1, borderColor: Colors.border },
+  entryIcon: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, backgroundColor: Colors.surface },
+  entryName: { color: Colors.text, fontSize: 14, fontWeight: '700' },
+  entrySub: { color: Colors.textSecondary, fontSize: 12, marginTop: 2 },
+  fireBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.primary, borderRadius: 16, paddingVertical: 6, paddingHorizontal: 12 },
+  fireBtnText: { color: Colors.white, fontSize: 13, fontWeight: '700' },
   recipientList: { backgroundColor: Colors.surfaceElevated, borderRadius: 12, borderWidth: 1, borderColor: Colors.border, paddingVertical: 4 },
   recipientRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10, paddingHorizontal: 12 },
   recipientName: { color: Colors.text, fontSize: 15, fontWeight: '600' },
   actions: { flexDirection: 'row', gap: 12, marginTop: 12 },
   deleteRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingTop: 8 },
   deleteText: { color: Colors.danger, fontSize: 14, fontWeight: '600' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
+  modalSheet: { backgroundColor: Colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24 },
+  modalContent: { padding: 24, paddingBottom: 40, gap: 12 },
+  modalTitle: { fontSize: 20, fontWeight: '800', color: Colors.text },
 });

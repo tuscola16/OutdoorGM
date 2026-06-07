@@ -15,21 +15,20 @@ import {
 import { friendlyError } from '@/services/errorUtils';
 import { KIND_META, checkpointKind } from '@/components/checkpointForm';
 import { checkpointIcon } from '@/constants/checkpointIcons';
-import type { ScheduledEvent, ScheduledActionType, Checkpoint } from '@/types';
+import type { ScheduledEvent, ScheduledActionType, RunbookEntry } from '@/types';
 
-/** One-line summary of what a checkpoint does, for the run-sheet list. */
-function behaviorSummary(cp: Checkpoint): string {
-  if (cp.transitions && cp.transitions.length > 0) {
-    return `Scheduled · ${cp.transitions.length} change${cp.transitions.length === 1 ? '' : 's'}`;
-  }
-  const steps = cp.eventQueue?.length ?? 0;
-  if (steps > 0) return `By arrival · ${steps} step${steps === 1 ? '' : 's'}`;
-  return KIND_META[checkpointKind(cp)].label;
+/** One-line summary of a checkpoint's runbook, for the run-sheet list (#60). */
+function behaviorSummary(entries: RunbookEntry[]): string {
+  if (!entries || entries.length === 0) return 'No behavior yet';
+  if (entries.length === 1) return KIND_META[entries[0].effect?.kind ?? 'gm-notify'].label;
+  return `${entries.length} runbook entries`;
 }
 
 // The authoring UI presents one option per row; `player-count` is a templated
-// `broadcast`, so the UI key is richer than the stored `type`.
-type ActionKey = 'broadcast' | 'player-count' | 'gear-drop' | 'gm-reminder' | 'open-site' | 'close-site' | 'reveal-checkpoint';
+// `broadcast`, so the UI key is richer than the stored `type`. Checkpoint open/close
+// windows moved to timed runbook entries (#60); the run sheet keeps broadcasts,
+// reminders, gear drops, and the timed marker reveal.
+type ActionKey = 'broadcast' | 'player-count' | 'gear-drop' | 'gm-reminder' | 'reveal-checkpoint';
 type Needs = 'message' | 'checkpoint' | 'none';
 
 const ACTIONS: {
@@ -44,8 +43,6 @@ const ACTIONS: {
   { key: 'player-count', type: 'broadcast', template: 'player-count', label: 'Player count', icon: 'people-outline', needs: 'none' },
   { key: 'gear-drop', type: 'gear-drop', label: 'Gear drop', icon: 'gift-outline', needs: 'message' },
   { key: 'gm-reminder', type: 'gm-reminder', label: 'GM reminder', icon: 'alarm-outline', needs: 'message' },
-  { key: 'open-site', type: 'open-site', label: 'Open site', icon: 'lock-open-outline', needs: 'checkpoint' },
-  { key: 'close-site', type: 'close-site', label: 'Close site', icon: 'lock-closed-outline', needs: 'checkpoint' },
   { key: 'reveal-checkpoint', type: 'reveal-checkpoint', label: 'Reveal marker', icon: 'eye-outline', needs: 'checkpoint' },
 ];
 
@@ -61,8 +58,17 @@ function offsetLabel(min: number | null | undefined): string {
 
 export default function RunSheetScreen() {
   const { gameId } = useLocalSearchParams<{ gameId: string }>();
-  const { scheduledEvents, checkpoints, loadGame } = useGame();
+  const { scheduledEvents, checkpoints, runbookEntries, loadGame } = useGame();
   const router = useRouter();
+
+  // Runbook entries grouped by checkpoint, for the per-checkpoint summary (#60).
+  const entriesByCp = new Map<string, RunbookEntry[]>();
+  for (const e of runbookEntries) {
+    const list = entriesByCp.get(e.checkpointId) ?? [];
+    list.push(e);
+    entriesByCp.set(e.checkpointId, list);
+  }
+  const cpEntries = (id: string): RunbookEntry[] => entriesByCp.get(id) ?? [];
 
   useEffect(() => {
     if (gameId) loadGame(gameId, 'gm');
@@ -189,7 +195,7 @@ export default function RunSheetScreen() {
                 </Text>
               ) : (
                 checkpoints.map((cp) => {
-                  const color = KIND_META[checkpointKind(cp)].color;
+                  const color = KIND_META[checkpointKind(cpEntries(cp.id))].color;
                   return (
                     <TouchableOpacity
                       key={cp.id}
@@ -201,7 +207,7 @@ export default function RunSheetScreen() {
                       </View>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.cpName}>{cp.name}</Text>
-                        <Text style={styles.cpSummary}>{behaviorSummary(cp)}</Text>
+                        <Text style={styles.cpSummary}>{behaviorSummary(cpEntries(cp.id))}</Text>
                       </View>
                       <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
                     </TouchableOpacity>
