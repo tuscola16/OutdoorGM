@@ -644,6 +644,19 @@ safety check (Safety nets) and the geofence both switch from the current min/max
 **point-in-polygon** test. Bennett asked for it; **deprioritized** — the rectangle is workable
 for now. Related to, but distinct from, the P3 "custom arena map overlay" item.
 
+> **Schema + viewing built (2026-06-06).** `MapBoundary` gained an optional
+> `polygon?: {latitude,longitude}[]` (≥3 verts) that takes precedence over the min/max box;
+> the box is kept as the legacy/framing-fallback bounding rectangle. Every read path now
+> renders/frames the polygon when present: mobile `components/GameMap.tsx` (`boundaryCorners`),
+> the mobile `boundary.tsx` + `checkpoints.tsx` read-only renders, and web
+> `GameMap.tsx` (`boundaryRing` + `fitToData`). Additive — legacy rectangle games are
+> untouched. **Outstanding: polygon *authoring*** (web-only, e.g. `@mapbox/mapbox-gl-draw`
+> in `web/src/components/GameMap.tsx` + `GameScreen.tsx`) and the point-in-polygon geofence/
+> boundary-exit test (only needed once the boundary-exit alert is built; boundary is still
+> render-only today). The mobile rect reticle editor (`boundary.tsx`) now **guards** against
+> clobbering a web-authored polygon: when `boundary.polygon` is set it relabels the action
+> "Replace Polygon with This Rectangle" and confirms before the destructive whole-field replace.
+
 ### 47. Split boundary editing and checkpoint placement into separate screens *(UX defect — built)*
 On the combined map editor a tap meant to **place a checkpoint can accidentally drag the
 boundary** — Bennett moved the boundary several times while trying to drop checkpoints.
@@ -880,4 +893,6 @@ with the server-projected `markers` collection, the player map layer, and GM aut
 web; **`47`** split the boundary and checkpoint editors; **`49`** shipped targeted GM→player
 messaging on a new per-player screen (per-player checkpoints / GM↔GM messaging remain follow-ons);
 **`50`** added the last-GM guard + the `sweepOrphanedGames` auto-end. **`46`** (polygon boundary)
-remains **outstanding** — explicitly low priority; the rectangle is fine for now.
+is **half built** — the optional `polygon` schema + viewing/framing on mobile & web shipped
+(2026-06-06); polygon *authoring* (web-only) and the point-in-polygon geofence test remain
+outstanding (low priority; the rectangle is fine for now).

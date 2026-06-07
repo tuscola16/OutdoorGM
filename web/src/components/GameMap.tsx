@@ -49,7 +49,16 @@ function circlePolygon(lng: number, lat: number, radiusM: number, steps = 64): n
   return coords;
 }
 
-function rectPolygon(b: MapBoundary): number[][] {
+/**
+ * The closed GeoJSON ring ([lng, lat], first === last) for a boundary. Uses the
+ * polygon vertices when present (≥ 3), otherwise the min/max rectangle.
+ */
+function boundaryRing(b: MapBoundary): number[][] {
+  if (b.polygon && b.polygon.length >= 3) {
+    const ring = b.polygon.map((v) => [v.longitude, v.latitude]);
+    ring.push(ring[0]); // close the ring
+    return ring;
+  }
   return [
     [b.minLng, b.maxLat],
     [b.maxLng, b.maxLat],
@@ -318,10 +327,12 @@ export function GameMap({
     if (!map || !readyRef.current) return false;
     const pts: [number, number][] = [
       ...(boundary
-        ? ([
-            [boundary.minLng, boundary.minLat],
-            [boundary.maxLng, boundary.maxLat],
-          ] as [number, number][])
+        ? boundary.polygon && boundary.polygon.length >= 3
+          ? boundary.polygon.map((v) => [v.longitude, v.latitude] as [number, number])
+          : ([
+              [boundary.minLng, boundary.minLat],
+              [boundary.maxLng, boundary.maxLat],
+            ] as [number, number][])
         : []),
       ...checkpoints.map((c) => [c.longitude, c.latitude] as [number, number]),
       ...playerLocations.map((p) => [p.longitude, p.latitude] as [number, number]),
@@ -375,7 +386,7 @@ function boundaryFc(b: MapBoundary): GeoJSON.FeatureCollection {
       {
         type: 'Feature',
         properties: {},
-        geometry: { type: 'Polygon', coordinates: [rectPolygon(b)] },
+        geometry: { type: 'Polygon', coordinates: [boundaryRing(b)] },
       },
     ],
   };

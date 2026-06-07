@@ -61,8 +61,12 @@ interface GameMapProps {
   showsUserLocation?: boolean;
 }
 
-/** The four corners of a rectangular boundary, for a map Polygon. */
+/**
+ * The vertices of a boundary, for a map Polygon. Uses the polygon vertices when
+ * present (≥ 3), otherwise the four corners of the min/max rectangle.
+ */
 function boundaryCorners(b: MapBoundary) {
+  if (b.polygon && b.polygon.length >= 3) return b.polygon;
   return [
     { latitude: b.maxLat, longitude: b.minLng },
     { latitude: b.maxLat, longitude: b.maxLng },

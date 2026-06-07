@@ -23,12 +23,19 @@ export type GameStatus = 'active' | 'ended';
  */
 export type GamePhase = 'setup' | 'lobby' | 'play' | 'results';
 
-/** Rectangular play-area boundary, defined by the GM from a map view. */
+/** Play-area boundary, defined by the GM from a map view. */
 export interface MapBoundary {
   minLat: number;
   maxLat: number;
   minLng: number;
   maxLng: number;
+  /**
+   * Ordered polygon vertices (≥ 3). When present, this takes precedence over the
+   * min/max box for both rendering and framing — the box is kept as a legacy/
+   * fallback bounding rectangle (creators should set it to the polygon's bbox).
+   * Polygon authoring is web-only; viewing is supported on mobile + web.
+   */
+  polygon?: { latitude: number; longitude: number }[];
 }
 
 export interface UserProfile {

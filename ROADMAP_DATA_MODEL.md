@@ -694,9 +694,19 @@ export interface MapBoundary {
 
 - **Geofence + boundary-exit (§12 `outOfBounds`):** when `polygon` is set, replace the min/max
   compare with a **point-in-polygon** (ray-cast) test in `functions/src/geofence.ts` and any
-  client-side boundary check. Absent `polygon` → unchanged box behavior.
+  client-side boundary check. Absent `polygon` → unchanged box behavior. *(Not yet built —
+  boundary is render-only today; only needed once the boundary-exit alert lands.)*
 - **Editor:** the `gm/[gameId]/boundary.tsx` map gains a tap-to-add-vertex / drag-vertex mode.
   Low priority — the box path stays the default.
+
+> **Built (2026-06-06): schema + viewing.** `MapBoundary.polygon?` shipped exactly as above and
+> all read paths prefer it (≥3 verts) over the box, which is retained as the framing-fallback
+> bounding rectangle: mobile `components/GameMap.tsx` (`boundaryCorners`), `boundary.tsx` /
+> `checkpoints.tsx` read-only renders, and web `GameMap.tsx` (`boundaryRing` + `fitToData`).
+> Authoring is meant to be **web-only**; the mobile rect reticle editor still writes box-only
+> boundaries but now **guards** the polygon — when `boundary.polygon` is set it confirms before
+> the destructive whole-field replace ("Replace Polygon with This Rectangle").
+> **Outstanding:** the web polygon-draw UI and the point-in-polygon test above.
 
 ### #47 — Split boundary / checkpoint editors
 

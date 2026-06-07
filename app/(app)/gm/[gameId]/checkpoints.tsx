@@ -71,7 +71,9 @@ function ordinalLabel(i: number): string {
   return `${n}${suffix} arriver`;
 }
 
+// Polygon vertices when present (≥ 3), else the min/max rectangle corners.
 function corners(b: MapBoundary) {
+  if (b.polygon && b.polygon.length >= 3) return b.polygon;
   return [
     { latitude: b.maxLat, longitude: b.minLng },
     { latitude: b.maxLat, longitude: b.maxLng },

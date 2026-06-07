@@ -31,7 +31,11 @@ function regionToBoundary(r: Region): MapBoundary {
   };
 }
 
+// Polygon vertices when present (≥ 3), else the min/max rectangle corners. The
+// reticle editor here only authors rectangles; a polygon (authored on web) is
+// still rendered read-only.
 function corners(b: MapBoundary) {
+  if (b.polygon && b.polygon.length >= 3) return b.polygon;
   return [
     { latitude: b.maxLat, longitude: b.minLng },
     { latitude: b.maxLat, longitude: b.maxLng },
@@ -45,6 +49,9 @@ export default function BoundaryScreen() {
   const { game, loadGame } = useGame();
   const router = useRouter();
   const boundary: MapBoundary | undefined = game?.boundary;
+  // A polygon boundary is authored on the web dashboard; this rectangle reticle
+  // can't represent one, so saving here would silently replace it with a box.
+  const hasPolygon = !!boundary?.polygon && boundary.polygon.length >= 3;
   const mapRef = useRef<MapView>(null);
   // The map opens framed on `displayRegion`. animateToRegion is a no-op on this
   // mapType="none" + Google setup, so to recenter we *remount* the MapView (bump
@@ -137,7 +144,7 @@ export default function BoundaryScreen() {
     return () => { cancelled = true; clearTimeout(fallback); sub?.remove(); };
   }, [boundary, showRegion]);
 
-  async function handleSaveBoundary() {
+  async function saveRectBoundary() {
     if (!gameId || !regionRef.current) return;
     setSavingBoundary(true);
     try {
@@ -147,6 +154,23 @@ export default function BoundaryScreen() {
     } finally {
       setSavingBoundary(false);
     }
+  }
+
+  function handleSaveBoundary() {
+    // Replacing a web-drawn polygon with a rectangle is destructive — confirm first.
+    if (hasPolygon) {
+      Alert.alert(
+        'Replace polygon boundary?',
+        'This game has a custom polygon play area drawn on the web dashboard. Saving here ' +
+          'replaces it with a rectangle. Edit the polygon on the web dashboard instead to keep it.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Replace with rectangle', style: 'destructive', onPress: () => { void saveRectBoundary(); } },
+        ]
+      );
+      return;
+    }
+    void saveRectBoundary();
   }
 
   return (
@@ -201,11 +225,20 @@ export default function BoundaryScreen() {
 
       <View style={styles.footer}>
         <Text style={styles.hint}>
-          Frame the play area inside the box and tap below to set the boundary. Add
-          checkpoints separately from the Checkpoints screen.
+          {hasPolygon
+            ? 'This game uses a custom polygon play area drawn on the web dashboard. ' +
+              'Edit it there; saving a rectangle here would replace the polygon.'
+            : 'Frame the play area inside the box and tap below to set the boundary. Add ' +
+              'checkpoints separately from the Checkpoints screen.'}
         </Text>
         <Button
-          title={boundary ? 'Update Boundary to This View' : 'Set Boundary to This View'}
+          title={
+            hasPolygon
+              ? 'Replace Polygon with This Rectangle'
+              : boundary
+                ? 'Update Boundary to This View'
+                : 'Set Boundary to This View'
+          }
           onPress={handleSaveBoundary}
           loading={savingBoundary}
         />
