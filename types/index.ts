@@ -337,14 +337,28 @@ export type BroadcastKind =
   | 'checkpoint-event' // emitted by a CheckpointEvent
   | 'winner'; // Rule 1
 
+/**
+ * Sentinel `targetPlayerId` for a GM↔GM (co-GM) message (ROADMAP #40). It is neither
+ * `null` (the players' "global" query) nor any real player uid (their "mine" query), so
+ * a player's broadcast listeners never fetch it — keeping co-GM chatter off their feed
+ * without a separate collection. Paired with `audience: 'gm-only'` for clarity + a
+ * defense-in-depth rule.
+ */
+export const GM_BROADCAST_TARGET = '__gm__';
+
 export interface Broadcast {
   id: string;
   kind: BroadcastKind;
   message: string;
-  /** Omitted = all players. Set = targeted to one player (Rule 32 drops). */
+  /** Omitted = all players. Set = targeted to one player (Rule 32 drops), or the
+   * `GM_BROADCAST_TARGET` sentinel for a co-GM message (#40). */
   targetPlayerId?: string;
   /** For `kind: 'checkpoint-event'` — the checkpoint kind, so the feed can theme it. */
   eventKind?: CheckpointKind;
+  /** `'gm-only'` = a co-GM message, readable only by GMs (#40); absent = player-visible. */
+  audience?: 'gm-only';
+  /** Display name of the GM who sent a co-GM message (#40), so the feed can attribute it. */
+  senderName?: string;
   createdAt: FsTimestamp;
 }
 

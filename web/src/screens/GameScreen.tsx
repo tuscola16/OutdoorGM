@@ -17,12 +17,13 @@ import {
   openCheckpointNow, closeCheckpointNow, clearCheckpointWindow, checkpointWindowState,
   addScheduledEvent, updateScheduledEvent, deleteScheduledEvent,
   revealCheckpointNow, setRevealSchedule, parseEventDate, formatEventDate,
+  sendGmMessage, subscribeGmMessages,
 } from '@/services/gameService';
 import { KIND_META, KIND_ORDER, checkpointKind, buildEvent, VIS_META, VIS_ORDER } from '@/services/checkpointKinds';
 import { deleteField } from 'firebase/firestore';
 import type {
   Arrival, Checkpoint, CheckpointEvent, CheckpointKind, EventAudience, GameMember, MapBoundary, PlayerLocation, RationSubmission,
-  ScheduledEvent, ScheduledActionType, CheckpointVisibility, RevealTrigger, RevealAudience, CheckpointReveal, FsTimestamp,
+  ScheduledEvent, ScheduledActionType, CheckpointVisibility, RevealTrigger, RevealAudience, CheckpointReveal, FsTimestamp, Broadcast,
 } from '@shared/types';
 
 const PHASE_LABEL: Record<string, string> = {
@@ -38,6 +39,7 @@ export function GameScreen() {
   const [showCodes, setShowCodes] = useState(false);
   const [showPlayers, setShowPlayers] = useState(false);
   const [showBroadcast, setShowBroadcast] = useState(false);
+  const [showGmMessages, setShowGmMessages] = useState(false); // co-GM messaging (#40)
   const [showConfig, setShowConfig] = useState(false);
   const [showRations, setShowRations] = useState(false);
   const [showRunSheet, setShowRunSheet] = useState(false);
@@ -140,6 +142,7 @@ export function GameScreen() {
           </div>
         </div>
         <button className="btn btn--ghost" style={{ padding: '8px 12px' }} onClick={() => setShowCodes(true)}>Codes</button>
+        <button className="btn btn--ghost" style={{ padding: '8px 12px' }} onClick={() => setShowGmMessages(true)}>Co-GM</button>
         {phase !== 'results' && (
           <button className="btn btn--ghost" style={{ padding: '8px 12px' }} onClick={() => setShowRunSheet(true)}>
             Run-sheet{scheduledEvents.length ? ` (${scheduledEvents.length})` : ''}
@@ -242,6 +245,13 @@ export function GameScreen() {
           aliveCount={aliveCount}
           onSend={async (msg) => { await broadcast(msg); }}
           onClose={() => setShowBroadcast(false)}
+        />
+      )}
+      {showGmMessages && (
+        <GmMessagesModal
+          gameId={gameId!}
+          senderName={members.find((m) => m.userId === user?.uid)?.displayName ?? 'GM'}
+          onClose={() => setShowGmMessages(false)}
         />
       )}
       {showConfig && (
@@ -1468,6 +1478,66 @@ function BroadcastModal({
       <div style={{ display: 'flex', gap: 12 }}>
         <button className="btn btn--ghost" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
         <button className="btn" style={{ flex: 1 }} onClick={() => send(text)} disabled={busy}>Send</button>
+      </div>
+    </Modal>
+  );
+}
+
+function GmMessagesModal({
+  gameId, senderName, onClose,
+}: {
+  gameId: string;
+  senderName: string;
+  onClose: () => void;
+}) {
+  const [messages, setMessages] = useState<Broadcast[]>([]);
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => subscribeGmMessages(gameId, setMessages), [gameId]);
+
+  async function send() {
+    const msg = text.trim();
+    if (!msg) return;
+    setBusy(true);
+    try { await sendGmMessage(gameId, msg, senderName); setText(''); }
+    catch (err) { window.alert(friendlyError(err)); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <Modal title="Co-GM messages" onClose={onClose}>
+      <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: 14 }}>
+        Private channel between Game Masters — players never see these.
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 320, overflowY: 'auto', padding: '4px 0' }}>
+        {messages.length === 0 ? (
+          <p style={{ color: 'var(--text-muted)', fontSize: 13, textAlign: 'center', padding: '16px 0' }}>
+            No messages yet. Coordinate with your co-GMs here.
+          </p>
+        ) : (
+          messages.map((m) => (
+            <div key={m.id} className="card" style={{ padding: '8px 10px' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--secondary, #5A7E4E)', marginBottom: 2 }}>
+                {m.senderName ?? 'GM'} · {m.createdAt?.toDate ? m.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '…'}
+              </div>
+              <div style={{ fontSize: 14, lineHeight: 1.4 }}>{m.message}</div>
+            </div>
+          ))
+        )}
+      </div>
+      <textarea
+        className="input"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={2}
+        placeholder="Message your co-GMs…"
+        style={{ resize: 'vertical' }}
+        autoFocus
+      />
+      <div style={{ display: 'flex', gap: 12 }}>
+        <button className="btn btn--ghost" style={{ flex: 1 }} onClick={onClose}>Close</button>
+        <button className="btn" style={{ flex: 1 }} onClick={send} disabled={busy}>Send</button>
       </div>
     </Modal>
   );

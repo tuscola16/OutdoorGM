@@ -16,12 +16,12 @@ import { AlertFeed } from '@/components/AlertFeed';
 import { Button } from '@/components/ui/Button';
 import { Colors } from '@/constants/colors';
 import { onForegroundMessage } from '@/services/notificationService';
-import { endGame, openLobby, reopenSetup, startGame, updateGameConfig, deleteGame, setGameArchived, sendBroadcast, gameConfig, parseEventDate, formatEventDate } from '@/services/gameService';
+import { endGame, openLobby, reopenSetup, startGame, updateGameConfig, deleteGame, setGameArchived, sendBroadcast, sendGmMessage, subscribeGmMessages, gameConfig, parseEventDate, formatEventDate } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
 import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
 import { useNow } from '@/hooks/useNow';
 import { STALE_MS, unaccountedPlayers, unaccountedReasonText } from '@/services/locationStatus';
-import type { Checkpoint, GameMember } from '@/types';
+import type { Checkpoint, GameMember, Broadcast } from '@/types';
 
 type Tab = 'map' | 'alerts';
 
@@ -43,6 +43,10 @@ export default function GMGameScreen() {
   const [rulesText, setRulesText] = useState('');
   const [showBroadcast, setShowBroadcast] = useState(false);
   const [broadcastText, setBroadcastText] = useState('');
+  // Co-GM messaging (#40): GM↔GM-only broadcasts.
+  const [showGmMessages, setShowGmMessages] = useState(false);
+  const [gmMessages, setGmMessages] = useState<Broadcast[]>([]);
+  const [gmMsgText, setGmMsgText] = useState('');
   const [showConfig, setShowConfig] = useState(false);
   const [cfgDuration, setCfgDuration] = useState('');
   const [cfgGameDate, setCfgGameDate] = useState(''); // 'YYYY-MM-DD' event date (#36)
@@ -281,6 +285,25 @@ export default function GMGameScreen() {
     setShowBroadcast(false);
   }
 
+  // Subscribe to co-GM messages (#40) only while the modal is open — no need for a
+  // background listener (the GM screen already holds several).
+  useEffect(() => {
+    if (!gameId || !showGmMessages) return;
+    return subscribeGmMessages(gameId, setGmMessages);
+  }, [gameId, showGmMessages]);
+
+  async function sendGmMsg() {
+    const text = gmMsgText.trim();
+    if (!text || !gameId) return;
+    const senderName = members.find((m) => m.userId === user?.uid)?.displayName ?? 'GM';
+    setGmMsgText('');
+    try {
+      await sendGmMessage(gameId, text, senderName);
+    } catch (err) {
+      Alert.alert('Error', friendlyError(err));
+    }
+  }
+
   // Quick action: push the current living-player count to everyone (Rule 24).
   async function broadcastPlayerCount() {
     const living = members.filter((m) => m.role === 'player' && !m.out).length;
@@ -336,6 +359,10 @@ export default function GMGameScreen() {
               <Ionicons name="megaphone-outline" size={22} color={Colors.text} />
             </TouchableOpacity>
           )}
+          {/* Co-GM messages (#40) */}
+          <TouchableOpacity onPress={() => setShowGmMessages(true)} style={styles.headerBtn}>
+            <Ionicons name="chatbubbles-outline" size={22} color={Colors.text} />
+          </TouchableOpacity>
           <TouchableOpacity onPress={() => setShowCodes(true)} style={styles.headerBtn}>
             <Ionicons name="qr-code-outline" size={22} color={Colors.text} />
           </TouchableOpacity>
@@ -569,6 +596,50 @@ export default function GMGameScreen() {
             <View style={styles.modalActions}>
               <Button title="Cancel" onPress={() => setShowBroadcast(false)} variant="ghost" fullWidth={false} style={{ flex: 1 }} />
               <Button title="Send" onPress={sendBroadcastMessage} loading={busy} fullWidth={false} style={{ flex: 1 }} />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Co-GM messages modal (#40) — GM↔GM only, never shown to players */}
+      <Modal visible={showGmMessages} transparent animationType="slide" onRequestClose={() => setShowGmMessages(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Co-GM messages</Text>
+            <Text style={styles.modalSub}>
+              Private channel between Game Masters — players never see these.
+            </Text>
+            <FlatList
+              data={gmMessages}
+              keyExtractor={(item) => item.id}
+              style={styles.gmMsgList}
+              contentContainerStyle={{ gap: 8, paddingVertical: 4 }}
+              inverted
+              keyboardShouldPersistTaps="handled"
+              ListEmptyComponent={
+                <Text style={styles.gmMsgEmpty}>No messages yet. Coordinate with your co-GMs here.</Text>
+              }
+              renderItem={({ item }) => (
+                <View style={styles.gmMsgItem}>
+                  <Text style={styles.gmMsgMeta}>
+                    {item.senderName ?? 'GM'} · {item.createdAt?.toDate ? item.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '…'}
+                  </Text>
+                  <Text style={styles.gmMsgText}>{item.message}</Text>
+                </View>
+              )}
+            />
+            <TextInput
+              style={styles.gmMsgInput}
+              value={gmMsgText}
+              onChangeText={setGmMsgText}
+              placeholder="Message your co-GMs…"
+              placeholderTextColor={Colors.textMuted}
+              multiline
+              textAlignVertical="top"
+            />
+            <View style={styles.modalActions}>
+              <Button title="Close" onPress={() => setShowGmMessages(false)} variant="ghost" fullWidth={false} style={{ flex: 1 }} />
+              <Button title="Send" onPress={sendGmMsg} fullWidth={false} style={{ flex: 1 }} />
             </View>
           </View>
         </View>
@@ -1088,6 +1159,19 @@ const styles = StyleSheet.create({
   quickAction: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
     paddingVertical: 10, marginBottom: 12,
+  },
+  // Co-GM messages (#40)
+  gmMsgList: { maxHeight: 300, marginBottom: 12 },
+  gmMsgEmpty: { color: Colors.textMuted, fontSize: 13, textAlign: 'center', paddingVertical: 24 },
+  gmMsgItem: {
+    backgroundColor: Colors.surfaceElevated, borderRadius: 10, padding: 10,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  gmMsgMeta: { color: Colors.secondary, fontSize: 11, fontWeight: '700', marginBottom: 2 },
+  gmMsgText: { color: Colors.text, fontSize: 14, lineHeight: 19 },
+  gmMsgInput: {
+    backgroundColor: Colors.surfaceElevated, borderRadius: 12, borderWidth: 1, borderColor: Colors.border,
+    color: Colors.text, fontSize: 15, padding: 14, minHeight: 70, marginBottom: 16,
   },
   quickActionText: { color: Colors.primary, fontSize: 14, fontWeight: '600' },
   durationInput: {

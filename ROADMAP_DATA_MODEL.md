@@ -151,12 +151,21 @@ bbox); and a **point-in-polygon** (ray-cast) test in `functions/src/geofence.ts`
 boundary check, used when `polygon` is set (absent → unchanged box behavior). The geofence test is
 only needed once the boundary-exit alert (item 7) lands.
 
-## 40. GM↔GM messaging *(per-player checkpoints need no new schema)*
+## 40. GM↔GM messaging *(per-player checkpoints need no new schema)* — ✅ BUILT
 
 Per-player checkpoints reuse the built reveal model's `reveal.audience: 'specific-players'` +
 `recipientPlayerIds` — authoring only. GM↔GM messaging is **new**: either add a
 `targetRole: 'gm'` (or `audience: 'gm-only'`) to `Broadcast`, or a small `gmMessages` channel.
 Spec when prioritized.
+
+> **Built:** per-player checkpoint authoring already existed (checkpoint editor's
+> `specific-players` reveal audience + recipient picker) — verified, no change. GM↔GM messaging
+> chose the **`Broadcast.audience: 'gm-only'`** option: added `audience?: 'gm-only'` + `senderName?`
+> to `Broadcast` and an exported `GM_BROADCAST_TARGET` sentinel (so players' `targetPlayerId`
+> listeners never fetch it). `firestore.rules` adds `audience != 'gm-only'` to the player read
+> clause (defense-in-depth). `sendGmMessage`/`subscribeGmMessages` (mobile + web,
+> single-field equality query, sorted in memory — no index) drive a "Co-GM messages" feed +
+> composer modal on both clients. In-app only (no broadcast push trigger exists).
 
 ## 41. End-game phase
 

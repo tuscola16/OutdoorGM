@@ -276,6 +276,17 @@ works.
 (the GM side of the built reveal model's per-player case — `reveal.audience: specific-players`) and
 **GM↔GM messaging** (new — broadcasts are GM→player only today).
 
+> **Built:**
+> - *Per-player checkpoints* were already authorable: the checkpoint editor (mobile
+>   `checkpoints.tsx` + web `CheckpointModal`) has the `specific-players` reveal audience with a
+>   recipient picker (`recipientPlayerIds`), wired through the reveal/marker projection. No change
+>   needed — verified.
+> - *GM↔GM messaging* (new): `Broadcast.audience: 'gm-only'` + the `GM_BROADCAST_TARGET` sentinel
+>   keep co-GM messages off players' broadcast listeners; `firestore.rules` denies players any
+>   `audience:'gm-only'` doc. `sendGmMessage`/`subscribeGmMessages` (mobile + web) power a "Co-GM
+>   messages" modal — a GM-only feed + composer (attributed by `senderName`) on the mobile GM screen
+>   and the web dashboard. In-app only (matches manual GM→player broadcasts; no push trigger).
+
 ---
 
 ## Tier 11 — P3 polish

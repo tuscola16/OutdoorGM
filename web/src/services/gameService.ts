@@ -6,6 +6,7 @@ import {
   where,
   getDoc,
   getDocs,
+  onSnapshot,
   addDoc,
   setDoc,
   updateDoc,
@@ -20,8 +21,10 @@ import { httpsCallable } from 'firebase/functions';
 import { db, functions, Collections } from './firebase';
 import {
   BASE_GAME_CONFIG,
+  GM_BROADCAST_TARGET,
   type Game,
   type GameConfig,
+  type Broadcast,
   type Checkpoint,
   type GamePhase,
   type GameStatus,
@@ -227,6 +230,47 @@ export async function sendBroadcast(
     targetPlayerId: targetPlayerId ?? null,
     createdAt: serverTimestamp(),
   });
+}
+
+/**
+ * Send a GM↔GM (co-GM) message (#40): a broadcast readable only by GMs, via the
+ * `GM_BROADCAST_TARGET` sentinel + `audience: 'gm-only'` (enforced in firestore.rules).
+ * GM↔GM only — there is no player↔player channel (Rule 23).
+ */
+export async function sendGmMessage(
+  gameId: string,
+  message: string,
+  senderName: string
+): Promise<void> {
+  await addDoc(collection(db, Collections.GAMES, gameId, Collections.BROADCASTS), {
+    kind: 'gm-message',
+    message,
+    targetPlayerId: GM_BROADCAST_TARGET,
+    audience: 'gm-only',
+    senderName,
+    createdAt: serverTimestamp(),
+  });
+}
+
+/** Subscribe to a game's co-GM messages (#40), newest first. GM-only (firestore.rules). */
+export function subscribeGmMessages(
+  gameId: string,
+  onChange: (messages: Broadcast[]) => void
+): () => void {
+  const q = query(
+    collection(db, Collections.GAMES, gameId, Collections.BROADCASTS),
+    where('audience', '==', 'gm-only')
+  );
+  return onSnapshot(
+    q,
+    (snap) => {
+      const msgs = snap.docs
+        .map((d) => ({ id: d.id, ...d.data() }) as Broadcast)
+        .sort((a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0));
+      onChange(msgs);
+    },
+    (err) => console.error('[GmMessages] subscription error', err)
+  );
 }
 
 export interface MyGameEntry {

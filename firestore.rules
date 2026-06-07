@@ -122,8 +122,13 @@ service cloud.firestore {
       // Only GMs write; Cloud Functions (death/winner/checkpoint events) use the
       // admin SDK and bypass rules.
       match /broadcasts/{broadcastId} {
+        // Players read global + own-targeted messages, but never co-GM messages (#40):
+        // those carry audience:'gm-only' (and the GM_BROADCAST_TARGET sentinel, which a
+        // player's targetPlayerId queries already exclude — the audience check is
+        // defense-in-depth). GMs read everything.
         allow read: if isGameGM(gameId)
           || (isSignedIn()
+              && resource.data.get('audience', null) != 'gm-only'
               && (resource.data.targetPlayerId == null
                   || resource.data.targetPlayerId == request.auth.uid));
         allow create, update, delete: if isGameGM(gameId);

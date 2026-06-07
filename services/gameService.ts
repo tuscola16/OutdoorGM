@@ -3,6 +3,7 @@ import auth from '@react-native-firebase/auth';
 import { Collections, functions } from './firebase';
 import {
   BASE_GAME_CONFIG,
+  GM_BROADCAST_TARGET,
   type Game,
   type GameConfig,
   type Checkpoint,
@@ -252,6 +253,53 @@ export async function sendBroadcast(
       targetPlayerId: targetPlayerId ?? null,
       createdAt: firestore.FieldValue.serverTimestamp(),
     });
+}
+
+/**
+ * Send a GM↔GM (co-GM) message (#40): a broadcast readable only by GMs. Uses the
+ * `GM_BROADCAST_TARGET` sentinel so players' broadcast listeners never fetch it, plus
+ * `audience: 'gm-only'` (enforced in firestore.rules). There is no player↔player channel
+ * (Rule 23); this is GM↔GM only.
+ */
+export async function sendGmMessage(
+  gameId: string,
+  message: string,
+  senderName: string
+): Promise<void> {
+  await firestore()
+    .collection(Collections.GAMES)
+    .doc(gameId)
+    .collection(Collections.BROADCASTS)
+    .add({
+      kind: 'gm-message',
+      message,
+      targetPlayerId: GM_BROADCAST_TARGET,
+      audience: 'gm-only',
+      senderName,
+      createdAt: firestore.FieldValue.serverTimestamp(),
+    });
+}
+
+/** Subscribe to a game's co-GM messages (#40), newest first. GM-only (firestore.rules).
+ * Single-field equality query (no composite index); sorted in memory. */
+export function subscribeGmMessages(
+  gameId: string,
+  onChange: (messages: import('@/types').Broadcast[]) => void
+): () => void {
+  return firestore()
+    .collection(Collections.GAMES)
+    .doc(gameId)
+    .collection(Collections.BROADCASTS)
+    .where('audience', '==', 'gm-only')
+    .onSnapshot(
+      (snap) => {
+        const msgs = snap.docs
+          .map((d) => ({ id: d.id, ...d.data() }) as import('@/types').Broadcast)
+          .sort((a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0));
+        onChange(msgs);
+      },
+      (err) => console.error('[GmMessages] subscription error', err)
+    );
 }
 
 /**
