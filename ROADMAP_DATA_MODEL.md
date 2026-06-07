@@ -8,8 +8,9 @@ same item numbers. Everything here extends the existing types in
 `sos`/`sosAckAt`/`outOfBounds`, `Game.gameDate`, the `markers`/reveal model) is already in those
 files and is the baseline below.
 
-New fields stay **optional** so legacy games keep working. Timestamps use the platform-neutral
-`FsTimestamp` so types compile in both the mobile app and `web/`.
+New fields stay **optional** so legacy games keep working — the **one exception is [§60](#60-checkpoint--runbook-overhaul)**,
+the checkpoint/runbook overhaul, which removes fields and relies on a one-time migration instead.
+Timestamps use the platform-neutral `FsTimestamp` so types compile in both the mobile app and `web/`.
 
 Only items with a real data-model/infra delta appear here; pure logic/UI/enforcement items are
 listed under [No schema change](#no-schema-change-enforcement--logic-only). Built items (1–10,
@@ -18,6 +19,141 @@ listed under [No schema change](#no-schema-change-enforcement--logic-only). Buil
 `Checkpoint.icon` field and the transition schema — `CheckpointState`/`CheckpointTransition`/
 `initialState`/`transitions`/`currentState` — plus their GM authoring UI; see
 [No schema change](#no-schema-change-enforcement--logic-only).)
+
+---
+
+## 60. Checkpoint & runbook overhaul
+
+**Full replacement** of the per-checkpoint behavior model. A checkpoint shrinks to identity +
+visibility; all behavior moves to a new `runbook` collection of priority-ranked entries. This is the
+one place in this file that **removes** existing fields rather than adding optional ones — see the
+migration note.
+
+### 60.A `Checkpoint` — slimmed to identity + visibility
+
+```ts
+export type CheckpointVisibility = 'hidden' | 'shown' | 'shown-on-trigger';
+export type RevealTrigger = 'player' | 'gm' | 'timed'; // only when shown-on-trigger
+export type RevealAudience = 'all' | 'specific-players' | 'triggerer';
+
+export interface CheckpointReveal {
+  trigger: RevealTrigger;
+  audience: RevealAudience;
+  atMinute?: number | null;          // 'timed' trigger: minutes after startedAt
+  revealAt?: FsTimestamp | null;     // 'timed' trigger: absolute (reserved)
+  recipientPlayerIds?: string[];     // 'specific-players' audience
+}
+
+export interface Checkpoint {
+  id: string;
+  name: string;
+  icon?: string;
+  latitude: number;
+  longitude: number;
+  radius: number;                    // meters — intrinsic geofence geometry, stays
+  order?: number;
+  visibility: CheckpointVisibility;  // default 'hidden' (legacy gm-only)
+  reveal?: CheckpointReveal;         // when visibility === 'shown-on-trigger'
+  revealedAt?: FsTimestamp | null;   // reveal latch (unchanged)
+  revealedTo?: string[];             // targeted-reveal latch (unchanged)
+}
+```
+
+**Removed from `Checkpoint`:** `event`, `eventQueue`, `opensAt`, `closesAt`, `initialState`,
+`transitions`, `currentState`, `description`. **Renamed in place:** `gm-only → hidden`,
+`always → shown`, `on-reveal → shown-on-trigger`; reveal trigger `on-crossing → player`,
+`gm-manual → gm`, `game-time → timed`. Visibility (the marker) stays **orthogonal** to the runbook
+(the effect): a `shown` checkpoint can still carry a secret hazard; a `hidden` one can still fire boons.
+
+### 60.B `RunbookEntry` — the behavior unit
+
+New collection `games/{gameId}/runbook/{entryId}` — **top-level** (not a checkpoint subcollection) so
+the GM dashboard groups/sorts all entries with one listener; **GM-only** read/write in
+`firestore.rules` (same posture as `checkpoints`; it holds the secret payloads). The geofence reads it
+via the admin SDK.
+
+```ts
+export type RunbookTriggerType = 'fixed-order' | 'always-on' | 'timed' | 'gm-prompted';
+export type CheckpointKind = 'hazard' | 'boon' | 'gm-notify' | 'notify';
+
+/** What a player receives. A fixed-order slot can carry its own kind+message. */
+export interface RunbookEffect {
+  kind: CheckpointKind;
+  message?: string;
+}
+
+export type TimedBound =
+  | { kind: 'game-start' } | { kind: 'game-end' }
+  | { kind: 'time'; atMinute?: number; fireAt?: FsTimestamp }; // minutes after startedAt (primary)
+
+export interface RunbookEntry {
+  id: string;
+  checkpointId: string;
+  name: string;
+  priority: number;                  // higher wins per crossing; also drives sidebar sort
+  trigger: RunbookTriggerType;
+  effect: RunbookEffect;             // entry's type+message; also the fixed-order default
+
+  // trigger: 'fixed-order' (keyed by ARRIVAL ORDER, not player identity)
+  queueSlots?: (RunbookEffect | null)[]; // position N → its own effect, or null = "nothing fires";
+                                          // positions past the array fall back to `effect`
+
+  // trigger: 'timed'
+  startAt?: TimedBound;              // default { kind: 'game-start' }
+  endAt?: TimedBound;               // default { kind: 'game-end' }
+
+  // trigger: 'gm-prompted' — no schedule; GM taps to fire and picks target player(s).
+  firedAt?: FsTimestamp | null;     // latch for idempotency / results view (open sub-point)
+
+  createdAt: FsTimestamp;
+}
+```
+
+**Triggers:**
+- **fixed-order** — the Nth distinct arriver (0-based, counted via the `checkpointTrips` latch) gets
+  `queueSlots[N]`, falling back to `effect`; a `null` slot fires nothing for that arriver. Replaces
+  `eventQueue`.
+- **always-on** — fires `effect` for every crossing. Replaces the single `event`.
+- **timed** — eligible only while `now ∈ [startAt, endAt]`. Replaces `opensAt`/`closesAt` **and** the
+  `transitions`/`currentState` schedule.
+- **gm-prompted** — fired manually during play; the GM picks the target player(s), writing a targeted
+  broadcast.
+
+### 60.C Resolution
+
+On each crossing (`onLocationUpdate`, `functions/src/geofence.ts`): gather every entry for that
+checkpoint that currently matches (always-on always; timed if in window; fixed-order if this arriver's
+slot is non-null; gm-prompted only when fired), then deliver **exactly one — the highest `priority`**.
+Tie-break: earliest eligibility, then `createdAt`. The GM-only arrival ping fires independently
+(the GM always sees arrivals). Reuses the `checkpointTrips` latch for arrival-order counting and the
+existing re-notify / away-cooldown logic. Must be idempotent (item 26).
+
+### 60.D Web editor
+
+Full page (`web/`): a left sidebar of runbook **entries** in two groups — **Always-on** (priority
+desc) and **Timed** (priority desc, then start time asc; earlier higher) — each row labeled with its
+checkpoint; an entry with both kinds of triggers can't exist (one trigger per entry), but a checkpoint
+with mixed entries appears in both groups. The right pane edits the selected entry (name, checkpoint,
+type, priority, trigger-specific fields: queue-slot table / timed start–end / gm-prompted target
+rules). Checkpoint placement (name + icon + visibility + radius) stays on the map screen.
+
+### 60.E Migration *(full replacement)*
+
+- New `runbook` collection + slimmed `Checkpoint`; old behavior fields dropped from `types/index.ts`
+  and the authoring UIs (`components/checkpointForm.tsx`,
+  `app/(app)/gm/[gameId]/checkpoint/[checkpointId].tsx`, web equivalents).
+- One-time migration over existing games: `event → always-on entry`, `eventQueue → fixed-order entry`
+  (each item → a `queueSlots` slot), `opensAt/closesAt`+`transitions → timed entries`, visibility/reveal
+  renamed in place. Per the trusted-APK milestone, migrate-in-place or reset stale games rather than
+  carry dual code paths.
+- The run sheet (`ScheduledEvent`: timed broadcasts, GM reminders, player-count) stays a **separate**
+  schedule tool — only checkpoint *effects* move to the runbook. Its `open-site`/`close-site`/
+  `reveal-checkpoint` action types are superseded by timed entries + the reveal model and can be retired.
+- `firestore.rules`: add `runbook` (GM-only); the geofence/sweep functions read it via admin SDK.
+
+**Open sub-points (don't block):** per-slot effect overrides are in (above); whether `gm-prompted`
+latches recipients for a results view; priority is a single number serving both per-checkpoint
+resolution and global sidebar sort.
 
 ---
 
