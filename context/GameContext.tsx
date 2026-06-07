@@ -6,6 +6,7 @@ import { gamePhase } from '@/services/gameService';
 import type {
   Game,
   Checkpoint,
+  RunbookEntry,
   GameMember,
   PlayerLocation,
   Arrival,
@@ -21,6 +22,8 @@ interface GameContextValue {
   phase: GamePhase;
   myRole: 'player' | 'gm' | null;
   checkpoints: Checkpoint[];
+  /** Runbook entries (GM only, #60). The behavior attached to checkpoints. */
+  runbookEntries: RunbookEntry[];
   members: GameMember[];
   playerLocations: PlayerLocation[];
   arrivals: Arrival[];
@@ -44,6 +47,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   const [myRole, setMyRole] = useState<'player' | 'gm' | null>(null);
   const [game, setGame] = useState<Game | null>(null);
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
+  const [runbookEntries, setRunbookEntries] = useState<RunbookEntry[]>([]);
   const [members, setMembers] = useState<GameMember[]>([]);
   const [playerLocations, setPlayerLocations] = useState<PlayerLocation[]>([]);
   const [arrivals, setArrivals] = useState<Arrival[]>([]);
@@ -62,6 +66,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     setMyRole(null);
     setGame(null);
     setCheckpoints([]);
+    setRunbookEntries([]);
     setMembers([]);
     setPlayerLocations([]);
     setArrivals([]);
@@ -99,6 +104,22 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
         (err) => console.error('[GameContext] checkpoints listener error', err)
       );
   }, [gameId]);
+
+  // Subscribe to runbook entries (GM only, #60). The behavior attached to checkpoints;
+  // players never read it (they only experience the broadcasts/pushes it produces).
+  useEffect(() => {
+    if (!gameId || myRole !== 'gm') return;
+    return firestore()
+      .collection(Collections.GAMES)
+      .doc(gameId)
+      .collection(Collections.RUNBOOK)
+      .onSnapshot(
+        (snap) => {
+          setRunbookEntries(snap.docs.map((d) => ({ id: d.id, ...d.data() } as RunbookEntry)));
+        },
+        (err) => console.error('[GameContext] runbook listener error', err)
+      );
+  }, [gameId, myRole]);
 
   // Subscribe to members
   useEffect(() => {
@@ -269,7 +290,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <GameContext.Provider
-      value={{ game, phase: gamePhase(game), myRole, checkpoints, members, playerLocations, arrivals, broadcasts, rations, scheduledEvents, markers, loadGame, clearGame }}
+      value={{ game, phase: gamePhase(game), myRole, checkpoints, runbookEntries, members, playerLocations, arrivals, broadcasts, rations, scheduledEvents, markers, loadGame, clearGame }}
     >
       {children}
     </GameContext.Provider>

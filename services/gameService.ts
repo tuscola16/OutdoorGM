@@ -7,8 +7,7 @@ import {
   type Game,
   type GameConfig,
   type Checkpoint,
-  type CheckpointState,
-  type CheckpointKind,
+  type RunbookEntry,
   type GamePhase,
   type GameStatus,
   type MapBoundary,
@@ -473,8 +472,60 @@ export async function deleteCheckpoint(gameId: string, checkpointId: string): Pr
     .collection(Collections.CHECKPOINTS)
     .doc(checkpointId)
     .delete();
-  // Drop any paired game-time reveal row (#48) so a deleted checkpoint can't be revealed.
+  // Drop any paired timed reveal row (#60) so a deleted checkpoint can't be revealed.
   await scheduledEventsCol(gameId).doc(revealEventId(checkpointId)).delete().catch(() => {});
+  // Cascade-delete the checkpoint's runbook entries so none are left dangling (#60).
+  const entries = await runbookCol(gameId).where('checkpointId', '==', checkpointId).get();
+  if (!entries.empty) {
+    const batch = firestore().batch();
+    entries.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+}
+
+// --- Runbook entries (#60) ---
+
+const runbookCol = (gameId: string) =>
+  firestore().collection(Collections.GAMES).doc(gameId).collection(Collections.RUNBOOK);
+
+/** Create a runbook entry attached to a checkpoint. */
+export async function addRunbookEntry(
+  gameId: string,
+  entry: Omit<RunbookEntry, 'id' | 'createdAt'>
+): Promise<RunbookEntry> {
+  const ref = runbookCol(gameId).doc();
+  const data = { ...entry, createdAt: firestore.FieldValue.serverTimestamp() };
+  await ref.set(data);
+  return { id: ref.id, ...entry, createdAt: data.createdAt as unknown as FsTimestamp };
+}
+
+/** Update a runbook entry. Pass `firestore.FieldValue.delete()` to drop trigger-specific
+ * fields (e.g. clearing `queueSlots` when switching away from fixed-order). */
+export async function updateRunbookEntry(
+  gameId: string,
+  entryId: string,
+  updates: Record<string, unknown>
+): Promise<void> {
+  await runbookCol(gameId).doc(entryId).update(updates);
+}
+
+export async function deleteRunbookEntry(gameId: string, entryId: string): Promise<void> {
+  await runbookCol(gameId).doc(entryId).delete();
+}
+
+/**
+ * Fire a `gm-prompted` runbook entry now (#60): the GM taps it and picks the target
+ * player(s). Runs server-side (the fireRunbookEntry callable) so it can push to players
+ * and validate the caller is a GM. Pass an empty/omitted `targetPlayerIds` to deliver to
+ * every living player.
+ */
+export async function fireRunbookEntry(
+  gameId: string,
+  entryId: string,
+  targetPlayerIds?: string[]
+): Promise<void> {
+  const callable = functions().httpsCallable('fireRunbookEntry');
+  await callable({ gameId, entryId, targetPlayerIds: targetPlayerIds ?? null });
 }
 
 /** Deterministic run-sheet doc id for a checkpoint's game-time reveal (#48), so the
@@ -548,91 +599,6 @@ export async function revealCheckpointNow(gameId: string, cp: Checkpoint): Promi
       ? { revealedTo: firestore.FieldValue.arrayUnion(...audience) }
       : {}),
   });
-}
-
-// --- Timed site windows (#12) ---
-
-/** A checkpoint's live state given its window. `always` = no window (default);
- * `pending` = window set but not open yet; `open` = live now; `closed` = window passed. */
-export type CheckpointWindowState = 'always' | 'pending' | 'open' | 'closed';
-
-export function checkpointWindowState(
-  cp: { opensAt?: FsTimestamp | null; closesAt?: FsTimestamp | null },
-  nowMs: number = Date.now()
-): CheckpointWindowState {
-  const opens = cp.opensAt?.toMillis?.() ?? null;
-  const closes = cp.closesAt?.toMillis?.() ?? null;
-  if (opens == null && closes == null) return 'always';
-  if (opens != null && nowMs < opens) return 'pending';
-  if (closes != null && nowMs > closes) return 'closed';
-  return 'open';
-}
-
-const checkpointDoc = (gameId: string, checkpointId: string) =>
-  firestore()
-    .collection(Collections.GAMES)
-    .doc(gameId)
-    .collection(Collections.CHECKPOINTS)
-    .doc(checkpointId);
-
-/** GM opens a timed site now: live from this moment, no scheduled close (#12). */
-export async function openCheckpointNow(gameId: string, checkpointId: string): Promise<void> {
-  await checkpointDoc(gameId, checkpointId).update({
-    opensAt: firestore.FieldValue.serverTimestamp(),
-    closesAt: firestore.FieldValue.delete(),
-  });
-}
-
-/** GM closes a timed site now: stops firing from this moment on (#12). */
-export async function closeCheckpointNow(gameId: string, checkpointId: string): Promise<void> {
-  await checkpointDoc(gameId, checkpointId).update({
-    closesAt: firestore.FieldValue.serverTimestamp(),
-  });
-}
-
-/** GM removes the window so the site is always live again (#12). */
-export async function clearCheckpointWindow(gameId: string, checkpointId: string): Promise<void> {
-  await checkpointDoc(gameId, checkpointId).update({
-    opensAt: firestore.FieldValue.delete(),
-    closesAt: firestore.FieldValue.delete(),
-  });
-}
-
-// --- Time-based checkpoint state transitions (#54) ---
-
-/** State → CheckpointKind, mirroring `applyCheckpointTransitions` in functions/src/runsheet.ts. */
-const STATE_TO_KIND: Record<Exclude<CheckpointState, 'closed'>, CheckpointKind> = {
-  boon: 'boon',
-  hazard: 'hazard',
-  notification: 'player-notify',
-};
-
-/**
- * The checkpoint-doc fields that make a `CheckpointState` effective **immediately** (before
- * the run-sheet sweep next runs), mirroring the server's transition application. `closed`
- * shuts the window; the others map to a CheckpointKind and open the window. Used by the
- * editor so a scheduled checkpoint's initial state is correct from game start (the sweep
- * then handles the later, atMinute > 0 transitions). Values include FieldValue sentinels,
- * so the caller spreads this into an `updateCheckpoint` payload (cast as needed).
- */
-export function stateEventFields(
-  state: CheckpointState,
-  message?: string
-): Record<string, unknown> {
-  if (state === 'closed') {
-    return {
-      currentState: 'closed',
-      event: firestore.FieldValue.delete(),
-      opensAt: firestore.FieldValue.delete(),
-      closesAt: firestore.FieldValue.serverTimestamp(),
-    };
-  }
-  return {
-    currentState: state,
-    event: { kind: STATE_TO_KIND[state], ...(message ? { message } : {}) },
-    opensAt: firestore.FieldValue.serverTimestamp(),
-    closesAt: firestore.FieldValue.delete(),
-  };
 }
 
 // --- Run-sheet / scheduled events (#11) ---

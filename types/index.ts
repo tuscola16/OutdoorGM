@@ -165,33 +165,13 @@ export const BASE_GAME_CONFIG: GameConfig = {
 };
 
 /**
- * The four things a checkpoint can do when a player crosses it:
- * - `hazard`       — a danger (beast attack, poison, …); themed push to the crossing player.
- * - `boon`         — a positive find; themed push to the crossing player.
- * - `player-notify`— a plain message to the crossing player, or to all players.
- * - `gm-only`      — only the GM is alerted; the player sees nothing (the default ping).
+ * The four things a runbook entry can do when it fires for a player (ROADMAP #60):
+ * - `hazard`    — a danger (beast attack, poison, …); themed push to the crossing player.
+ * - `boon`      — a positive find; themed push to the crossing player.
+ * - `notify`    — a plain message to the crossing player, or to all players.
+ * - `gm-notify` — only the GM is alerted; the player sees nothing (the default ping).
  */
-export type CheckpointKind = 'hazard' | 'boon' | 'player-notify' | 'gm-only';
-
-/**
- * Declarative time-based state a checkpoint can be in (ROADMAP #54). Applied by the
- * run-sheet sweep from `Checkpoint.transitions[]`. `'closed'` shuts the site window;
- * `'boon'`/`'hazard'`/`'notification'` map to the corresponding CheckpointKind and
- * open the window.
- */
-export type CheckpointState = 'closed' | 'boon' | 'hazard' | 'notification';
-
-/**
- * A single timed state transition on a checkpoint (ROADMAP #54). The sweep applies
- * the latest transition whose `atMinute ≤ elapsed game time` — ordering matters when
- * multiple transitions are due. `atMinute` is relative to `game.startedAt`.
- */
-export interface CheckpointTransition {
-  atMinute: number;
-  state: CheckpointState;
-  /** Optional message to surface when this state becomes active. */
-  message?: string;
-}
+export type CheckpointKind = 'hazard' | 'boon' | 'gm-notify' | 'notify';
 
 /**
  * Per-player/per-checkpoint crossing latch (ROADMAP #50/#55). Written only by Cloud
@@ -212,120 +192,134 @@ export interface CheckpointTrip {
   /** Timestamp of the most recent confirmed exit. */
   lastExitAt?: FsTimestamp | null;
   /**
-   * The resolved checkpoint state (event.kind or currentState) at the last time a
-   * player notification was sent (#55). Used to re-notify only on state changes.
+   * The resolved runbook effect kind at the last time a player notification was sent
+   * (#55). Used to re-notify only when the resolved effect changes.
    */
   lastNotifiedState?: string | null;
 }
 
-export type EventAudience = 'crossing-player' | 'all-players' | 'gm-only';
+/** Who a `notify` effect reaches. Only meaningful for `kind: 'notify'`. */
+export type NotifyAudience = 'crossing-player' | 'all-players';
 
-/** What firing a checkpoint geofence does for one crossing. */
-export interface CheckpointEvent {
+/**
+ * What a runbook entry delivers to a player when it fires (ROADMAP #60). A fixed-order
+ * entry can carry a distinct effect per arrival slot; other triggers use the entry's
+ * single `effect`.
+ */
+export interface RunbookEffect {
   kind: CheckpointKind;
   /** Body shown in the push/broadcast, e.g. "A beast attacks! Defend or flee." */
   message?: string;
   /**
-   * Who sees it. Only meaningful for `player-notify` (crossing-player | all-players).
-   * `hazard`/`boon` imply `crossing-player`; `gm-only` implies `gm-only`. Resolved per
-   * kind when omitted.
+   * For `kind: 'notify'` only: the crossing player (default) or all players.
+   * `hazard`/`boon` always go to the crossing player; `gm-notify` to the GM only.
    */
-  audience?: EventAudience;
-  // Reserved for a future "snap a photo of the gear" gate (rations-style). Not used yet.
-  // requirePhoto?: boolean;
+  audience?: NotifyAudience;
+}
+
+/** The four ways a runbook entry becomes eligible to fire (ROADMAP #60). */
+export type RunbookTriggerType = 'fixed-order' | 'always-on' | 'timed' | 'gm-prompted';
+
+/**
+ * A start/end bound for a `timed` runbook entry (ROADMAP #60). `game-start`/`game-end`
+ * anchor to the game's lifecycle; `time` is an explicit minute offset after `startedAt`
+ * (primary) or an absolute `fireAt` (reserved).
+ */
+export type TimedBound =
+  | { kind: 'game-start' }
+  | { kind: 'game-end' }
+  | { kind: 'time'; atMinute?: number; fireAt?: FsTimestamp };
+
+/**
+ * One behavior attached to a checkpoint (ROADMAP #60). A checkpoint owns 0..N entries;
+ * on a crossing a player receives exactly one — the highest-`priority` matching entry.
+ * Stored at games/{gameId}/runbook/{entryId} (top-level, GM-only).
+ */
+export interface RunbookEntry {
+  id: string;
+  /** The checkpoint this entry is attached to. */
+  checkpointId: string;
+  /** GM-facing label, e.g. "Sponsor drop" or "Midnight hazard". */
+  name: string;
+  /** Higher wins on a crossing; also the primary sidebar sort key. */
+  priority: number;
+  trigger: RunbookTriggerType;
+  /** The entry's effect; also the fixed-order default for positions past `queueSlots`. */
+  effect: RunbookEffect;
+  /**
+   * `fixed-order` only: the Nth distinct arriver (0-based) gets `queueSlots[N]`; a `null`
+   * slot fires nothing for that arriver; positions beyond the array fall back to `effect`.
+   */
+  queueSlots?: (RunbookEffect | null)[];
+  /** `timed` only: window start (default `{ kind: 'game-start' }`). */
+  startAt?: TimedBound;
+  /** `timed` only: window end (default `{ kind: 'game-end' }`). */
+  endAt?: TimedBound;
+  /**
+   * `gm-prompted` only: latched when the GM fires it, for the results view / idempotency.
+   * Cleared/reset on re-arm. Not used by crossing resolution.
+   */
+  firedAt?: FsTimestamp | null;
+  createdAt: FsTimestamp;
 }
 
 /**
- * Whether (and when) a checkpoint's marker is shown to players (ROADMAP #48). This is
- * ORTHOGONAL to its `event`/`eventQueue` payload: visibility = whether/when/to-whom the
- * marker shows on the player map; the payload = what happens on crossing. A marker only
- * ever carries the checkpoint's name + location (never the secret event body).
- * - `gm-only` — never shown to players (the default; legacy invisible-to-players behavior).
- * - `always`  — shown to all players from Start Game (case C: a named location whose
- *               effect is still secret until crossed).
- * - `on-reveal`— hidden until a `reveal` trigger fires (cases A trap, B drop, D sponsor).
+ * Whether (and when) a checkpoint's marker is shown to players (ROADMAP #60, formerly #48).
+ * ORTHOGONAL to the runbook: visibility = whether/when/to-whom the marker shows on the
+ * player map; the runbook = what happens on crossing. A marker only ever carries the
+ * checkpoint's name + location (never any secret effect body).
+ * - `hidden`           — never shown to players (the default; invisible-to-players).
+ * - `shown`            — shown to all players from Start Game (a named location whose
+ *                        effect is still secret until crossed).
+ * - `shown-on-trigger` — hidden until a `reveal` trigger fires (trap, timed drop, sponsor).
  */
-export type CheckpointVisibility = 'gm-only' | 'always' | 'on-reveal';
+export type CheckpointVisibility = 'hidden' | 'shown' | 'shown-on-trigger';
 
-/** How an `on-reveal` checkpoint becomes visible. */
+/** How a `shown-on-trigger` checkpoint becomes visible. */
 export type RevealTrigger =
-  | 'game-time' // revealed at `offsetMinutes` after startedAt (run-sheet reveal-checkpoint row)
-  | 'gm-manual' // GM taps "Reveal now"
-  | 'on-crossing'; // revealed the moment a player enters (case A trap)
+  | 'player' // revealed the moment a player enters (the trap they just sprang)
+  | 'gm' // GM taps "Reveal now"
+  | 'timed'; // revealed at `offsetMinutes` after startedAt (run-sheet reveal row)
 
-/** Who can see an `on-reveal` checkpoint once it's revealed. */
+/** Who can see a `shown-on-trigger` checkpoint once it's revealed. */
 export type RevealAudience =
-  | 'all' // every player (case B)
-  | 'specific-players' // a named subset, usually 1 (case D sponsor drop)
-  | 'triggerer'; // only the player who crossed (case A trap)
+  | 'all' // every player
+  | 'specific-players' // a named subset, usually 1 (sponsor drop)
+  | 'triggerer'; // only the player who crossed (a trap)
 
-/** For `visibility: 'on-reveal'` — how/when/to-whom the marker becomes visible. */
+/** For `visibility: 'shown-on-trigger'` — how/when/to-whom the marker becomes visible. */
 export interface CheckpointReveal {
   trigger: RevealTrigger;
   audience: RevealAudience;
-  /** `game-time` trigger: minutes after the game's `startedAt`. */
+  /** `timed` trigger: minutes after the game's `startedAt`. */
   offsetMinutes?: number | null;
-  /** `game-time` trigger: an absolute fire time (reserved; offsetMinutes is primary). */
+  /** `timed` trigger: an absolute fire time (reserved; offsetMinutes is primary). */
   revealAt?: FsTimestamp | null;
   /** `specific-players` audience: member ids allowed to see it once revealed. */
   recipientPlayerIds?: string[];
 }
 
+/**
+ * A checkpoint after the runbook overhaul (ROADMAP #60): identity + geofence geometry +
+ * visibility only. All behavior lives in `RunbookEntry` docs keyed by this checkpoint's id.
+ */
 export interface Checkpoint {
   id: string;
   name: string;
-  description?: string;
   latitude: number;
   longitude: number;
   radius: number; // meters
   order?: number;
-  /**
-   * Single event fired for EVERY distinct arriver (same event each time). Absent →
-   * a GM-only arrival ping (today's default). Mutually exclusive with `eventQueue`.
-   */
-  event?: CheckpointEvent;
-  /**
-   * Arrival-order queue: the Nth distinct arriver (0-based) gets `eventQueue[N]`. When
-   * the queue is exhausted, no player event fires (the GM is still pinged). Used for
-   * "different by arrival number" checkpoints (traps). Mutually exclusive with `event`.
-   */
-  eventQueue?: CheckpointEvent[];
-  /**
-   * Active window (ROADMAP #12). The checkpoint only fires while live, i.e. while
-   * `now ∈ [opensAt ?? -∞, closesAt ?? +∞]`. Both absent → always live (default;
-   * legacy checkpoints keep working). Crossings outside the window are ignored (not
-   * recorded). Set manually by the GM (open/close now) or by the run-sheet (#11).
-   */
-  opensAt?: FsTimestamp | null;
-  closesAt?: FsTimestamp | null;
-  /**
-   * Who can see this checkpoint's marker (ROADMAP #48). Absent → `gm-only` (legacy:
-   * invisible to players). Independent of the `event`/`eventQueue` payload above.
-   */
+  /** Icon key for map authoring. Rendered via Ionicons. */
+  icon?: string;
+  /** Who can see this checkpoint's marker. Absent → `hidden` (invisible to players). */
   visibility?: CheckpointVisibility;
-  /** For `visibility: 'on-reveal'`: how/when/to-whom it becomes visible. */
+  /** For `visibility: 'shown-on-trigger'`: how/when/to-whom it becomes visible. */
   reveal?: CheckpointReveal;
   /** Latched when the reveal fires (set by the run-sheet / geofence / GM "reveal now"). */
   revealedAt?: FsTimestamp | null;
   /** For `specific-players`/`triggerer` audiences: member ids it's been revealed to so far. */
   revealedTo?: string[];
-  /**
-   * Initial state before any transition fires (ROADMAP #54). Typically `'closed'` for
-   * timed checkpoints. Absent → static checkpoint (existing behavior unchanged).
-   */
-  initialState?: CheckpointState;
-  /**
-   * Ordered time-based state transitions applied by the run-sheet sweep (ROADMAP #54).
-   * Absent or empty → static checkpoint. Each `atMinute` is relative to `game.startedAt`.
-   */
-  transitions?: CheckpointTransition[];
-  /**
-   * Currently-applied state, written by the run-sheet sweep on each transition (ROADMAP #54).
-   * Never set by clients. Read by the geofence for player re-notification (#55).
-   */
-  currentState?: CheckpointState;
-  /** Icon key for map authoring (ROADMAP #53). Rendered via Ionicons. */
-  icon?: string;
 }
 
 /**
@@ -480,12 +474,12 @@ export interface ActiveGame {
   displayName: string;
 }
 
-/** Run-sheet action types (ROADMAP #11) — the in-app replacement for the paper schedule. */
+/** Run-sheet action types (ROADMAP #11) — the in-app replacement for the paper schedule.
+ * Checkpoint open/close windows moved to `timed` runbook entries (#60); the run sheet keeps
+ * the timed broadcasts, the GM reminders, and the timed marker reveal. */
 export type ScheduledActionType =
   | 'broadcast' // write a Broadcast (free text, or templated player-count)
-  | 'open-site' // set a checkpoint's window live (#12)
-  | 'close-site' // close a checkpoint's window (#12)
-  | 'reveal-checkpoint' // make a checkpoint marker visible to players (#48 game-time reveal)
+  | 'reveal-checkpoint' // make a checkpoint marker visible to players (#60 timed reveal)
   | 'gear-drop' // announce a drop location (a broadcast to all)
   | 'gm-reminder'; // GM-only nudge ("send Aaron to The Dock")
 

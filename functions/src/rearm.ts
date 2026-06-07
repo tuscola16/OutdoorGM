@@ -2,16 +2,16 @@ import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
 
 /**
- * Re-arm a Test Event checkpoint so the GM can walk its arrival-order queue with a
- * small group (fewer than one player per queued event).
+ * Re-arm a Test Event checkpoint so the GM can walk a fixed-order runbook entry's
+ * arrival queue with a small group (fewer than one player per queued slot).
  *
- * The geofence (functions/src/geofence.ts) assigns the Nth queued event to the Nth
+ * The geofence (functions/src/geofence.ts) assigns the Nth queue slot to the Nth
  * *distinct* arriver, where N = the count of existing arrival docs for the checkpoint,
  * and dedups by `playerId`. So to advance the queue with a single re-walking player we
  * must NOT delete their arrival (that would shrink the count and re-fire the first
- * event). Instead we rewrite the crossing player's arrival doc's `playerId` to a synthetic
+ * slot). Instead we rewrite the crossing player's arrival doc's `playerId` to a synthetic
  * "consumed" marker: the count keeps growing (the ordinal advances) while the real player
- * no longer matches the dedup check, so their next crossing fires `eventQueue[next]`.
+ * no longer matches the dedup check, so their next crossing fires the next queue slot.
  *
  * GM-only, and only on games flagged `isTest` — this is a testing affordance, never a
  * way to manipulate a real game's traps.

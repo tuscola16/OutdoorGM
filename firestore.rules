@@ -62,6 +62,14 @@ service cloud.firestore {
         allow read, write: if isGameGM(gameId);
       }
 
+      // Runbook (#60) — the behavior attached to checkpoints (effects, triggers,
+      // priorities). GM-only: it holds the secret payloads players must never see.
+      // Cloud Functions (geofence resolution, fireRunbookEntry) read it via the admin
+      // SDK and bypass these rules.
+      match /runbook/{entryId} {
+        allow read, write: if isGameGM(gameId);
+      }
+
       // Members
       match /members/{memberId} {
         // GMs see the full roster (names, emails, tokens). Everyone else may read

@@ -7,13 +7,13 @@ import * as admin from 'firebase-admin';
 // tap, or on crossing) without exposing the rest, the server projects a revealed
 // checkpoint into a separate, player-readable `markers` collection carrying ONLY the
 // label + location. This module owns that projection and is reused by the geofence
-// (on-crossing reveals), the run-sheet (game-time reveals), and Start Game ('always').
+// (player-crossing reveals), the run-sheet (timed reveals), and Start Game ('shown').
 
 // Mirror of the relevant shared types (functions/ can't import the RN/web types).
-type CheckpointVisibility = 'gm-only' | 'always' | 'on-reveal';
+type CheckpointVisibility = 'hidden' | 'shown' | 'shown-on-trigger';
 type RevealAudience = 'all' | 'specific-players' | 'triggerer';
 interface CheckpointReveal {
-  trigger?: 'game-time' | 'gm-manual' | 'on-crossing';
+  trigger?: 'player' | 'gm' | 'timed';
   audience?: RevealAudience;
   recipientPlayerIds?: string[];
 }
@@ -28,7 +28,7 @@ export interface CheckpointDoc {
 /**
  * Resolve the player audience for a reveal into the `markers` doc's `audiencePlayerIds`:
  * `null` = visible to everyone; an array = only those uids. `triggerer` needs the
- * crossing player's id (geofence path); `game-time`/`gm-manual` use `recipientPlayerIds`.
+ * crossing player's id (geofence path); `timed`/`gm` use `recipientPlayerIds`.
  */
 export function resolveRevealAudience(
   reveal: CheckpointReveal | undefined,
@@ -88,11 +88,11 @@ function phaseOf(g: admin.firestore.DocumentData | undefined): string {
 
 /**
  * On Start Game (the lobby → play transition):
- * 1. Delete stale marker docs for checkpoints that are NOT `'always'` — a marker
- *    left over from a prior run would appear immediately (#48 root cause B).
- * 2. Project every `visibility: 'always'` checkpoint into `markers` so players see
- *    those named locations from kickoff (case C). `on-reveal` checkpoints are
- *    projected later by their trigger; `gm-only` never are.
+ * 1. Delete stale marker docs for checkpoints that are NOT `'shown'` — a marker
+ *    left over from a prior run would appear immediately (#60, formerly #48).
+ * 2. Project every `visibility: 'shown'` checkpoint into `markers` so players see
+ *    those named locations from kickoff. `shown-on-trigger` checkpoints are projected
+ *    later by their trigger; `hidden` never are.
  */
 export const onGameStartProjectMarkers = functions.firestore
   .document('games/{gameId}')
@@ -104,25 +104,25 @@ export const onGameStartProjectMarkers = functions.firestore
     const db = admin.firestore();
     const cps = await db.collection('games').doc(gameId).collection('checkpoints').get();
 
-    // Delete any existing marker docs for non-'always' checkpoints. A stale marker
-    // from a previous run of the same game would otherwise show up at Start (#48).
-    const alwaysIds = new Set(
+    // Delete any existing marker docs for non-'shown' checkpoints. A stale marker
+    // from a previous run of the same game would otherwise show up at Start (#60).
+    const shownIds = new Set(
       cps.docs
-        .filter((d) => (d.data() as CheckpointDoc).visibility === 'always')
+        .filter((d) => (d.data() as CheckpointDoc).visibility === 'shown')
         .map((d) => d.id)
     );
     const existingMarkers = await db
       .collection('games').doc(gameId).collection('markers').get();
     await Promise.allSettled(
       existingMarkers.docs
-        .filter((d) => !alwaysIds.has(d.id))
+        .filter((d) => !shownIds.has(d.id))
         .map((d) => d.ref.delete())
     );
 
-    // Project 'always' checkpoints so players see them from kickoff.
+    // Project 'shown' checkpoints so players see them from kickoff.
     await Promise.allSettled(
       cps.docs
-        .filter((d) => (d.data() as CheckpointDoc).visibility === 'always')
+        .filter((d) => (d.data() as CheckpointDoc).visibility === 'shown')
         .map((d) => projectMarker(db, gameId, d.id, d.data() as CheckpointDoc, null))
     );
   });

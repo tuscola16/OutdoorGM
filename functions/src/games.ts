@@ -176,13 +176,24 @@ export const createGame = functions.https.onCall(async (data, context) => {
       longitude: 0,
       radius: 25,
       order: 0,
-      eventQueue: [
+      visibility: 'hidden',
+    });
+    // One fixed-order runbook entry whose per-arrival slots demonstrate every effect kind (#60).
+    const entryRef = gameRef.collection('runbook').doc();
+    batch.set(entryRef, {
+      checkpointId: cpRef.id,
+      name: 'Arrival-order demo',
+      priority: 0,
+      trigger: 'fixed-order',
+      effect: { kind: 'gm-notify' },
+      queueSlots: [
         { kind: 'hazard', message: 'A beast attacks! (test hazard)' },
         { kind: 'boon', message: 'You found a cache. (test boon)' },
-        { kind: 'player-notify', message: 'Message to the crossing player (test)', audience: 'crossing-player' },
-        { kind: 'player-notify', message: 'Message to ALL players (test)', audience: 'all-players' },
-        { kind: 'gm-only' },
+        { kind: 'notify', message: 'Message to the crossing player (test)', audience: 'crossing-player' },
+        { kind: 'notify', message: 'Message to ALL players (test)', audience: 'all-players' },
+        { kind: 'gm-notify' },
       ],
+      createdAt: now,
     });
   }
 

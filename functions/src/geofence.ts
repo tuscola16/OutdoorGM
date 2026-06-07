@@ -5,17 +5,36 @@ import { sendArrivalSMS, TWILIO_SECRETS } from './sms';
 import { projectMarker } from './markers';
 
 // Mirror of types/index.ts (the RN/web shared types can't be imported into functions/).
-type CheckpointKind = 'hazard' | 'boon' | 'player-notify' | 'gm-only';
+type CheckpointKind = 'hazard' | 'boon' | 'gm-notify' | 'notify';
 type EventAudience = 'crossing-player' | 'all-players' | 'gm-only';
+type NotifyAudience = 'crossing-player' | 'all-players';
 
-interface CheckpointEvent {
+interface RunbookEffect {
   kind: CheckpointKind;
   message?: string;
-  audience?: EventAudience;
+  audience?: NotifyAudience;
+}
+
+type TimedBound =
+  | { kind: 'game-start' }
+  | { kind: 'game-end' }
+  | { kind: 'time'; atMinute?: number; fireAt?: admin.firestore.Timestamp };
+
+interface RunbookEntry {
+  id: string;
+  checkpointId: string;
+  name: string;
+  priority: number;
+  trigger: 'fixed-order' | 'always-on' | 'timed' | 'gm-prompted';
+  effect: RunbookEffect;
+  queueSlots?: (RunbookEffect | null)[];
+  startAt?: TimedBound;
+  endAt?: TimedBound;
+  createdAt?: admin.firestore.Timestamp;
 }
 
 interface CheckpointReveal {
-  trigger?: 'game-time' | 'gm-manual' | 'on-crossing';
+  trigger?: 'player' | 'gm' | 'timed';
   audience?: 'all' | 'specific-players' | 'triggerer';
   recipientPlayerIds?: string[];
 }
@@ -24,18 +43,72 @@ interface CheckpointReveal {
 // arrived at the same trap site within this many ms, the trap is withheld.
 const COARRIVAL_WINDOW_MS = 90_000;
 
-/** Resolve who sees an event from its kind, honoring an explicit audience for notifies. */
-function resolveAudience(event: CheckpointEvent): EventAudience {
-  switch (event.kind) {
-    case 'gm-only':
+/** Resolve who sees an effect from its kind, honoring an explicit audience for notifies. */
+function resolveAudience(effect: RunbookEffect): EventAudience {
+  switch (effect.kind) {
+    case 'gm-notify':
       return 'gm-only';
-    case 'player-notify':
-      return event.audience ?? 'crossing-player';
+    case 'notify':
+      return effect.audience ?? 'crossing-player';
     case 'hazard':
     case 'boon':
     default:
       return 'crossing-player';
   }
+}
+
+/** Is a `timed` entry currently within its [start, end] window? `now` and `started` in ms. */
+function timedEligible(entry: RunbookEntry, nowMs: number, startedMs: number | null): boolean {
+  const boundMs = (b: TimedBound | undefined, fallback: number): number => {
+    if (!b) return fallback;
+    if (b.kind === 'game-start') return startedMs ?? -Infinity;
+    if (b.kind === 'game-end') return Infinity; // geofence only runs while the game is in play
+    if (typeof b.fireAt?.toMillis === 'function') return b.fireAt.toMillis();
+    if (typeof b.atMinute === 'number' && startedMs != null) return startedMs + b.atMinute * 60_000;
+    return fallback;
+  };
+  const start = boundMs(entry.startAt, startedMs ?? -Infinity);
+  const end = boundMs(entry.endAt, Infinity);
+  return nowMs >= start && nowMs <= end;
+}
+
+/**
+ * Resolve the single effect a crossing player receives (#60): among the checkpoint's runbook
+ * entries, gather those currently matching (always-on; timed in-window; fixed-order slot for
+ * this arrival ordinal), then pick the highest `priority` (ties → earliest `createdAt`).
+ * `gm-prompted` entries never fire on a crossing. `ordinal` is the 0-based count of prior
+ * distinct arrivers, or `null` on a revisit (fixed-order then uses its default effect).
+ */
+function resolveCrossingEffect(
+  entries: RunbookEntry[],
+  ordinal: number | null,
+  nowMs: number,
+  startedMs: number | null
+): RunbookEffect | undefined {
+  let best: { priority: number; createdMs: number; effect: RunbookEffect } | null = null;
+  for (const e of entries) {
+    let candidate: RunbookEffect | null | undefined;
+    if (e.trigger === 'always-on') {
+      candidate = e.effect;
+    } else if (e.trigger === 'timed') {
+      if (timedEligible(e, nowMs, startedMs)) candidate = e.effect;
+    } else if (e.trigger === 'fixed-order') {
+      if (ordinal == null) {
+        candidate = e.effect; // revisit → the default effect, no slot consumed
+      } else if (Array.isArray(e.queueSlots) && ordinal < e.queueSlots.length) {
+        candidate = e.queueSlots[ordinal]; // may be null → nothing fires for this arriver
+      } else {
+        candidate = e.effect; // beyond the slot list → default
+      }
+    }
+    if (!candidate) continue;
+    const createdMs = e.createdAt?.toMillis?.() ?? 0;
+    const wins =
+      !best || e.priority > best.priority ||
+      (e.priority === best.priority && createdMs < best.createdMs);
+    if (wins) best = { priority: e.priority, createdMs, effect: candidate };
+  }
+  return best?.effect;
 }
 
 // Play-area boundary (#7), mirrored from types/index.ts MapBoundary.
@@ -159,6 +232,27 @@ async function getCheckpointsCached(gameId: string): Promise<CachedCheckpoint[]>
   return cps;
 }
 
+// Short-TTL cache of each game's runbook entries, grouped by checkpointId (#60). Reused
+// across warm invocations the same way as the checkpoint cache so a busy game doesn't re-read
+// the whole runbook on every location write.
+const runbookCache = new Map<string, { byCp: Map<string, RunbookEntry[]>; expires: number }>();
+
+async function getRunbookByCheckpointCached(gameId: string): Promise<Map<string, RunbookEntry[]>> {
+  const hit = runbookCache.get(gameId);
+  if (hit && hit.expires > Date.now()) return hit.byCp;
+  const snap = await admin.firestore()
+    .collection('games').doc(gameId).collection('runbook').get();
+  const byCp = new Map<string, RunbookEntry[]>();
+  for (const d of snap.docs) {
+    const e = { id: d.id, ...(d.data() as Omit<RunbookEntry, 'id'>) };
+    const list = byCp.get(e.checkpointId) ?? [];
+    list.push(e);
+    byCp.set(e.checkpointId, list);
+  }
+  runbookCache.set(gameId, { byCp, expires: Date.now() + CP_CACHE_TTL_MS });
+  return byCp;
+}
+
 export const onLocationUpdate = functions
   .runWith({ secrets: TWILIO_SECRETS })
   .firestore.document('games/{gameId}/locations/{userId}')
@@ -246,6 +340,10 @@ export const onLocationUpdate = functions
     const checkpoints = await getCheckpointsCached(gameId);
     if (checkpoints.length === 0) return;
 
+    // Runbook entries grouped by checkpoint (#60) — the behavior resolved per crossing.
+    const runbookByCp = await getRunbookByCheckpointCached(gameId);
+    const startedMs = gameData.startedAt?.toMillis?.() ?? null;
+
     // Batch-read trip latches for all checkpoints (#50/#55). One RPC for all docs.
     const tripsCol = db.collection('games').doc(gameId).collection('checkpointTrips');
     const tripRefs = checkpoints.map((cp) => tripsCol.doc(`${userId}_${cp.id}`));
@@ -256,11 +354,11 @@ export const onLocationUpdate = functions
 
     const nowMs = Date.now();
 
-    // Events resolved for this crossing.
+    // Effects resolved for this crossing.
     const newArrivals: Array<{
       checkpointName: string;
       playerName: string;
-      event?: CheckpointEvent;
+      event?: RunbookEffect;
       gmNote?: string;
     }> = [];
 
@@ -276,21 +374,9 @@ export const onLocationUpdate = functions
         longitude: number;
         radius: number;
         name: string;
-        event?: CheckpointEvent;
-        eventQueue?: CheckpointEvent[];
-        opensAt?: admin.firestore.Timestamp | null;
-        closesAt?: admin.firestore.Timestamp | null;
-        visibility?: 'gm-only' | 'always' | 'on-reveal';
+        visibility?: 'hidden' | 'shown' | 'shown-on-trigger';
         reveal?: CheckpointReveal;
-        currentState?: string; // #54
       };
-
-      // Time-gate (#12): only fire while the site is live, i.e. now ∈ [opensAt, closesAt].
-      const opensMs = cp.opensAt ? cp.opensAt.toMillis() : null;
-      const closesMs = cp.closesAt ? cp.closesAt.toMillis() : null;
-      if ((opensMs !== null && nowMs < opensMs) || (closesMs !== null && nowMs > closesMs)) {
-        continue;
-      }
 
       const dist = distanceMeters(
         location.latitude, location.longitude,
@@ -372,130 +458,85 @@ export const onLocationUpdate = functions
         ? (trip.lastExitAt as admin.firestore.Timestamp).toMillis()
         : null;
       const gmShouldNotify = lastExitMs === null || (nowMs - lastExitMs >= reNotifyAwayCooldownMs);
-
-      // Player re-notification gate (#55): only notify if state changed since last time.
-      const cpState = (cp.currentState ?? cp.event?.kind) ?? null;
       const lastNotifiedState = (trip?.lastNotifiedState as string | null | undefined) ?? null;
-      const playerShouldNotify = lastNotifiedState === null || cpState !== lastNotifiedState;
+      const entries = runbookByCp.get(checkpointId) ?? [];
 
-      if (!gmShouldNotify && !playerShouldNotify) {
-        // Update the latch but suppress all notifications.
-        await tripRef.set(buildLatch(), { merge: true });
-        processedIds.add(checkpointId);
-        continue;
-      }
+      // One transaction: count the arrival ordinal, apply district suppression (#5), resolve
+      // the single highest-priority runbook effect (#60), gate the player re-notify (#55) on
+      // the resolved effect, then atomically latch + record the arrival.
+      const result = await db.runTransaction(async (tx) => {
+        // Race guard: if another concurrent write already confirmed entry, skip.
+        const freshTrip = await tx.get(tripRef);
+        if (freshTrip.exists && freshTrip.data()?.inside) return null;
 
-      if (cp.eventQueue && cp.eventQueue.length > 0) {
-        // Arrival-order queue: ordinal is the count of non-revisit arrivers before this one.
-        const queue = cp.eventQueue;
-        const result = await db.runTransaction(async (tx) => {
-          // Race guard: if another concurrent write already confirmed entry, skip.
-          const freshTrip = await tx.get(tripRef);
-          if (freshTrip.exists && freshTrip.data()?.inside) return null;
+        const existing = await tx.get(arrivalsCol.where('checkpointId', '==', checkpointId));
+        const alreadyArrived = existing.docs.some(
+          (d) => d.data().playerId === userId && !d.data().revisit
+        );
+        const nonRevisitCount = existing.docs.filter((d) => !d.data().revisit).length;
+        const ordinal = alreadyArrived ? null : nonRevisitCount;
 
-          const existing = await tx.get(arrivalsCol.where('checkpointId', '==', checkpointId));
-          const alreadyArrived = existing.docs.some(
-            (d) => d.data().playerId === userId && !d.data().revisit
-          );
-          const nonRevisitCount = existing.docs.filter((d) => !d.data().revisit).length;
-
-          // Same-district co-arrival suppression (#5).
-          const suppressed =
-            crossingDistrict != null &&
-            existing.docs.some((d) => {
-              const a = d.data();
-              if (a.district == null || a.district !== crossingDistrict) return false;
-              const ms = a.timestamp?.toMillis?.() ?? null;
-              return ms != null && nowMs - ms <= COARRIVAL_WINDOW_MS;
-            });
-
-          // Update trip latch atomically with the arrival write.
-          const latchData = buildLatch();
-          if (playerShouldNotify && cpState != null) latchData.lastNotifiedState = cpState;
-          tx.set(tripRef, latchData, { merge: true });
-
-          tx.set(arrivalsCol.doc(), {
-            playerId: userId,
-            playerName: location.displayName,
-            checkpointId,
-            checkpointName: cp.name,
-            timestamp: admin.firestore.FieldValue.serverTimestamp(),
-            latitude: location.latitude,
-            longitude: location.longitude,
-            ...(alreadyArrived ? { revisit: true } : {}),
-            ...(crossingDistrict != null ? { district: crossingDistrict } : {}),
+        // Same-district co-arrival suppression (#5).
+        const suppressed =
+          crossingDistrict != null &&
+          existing.docs.some((d) => {
+            const a = d.data();
+            if (a.district == null || a.district !== crossingDistrict) return false;
+            const ms = a.timestamp?.toMillis?.() ?? null;
+            return ms != null && nowMs - ms <= COARRIVAL_WINDOW_MS;
           });
 
-          return { ordinal: alreadyArrived ? null : nonRevisitCount, suppressed, alreadyArrived };
+        // Resolve the single effect this crossing delivers (#60).
+        const resolved = resolveCrossingEffect(entries, ordinal, nowMs, startedMs);
+        const effect = suppressed ? undefined : resolved;
+        const cpState = effect?.kind ?? null;
+        const playerShouldNotify = lastNotifiedState === null || cpState !== lastNotifiedState;
+
+        // Neither GM nor player needs notifying → refresh the latch, skip the arrival write.
+        if (!gmShouldNotify && !playerShouldNotify) {
+          tx.set(tripRef, buildLatch(), { merge: true });
+          return { skipArrival: true as const };
+        }
+
+        const latchData = buildLatch();
+        if (playerShouldNotify && cpState != null) latchData.lastNotifiedState = cpState;
+        tx.set(tripRef, latchData, { merge: true });
+
+        tx.set(arrivalsCol.doc(), {
+          playerId: userId,
+          playerName: location.displayName,
+          checkpointId,
+          checkpointName: cp.name,
+          timestamp: admin.firestore.FieldValue.serverTimestamp(),
+          latitude: location.latitude,
+          longitude: location.longitude,
+          ...(alreadyArrived ? { revisit: true } : {}),
+          ...(crossingDistrict != null ? { district: crossingDistrict } : {}),
         });
 
-        if (result === null) continue; // raced — another write confirmed entry first
+        return { effect, suppressed, playerShouldNotify, gmShouldNotify };
+      });
 
-        const { ordinal, suppressed, alreadyArrived } = result;
-        // On revisit the player gets the current single event (if any); no new queue slot.
-        const event = suppressed
-          ? undefined
-          : ordinal != null && ordinal < queue.length
-            ? queue[ordinal]
-            : alreadyArrived ? cp.event : undefined;
-        const firePlayer = playerShouldNotify && !suppressed;
+      if (result === null) continue; // raced — another write confirmed entry first
+      if ('skipArrival' in result) { processedIds.add(checkpointId); continue; }
 
-        if (gmShouldNotify || (firePlayer && event && event.kind !== 'gm-only')) {
-          newArrivals.push({
-            checkpointName: cp.name,
-            playerName: location.displayName,
-            event: firePlayer ? event : undefined,
-            gmNote: suppressed
-              ? `${location.displayName} & a District ${crossingDistrict} partner arrived together at ${cp.name} — trap withheld`
-              : undefined,
-          });
-        } else if (gmShouldNotify) {
-          newArrivals.push({ checkpointName: cp.name, playerName: location.displayName });
-        }
-      } else {
-        // Single event (or no event — GM-only ping).
-        const result = await db.runTransaction(async (tx) => {
-          const freshTrip = await tx.get(tripRef);
-          if (freshTrip.exists && freshTrip.data()?.inside) return null;
+      const firePlayer = result.playerShouldNotify && !result.suppressed;
+      const event = firePlayer ? result.effect : undefined;
 
-          const existing = await tx.get(arrivalsCol.where('checkpointId', '==', checkpointId));
-          const alreadyArrived = existing.docs.some(
-            (d) => d.data().playerId === userId && !d.data().revisit
-          );
-
-          const latchData = buildLatch();
-          if (playerShouldNotify && cpState != null) latchData.lastNotifiedState = cpState;
-          tx.set(tripRef, latchData, { merge: true });
-
-          tx.set(arrivalsCol.doc(), {
-            playerId: userId,
-            playerName: location.displayName,
-            checkpointId,
-            checkpointName: cp.name,
-            timestamp: admin.firestore.FieldValue.serverTimestamp(),
-            latitude: location.latitude,
-            longitude: location.longitude,
-            ...(alreadyArrived ? { revisit: true } : {}),
-            ...(crossingDistrict != null ? { district: crossingDistrict } : {}),
-          });
-
-          return { alreadyArrived };
+      if (result.gmShouldNotify || (event && event.kind !== 'gm-notify')) {
+        newArrivals.push({
+          checkpointName: cp.name,
+          playerName: location.displayName,
+          event,
+          gmNote: result.suppressed
+            ? `${location.displayName} & a District ${crossingDistrict} partner arrived together at ${cp.name} — trap withheld`
+            : undefined,
         });
-
-        if (result === null) continue;
-
-        if (gmShouldNotify || playerShouldNotify) {
-          newArrivals.push({
-            checkpointName: cp.name,
-            playerName: location.displayName,
-            event: playerShouldNotify ? cp.event : undefined,
-          });
-        }
       }
 
-      // Reveal-on-crossing (#48 case A): the trap this player just sprang becomes a
-      // marker visible only to them.
-      if (cp.visibility === 'on-reveal' && cp.reveal?.trigger === 'on-crossing') {
+      // Reveal-on-crossing (#60): the trap this player just sprang becomes a marker
+      // visible only to them.
+      if (cp.visibility === 'shown-on-trigger' && cp.reveal?.trigger === 'player') {
         await projectMarker(db, gameId, checkpointId, cp, [userId]);
       }
 
@@ -529,7 +570,7 @@ export const onLocationUpdate = functions
 
     await Promise.all(
       newArrivals.map(async ({ playerName, checkpointName, event, gmNote }) => {
-        if (!event || event.kind === 'gm-only') {
+        if (!event || event.kind === 'gm-notify') {
           const body = gmNote ?? `${playerName} reached ${checkpointName}`;
           await Promise.allSettled([
             sendArrivalPushNotifications(gmTokens, gmNote ? '⚖️ Trap withheld' : '📍 Arrival Alert', body),
@@ -555,20 +596,20 @@ export const onLocationUpdate = functions
 const KIND_TITLES: Record<CheckpointKind, string> = {
   hazard: '⚠️ Hazard!',
   boon: '✨ A boon',
-  'player-notify': '📢 Message',
-  'gm-only': '📍 Checkpoint',
+  notify: '📢 Message',
+  'gm-notify': '📍 Checkpoint',
 };
 
 const KIND_VERBS: Record<CheckpointKind, string> = {
   hazard: 'hit a hazard',
   boon: 'found a boon',
-  'player-notify': 'triggered a message',
-  'gm-only': 'reached a checkpoint',
+  notify: 'triggered a message',
+  'gm-notify': 'reached a checkpoint',
 };
 
 async function dispatchCheckpointEvent(args: {
   gameId: string;
-  event: CheckpointEvent;
+  event: RunbookEffect;
   checkpointName: string;
   playerName: string;
   crossingPlayerId: string;
