@@ -15,14 +15,18 @@ listed under [No schema change](#no-schema-change-enforcement--logic-only).
 
 ---
 
-## 1. Twilio off `functions.config()` *(infra, not schema)*
+## 1. Twilio off `functions.config()` *(infra, not schema)* — ✅ BUILT
 
 Replace the `functions.config().twilio.*` reads in `functions/src/sms.ts` with
 `defineSecret('TWILIO_SID' | 'TWILIO_TOKEN' | 'TWILIO_FROM')`, declare them on the SMS-sending
 functions (`runWith({ secrets: [...] })` / params), and set with `firebase functions:secrets:set`.
 `sendArrivalSMS` keeps no-op'ing when a secret is unset (same graceful skip as today).
 
-## 2. Run-sheet collection-group index *(index)*
+> **Built** (commit `0219d78`): implemented with the v1 `.runWith({ secrets: TWILIO_SECRETS })`
+> form (string-name secrets) rather than `defineSecret`, which is the correct binding for the v1
+> trigger API in use. `sms.ts` reads `process.env.TWILIO_*`; `geofence.ts`/`members.ts` bind them.
+
+## 2. Run-sheet collection-group index *(index)* — ✅ BUILT
 
 Add the single-field override so the `collectionGroup('scheduledEvents').where('firedAt','==',null)`
 sweep (`functions/src/runsheet.ts`) has a collection-group index (mirrors `members.userId`):
@@ -37,6 +41,8 @@ sweep (`functions/src/runsheet.ts`) has a collection-group index (mirrors `membe
 ```
 
 Redeploy with `firebase deploy --only firestore:indexes`.
+
+> **Built** (commit `7a03cf4`): the field override above is present in `firestore.indexes.json`.
 
 ## 5. SOS persists & must be acknowledged
 
@@ -202,11 +208,11 @@ verified. Add a per-UID throttle to `joinGameByCode`: an internal, admin-SDK-onl
 
 These items are pure logic, rules, client architecture, or ops — no new fields or collections:
 
-- **3** SOS → SMS fallback — wire the SMS path (item 1) as the fallback channel in the SOS sender.
+- **3** ✅ BUILT — SOS → SMS fallback: `handleSos` (`members.ts`) fires GM push + Twilio SMS in parallel on every raised SOS; the SOS-write-must-land link is covered by item 4.
 - **4** Offline resilience — client write-queue + flush on reconnect.
-- **8** Winner detection GM-exclusion — `functions/src/members.ts` guard + roster-data investigation.
+- **8** ✅ BUILT — Winner detection GM-exclusion: every roster pass in `members.ts` filters `role !== 'gm'`, so a sole-GM survivor is the zero-survivor "no winner" path.
 - **9** Crossing-player double-push — filter `crossingPlayerToken` out of `gmTokens`/`allPlayerTokens` in `dispatchCheckpointEvent`.
-- **10** Transactional single-event dedup — wrap the single-`event` write in the `eventQueue` path's `runTransaction` guard.
+- **10** ✅ BUILT — Transactional single-event dedup: the single-`event` write now runs inside `db.runTransaction` (`geofence.ts`), mirroring the `eventQueue` path.
 - **12** Auto per-interval count — a `playerCountBroadcast` toggle seeds repeating run-sheet rows (existing `template:'player-count'`).
 - **13–15** Ration review/submit UX — render off the existing `RationSubmission.status`; `resizeMode:'contain'` + scroll; one-doc-per-window state machine.
 - **16** Geofence read cost — fewer reads per write (lobby short-circuit, zero-checkpoint skip, cache phase/role).

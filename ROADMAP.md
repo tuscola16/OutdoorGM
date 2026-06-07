@@ -19,10 +19,18 @@ large batch shipped — earlier `#`/`§` numbers are retired and don't map forwa
 returns `undefined` and silently kills SMS, the only non-push SOS channel (item 3). Move to
 `defineSecret`/params (`TWILIO_SID`/`TWILIO_TOKEN`/`TWILIO_FROM`).
 
+> **Built** (commit `0219d78`): `sms.ts` reads `process.env.TWILIO_*` and exports
+> `TWILIO_SECRETS`; `onLocationUpdate` (`geofence.ts`) and `onMemberWrite` (`members.ts`) bind them
+> via `.runWith({ secrets: TWILIO_SECRETS })`. A real SID must start with `AC`, so unset/placeholder
+> secrets no-op cleanly. No `functions.config()` reads remain.
+
 **2. Add the run-sheet collection-group index.** `functions/src/runsheet.ts` runs
 `collectionGroup('scheduledEvents').where('firedAt','==',null)` with no `COLLECTION_GROUP` index,
 so the per-minute sweep throws `FAILED_PRECONDITION` and **every scheduled action silently never
 fires**. Add the field override in `firestore.indexes.json` (mirrors `members.userId`) and redeploy.
+
+> **Built** (commit `7a03cf4`): the `scheduledEvents` / `firedAt` `COLLECTION_GROUP` field override
+> is present in `firestore.indexes.json`.
 
 ---
 
@@ -32,6 +40,12 @@ Outdoor GM replaced Pingo as the *only* location/safety tool, so these are load-
 
 **3. SOS → SMS fallback.** The SOS button + GM push are built; if push/Firestore is unreachable
 the SOS must degrade to SMS (Twilio) so an injured player can always reach the GM. Depends on item 1.
+
+> **Built:** `handleSos` (`functions/src/members.ts`) already fires GM push **and** Twilio SMS in
+> parallel (`Promise.allSettled`) on every raised SOS — a muted/asleep phone can't swallow a safety
+> alert. SMS can only originate server-side (the device can't hold Twilio creds), so it rides the
+> `onMemberWrite` trigger; the one remaining link — guaranteeing the SOS *write* lands when the
+> device is briefly offline so the trigger fires — is covered by the offline write queue (item 4).
 
 **4. Offline / poor-signal resilience.** Queue location/ration writes and flush on reconnect, so a
 dead zone doesn't mean a missed ration (= wrongful starvation) or a silently dropped SOS.
@@ -54,6 +68,12 @@ tapped out. `functions/src/members.ts` should treat "sole remaining member is a 
 zero-survivor path, never a winner. Investigate whether the GM doc carries `role:'player'` or a
 stale transaction snapshot; add a regression guard.
 
+> **Built:** every roster pass in `members.ts` (`handleDeath`'s immediate count, and the
+> winner-detection transaction) filters `m.role !== 'gm'`, and the death trigger itself is gated on
+> `after.role !== 'gm'`. A sole-GM survivor therefore yields `living.length === 0` → the explicit
+> "no winner" broadcast, never a winner. The GM is excluded at the role layer, so a stale snapshot
+> can't crown them.
+
 **9. Don't double-push the crossing player on a shared device.** In `dispatchCheckpointEvent`
 (`functions/src/geofence.ts`), filter the crossing player's token out of `gmTokens` (and
 `allPlayerTokens`) so a device signed into both accounts doesn't get both the player and GM pushes
@@ -62,6 +82,11 @@ stale transaction snapshot; add a regression guard.
 **10. Make single-event arrival dedup transactional.** The `eventQueue` path guards double-fire
 with a transaction; the single-`event` path relies on a non-transactional read, so concurrent
 writes can create duplicate arrivals/notifications. Reuse the transactional check for both.
+
+> **Built** (commit `0219d78`): the single-`event` path in `geofence.ts` now records the arrival
+> inside `db.runTransaction` — reading existing arrivals for the checkpoint and writing only if this
+> player isn't already among them — mirroring the `eventQueue` path. Concurrent location writes for
+> the same player can no longer both pass dedup.
 
 ---
 
