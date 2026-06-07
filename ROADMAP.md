@@ -18,7 +18,10 @@ player bounced to *My Games* every few seconds — fixed, see the Built callout)
 name/icon/visibility while all behavior lives in a new per-checkpoint **runbook** of
 priority-ranked entries (see the Built callout). Its follow-on **61** retires the web run-sheet UI
 (superseded by the Runbook) and tracks the one run-sheet capability the Runbook doesn't yet
-cover — clock-triggered actions with no player crossing.
+cover — clock-triggered actions with no player crossing. A second feedback pass (web + play
+testing) added **62–72** — see the dated **Field-test findings — 2026-06-07 (batch 2)** section
+below (P0 defects: ration-review false positives, per-runbook-event tripping, broadcast/checkpoint
+push reliability; plus validation, boundary-constrained checkpoints, and game cloning).
 
 > **Built & removed** (retired numbers, never reused — see git history + the
 > [README](README.md#features)):
@@ -72,6 +75,89 @@ cover — clock-triggered actions with no player crossing.
 >   `Checkpoint.icon` picker (`constants/checkpointIcons.ts`), a shared `components/checkpointForm.tsx`,
 >   and `gameService.stateEventFields` (makes a scheduled checkpoint's initial state effective at
 >   start; the sweep handles later transitions).
+
+---
+
+## Field-test findings — 2026-06-07 (batch 2, web + play feedback)
+
+Defects and gaps from testing the web dashboard and the app. Priority tags inline (P0 = fix
+before the next real game; P1 = before wider testing; P2 = polish). Schema/enforcement detail for
+the data-model items is in [ROADMAP_DATA_MODEL.md](ROADMAP_DATA_MODEL.md) under the same numbers.
+
+**62. Audit the `/demo` screen for parity with recent releases.** *(P2)* The `/demo` screenshot
+mocks (`web/src/screens/DemoScreen.tsx`) drifted from shipped features — notably the **#60
+checkpoint/runbook overhaul** (checkpoints are now identity+visibility; behavior lives in the
+Runbook) and **terminal ration approval** (no GM undo; player "fed this window" state). Walk each
+mocked screen against the live app and refresh copy/controls/layout so store screenshots are honest.
+
+**63. Numeric-field validation + cross-field sane bounds.** *(P1)* No number field should accept `0`
+(or negative), and dependent fields must stay ordered. Concretely:
+  - **ration window ≤ ration interval ≤ total game length** (today the window is clamped to the
+    interval, but the interval isn't bounded by game length, and several fields accept 0).
+  - Checkpoint **radius ≥ 10 m** (already enforced on create — extend everywhere, incl. edit).
+  - Game **duration**, **ration interval**, **ration window**, **geofence confirm-fixes**,
+    **re-notify cooldown**, **trip interval (#67)**, **reveal offset minutes** — all `> 0` with
+    sensible minimums, validated in *both* the web `ConfigModal`/editors and the mobile equivalents,
+    with inline reasons (not just silent clamping). Audit `types/index.ts` numeric config + every
+    `<input type="number">` for the same gaps.
+
+**64. Constrain checkpoints to the play boundary.** *(P1)* A GM must not be able to place (or
+drag) a checkpoint outside the set boundary. On map-click placement and on edit, reject/snap-back a
+coordinate that fails the point-in-boundary test (reuse the geofence `pointInBoundary`: polygon when
+≥3 verts, else bbox), with a clear "outside the play area" message. If no boundary is set yet,
+either require one first or warn. Applies to both web and mobile placement flows.
+
+**65. Clone a game (setup only).** *(P1)* A "Clone" action on a game creates a fresh game that
+copies the **boundary**, **checkpoints**, and their **runbook entries** (the checkpoint behavior),
+plus the game **rules/config knobs** — and copies **nothing runtime/participant**: no members,
+locations, arrivals, rations, `checkpointTrips`, scheduled-event `firedAt`, winner, or timestamps.
+New game starts in `setup` with fresh player/GM codes and the cloner as sole GM. (Open decision noted
+in the data model: whether rules/config travel with the clone — default **yes**, since the ask is to
+re-run the same setup.)
+
+**66. Ration review shows no players before the window opens.** *(P0)* The GM ration feed's "Not
+eaten this window" list (web `RationsModal`, mobile `rations.tsx`) populates for the *whole interval*,
+but the capture **window** only opens in the last `rationWindowMinutes`. Before the window opens,
+nobody is late — the list must be empty (and the header should read "window opens in …"), gated on
+the actual open time, not just the interval index.
+
+**67. Treat each runbook event independently, with a periodic re-trip cadence.** *(P0)* Today the
+geofence latches per **player × checkpoint** (`checkpointTrips`) and delivers a single highest-priority
+effect per crossing — so a player who already tripped a checkpoint won't receive a *different* runbook
+entry that becomes live later. Change to: dedup per **player × runbook entry** (a player can trip a
+given entry at most once); while a player is inside a checkpoint, re-evaluate eligible entries on a
+**GM-managed cadence (`tripIntervalMinutes`, default 2)** so a newly-live timed/queued entry gets
+tripped on the next tick even without leaving and re-entering. Preserves pass-through, fix-quality,
+district suppression, and reveal behavior. See data model for the per-entry latch + config.
+
+**68. Server-enforce unique ration card numbers.** *(P1)* With `enforceUniqueRationCards` on, the
+player can still submit an already-used card number (the GM only sees a "reused" flag after the fact).
+Block it at submission: reject a duplicate (valid/pending) card number for the game server-side
+(callable or `submitRation` guard / Firestore rule), with a clear player-facing error, so the dupe
+never lands. Keep the GM flag as a backstop.
+
+**69. Broadcasts must push to closed/backgrounded phones.** *(P0)* The GM "Broadcast to players"
+writes a `broadcasts/*` doc directly from the client with **no Cloud Function**, so it only surfaces
+in-app — a closed phone gets nothing. Add an `onBroadcastCreate` Firestore trigger (or route
+`sendBroadcast` through a callable) that sends FCM to living players' tokens on the `broadcasts`
+channel, honoring `targetPlayerId` (single recipient) and skipping `audience: 'gm-only'` co-GM
+messages. Ensure the payload shows when backgrounded (notification, not data-only).
+
+**70. Checkpoint-event modal must survive a dismissed push.** *(P0)* If a player dismisses a
+checkpoint/event push while outside the app, opening the app should still surface the relevant modal.
+Drive the in-app modal from **unacknowledged** `broadcasts`/event docs (a per-player `ackedAt` /
+seen-set), not from the push tap — so dismissing the OS notification never loses the event. Ties to
+#71 (the player ack/dismiss model).
+
+**71. Players can dismiss notifications from the in-app list.** *(P2)* Give players a way to clear
+items in their notification/broadcast list (per-player dismissed set or `ackedBroadcasts`), so the
+list reflects what they've handled. Shared ack model with #70.
+
+**72. Make the ration-window-open notification reliable.** *(P1)* The "window is open" alert
+(scheduled local notification, `useRationReminders`) often fires **2–3 minutes late**, risking
+wrongful starvation. Investigate OS scheduling drift / re-scheduling on config change; consider a
+**server push** at the window boundary (a scheduled function, like `runScheduledEvents`) as the
+source of truth instead of (or alongside) the on-device local notification.
 
 ---
 
@@ -223,6 +309,9 @@ its bundle ID / SHA-1 and the Maps SDK in Cloud Console before wide release. Con
 
 ## Suggested order
 
+0. **Field-test batch 2 P0s** (66, 67, 69, 70) — ration-review false positives, per-runbook-event
+   tripping, and broadcast/checkpoint push reliability — land first; they break a live game. Then the
+   batch-2 P1s (63, 64, 65, 68, 72) before the next APK build.
 1. **Tier 4** (11–12) completes the ration loop; **Tier 14** (61) restores timed announcements in
    the Runbook (the web run-sheet UI was removed alongside #60).
 2. **Tier 6** (16) trims the last geofence read cost; **Tier 7** (20–28) — integrity invariants —

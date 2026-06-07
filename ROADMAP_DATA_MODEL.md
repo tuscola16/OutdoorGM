@@ -267,6 +267,108 @@ GMs assign players to themselves; the geofence/arrival push routes only to the o
 GM map/roster views filter to `teamGmId === me`. Unassigned/legacy players fall back to all-GMs
 (today's behavior). Deferred per the 2026-06-07 field test.
 
+## 65. Clone a game *(setup only)*
+
+A `cloneGame(sourceGameId, displayName)` callable (server-side, mirroring `createGame` so the GM
+role + codes are never client-assigned). It reads the source and writes a **new** game doc plus
+sub-collections, **copying setup only**:
+
+| Copied (setup) | Reset / not copied (runtime + participants) |
+| --- | --- |
+| `boundary`, `rules`, `config` (all knobs), `gameDate?` | `members` (cloner becomes sole GM), `locations`, `arrivals`, `rations`, `checkpointTrips`, `entryTrips` (#67), `broadcasts` |
+| `checkpoints/*` (new ids) — `name`/`icon`/geometry/`visibility`/`reveal` **minus** `revealedAt`/`revealedTo` | `winner`, `phase` → `setup`, `startedAt`/`endedAt`, `status` → `active` |
+| `runbook/*` (re-keyed to the new checkpoint ids) **minus** `firedAt` | fresh `playerCode`/`gmCode` (CSPRNG, like `createGame`) |
+
+Implementation notes: build an **old→new checkpointId map** first, then rewrite each runbook entry's
+`checkpointId` (and any checkpoint-id references) through it. Do it in a batch/transaction. No new
+*fields* — this is a write-fan-out function + a "Clone" button (web `GamesScreen`/`GameScreen`,
+mobile games list). **Open decision:** rules/config travel with the clone by default (the ask is to
+re-run the same setup); flip to opt-out checkboxes if testers want a bare clone.
+
+## 67. Per-runbook-event tripping + periodic re-trip
+
+Today's latch is per **player × checkpoint** (`checkpointTrips/{playerId}_{checkpointId}`) and one
+effect is delivered per crossing. Move dedup to per **player × runbook entry** and re-evaluate on a
+cadence so newly-live entries fire without a re-entry.
+
+```ts
+export interface GameConfig {
+  // ...existing...
+  /** #67: while a player stays inside a checkpoint, eligible runbook entries are re-evaluated
+   *  every this-many minutes (so a timed/queued entry that goes live later still trips). Default 2. */
+  tripIntervalMinutes?: number; // > 0; default 2
+}
+```
+
+New server-only latch collection (admin-SDK only in `firestore.rules`, like `checkpointTrips`):
+
+```
+games/{gameId}/entryTrips/{playerId}_{entryId}
+  playerId, entryId, checkpointId,
+  trippedAt: FsTimestamp           // set once — a player trips a given entry at most once
+```
+
+`onLocationUpdate` change: keep `checkpointTrips` for presence/streak/pass-through, but resolve
+**every** eligible entry for the checkpoint (not just the top priority), and for each, fire only if
+`entryTrips/{playerId}_{entryId}` doesn't exist (then create it). Gate re-evaluation while still
+inside on `now − lastTripCheckAt ≥ tripIntervalMinutes` (store `lastTripCheckAt` on the
+`checkpointTrips` latch). Effect ordering/priority still decides what a *single* tick delivers if
+multiple new entries become eligible at once (or deliver each — decide during build; default: one
+per tick, highest priority, so a burst doesn't spam). Idempotent (item 26).
+
+## 68. Server-enforced unique ration card numbers
+
+No new field — enforce the existing `enforceUniqueRationCards` at write time. Route `submitRation`
+through a callable (or a Firestore rule + transaction) that rejects a `cardNumber` already used by a
+non-rejected `rations/*` doc in the same game, returning a typed error
+(`failed-precondition: 'card-in-use'`) the client shows inline. The deterministic
+`rations/{playerId}_{intervalIndex}` id stays (idempotent re-submit of the *same* card by the same
+player is fine; a *different* player reusing a number is blocked). GM "reused" flag stays as backstop.
+
+## 69. Broadcast push (onBroadcastCreate)
+
+No new field. Add a Firestore-trigger Cloud Function on `games/{gameId}/broadcasts/{id}` that pushes
+FCM on the `broadcasts` channel:
+- skip docs with `audience: 'gm-only'` (co-GM messages) and any with a `firedAt`/server-origin marker
+  to avoid double-push (the geofence/run-sheet/members paths already push *and* write a doc — gate
+  the trigger to client-written `kind: 'gm-message'` broadcasts, or add a `pushed: true` marker on
+  the server-written ones so the trigger ignores them);
+- `targetPlayerId` set → push that one player's token; else → all living (non-`out`) player tokens;
+- send a **notification** message (title/body), not data-only, so it shows on a backgrounded/closed
+  phone. Reuses `sendPushToTokens`.
+
+## 70 & 71. Player notification ack / dismiss model
+
+Players need (70) the in-app event modal to survive a dismissed OS push, and (71) a way to clear
+notifications in their list. Shared per-player ack state:
+
+```ts
+export interface Broadcast {
+  // ...existing (kind, message, targetPlayerId, audience?, createdAt)...
+  /** #70/#71: per-player handling. userIds who have seen/dismissed this broadcast in-app. */
+  dismissedBy?: string[];   // arrayUnion(uid) on dismiss; filter the player's list by it
+}
+```
+
+- **70** — the player screen derives "modal to show" from broadcasts/events where `createdAt` is
+  after session start (or unacked) **and** `uid ∉ dismissedBy`, independent of whether the OS push
+  was tapped/dismissed. Opening the app re-surfaces anything pending.
+- **71** — a dismiss control writes `dismissedBy: arrayUnion(uid)` (allowed by a narrow
+  `firestore.rules` clause: a player may update *only* `dismissedBy` to add their own uid). Per-player,
+  so one player's dismiss doesn't affect others. (Alt: a player-doc `dismissedBroadcastIds` set if we
+  don't want players writing broadcast docs — pick during build; the rules-narrow `arrayUnion` is
+  simpler.)
+
+## 72. Reliable ration-window-open notification
+
+No new game-doc field necessarily. Two-pronged: (a) harden the on-device schedule
+(`useRationReminders`) — reschedule on config/`startedAt` change, schedule the *exact* next
+`windowStartsAt`, and don't rely on a single long timer; (b) add a **server** push as source of
+truth: a scheduled function (sibling to `runScheduledEvents`) that, each minute, finds games whose
+ration window just opened and pushes living players once (dedupe via a per-interval
+`rationWindowPings/{gameId}_{intervalIndex}` latch, idempotent — item 26). Prefer the server push as
+authoritative; keep the local notification as a fast-path fallback.
+
 ---
 
 ## No schema change — enforcement / logic only
@@ -298,3 +400,7 @@ These items are pure logic, rules, client architecture, or ops — no new fields
 - **42** Arena map overlay — a GM-uploaded image overlay (asset/storage + map layer; spec when prioritized).
 - **44** Voucher-site preset — a one-tap scaffold of open/close/announce run-sheet rows on a time-windowed checkpoint.
 - **47** Maps-key restriction — Cloud Console ops task.
+- **62** `/demo` parity audit — content/UI only; walk `web/src/screens/DemoScreen.tsx` against the live app (#60 runbook, terminal rations) and refresh the mocks. No schema.
+- **66** Ration-review-before-window-open — logic only; gate the "Not eaten this window" list (web `RationsModal`, mobile `rations.tsx`) on the actual window-open time, not the interval index. `rationInterval()` already exposes `windowStartsAt`/`windowEndsAt`; treat the window as not-yet-open until `now ≥ windowStartsAt`.
+- **63** Numeric validation — logic/UI only; add `> 0` + ordering checks (window ≤ interval ≤ game length; radius ≥ 10) in the web `ConfigModal`/editors and mobile equivalents, plus a shared validator. No new fields (the numbers already exist in `GameConfig`/`Checkpoint`).
+- **64** Boundary-constrained checkpoints — logic only; reuse the geofence `pointInBoundary` (polygon ≥3 verts else bbox) client-side on placement/edit in web + mobile. No schema.
