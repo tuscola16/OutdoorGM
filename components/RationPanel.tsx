@@ -125,7 +125,6 @@ export function RationPanel({
           )}
         </View>
         <Text style={styles.statusApproved}>Ration accepted — you're fed this window.</Text>
-        {notifDebug ? <Text style={styles.debug}>{notifDebug}</Text> : null}
       </View>
     );
   }
