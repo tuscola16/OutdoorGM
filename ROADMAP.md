@@ -63,6 +63,12 @@ explicitly acks it (`sosAckAt`) — nothing auto-clears it.
 **6. Block End Game while a player is unaccounted-for.** Refuse End Game (hard override only) when
 a player has an open unacked SOS or hasn't reported a fix in N minutes.
 
+> **Built:** `unaccountedPlayers()` (`services/locationStatus.ts`, mirrored in `web/`) returns the
+> living players with an open unacked SOS (`sos && !sosAckAt`, #5) or no fix fresher than `STALE_MS`
+> (2 min). The GM End-Game handler (mobile `gm/[gameId]/index.tsx` + web `GameScreen` `onEnd`)
+> lists them and requires a hard "End anyway" override; with none, the normal confirm shows. Trusted
+> GMs, so this is a client guard (no server lock).
+
 **7. Player-left-the-boundary alert.** When a tracked player exits `game.boundary`, alert the GM
 (distinct from a checkpoint crossing). A per-member `outOfBounds` latch fires it once on exit.
 

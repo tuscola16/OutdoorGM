@@ -8,7 +8,7 @@ import { Modal } from '@/components/Modal';
 import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
 import { useNow } from '@/hooks/useNow';
 import { friendlyError } from '@/services/errorUtils';
-import { stalenessLevel, stalenessColor, formatAgo, STALE_MS } from '@/services/locationStatus';
+import { stalenessLevel, stalenessColor, formatAgo, STALE_MS, unaccountedPlayers, unaccountedReasonText } from '@/services/locationStatus';
 import {
   openLobby, reopenSetup, startGame, endGame, updateGameConfig, gameConfig,
   addCheckpoint, updateCheckpoint, deleteCheckpoint,
@@ -190,9 +190,20 @@ export function GameScreen() {
             onClearSos={(userId) => run(() => clearSos(gameId!, userId))}
             onOpenPlayers={() => setShowPlayers(true)}
             onEnd={() => {
-              if (window.confirm('End the game? This stops play for everyone and shows results.')) {
-                run(() => endGame(gameId!));
+              // Block End Game while a player is unaccounted-for (#6): open unacked SOS
+              // or no fresh fix. Hard override only — confirm past the warning to end.
+              const unaccounted = unaccountedPlayers(players, lastFixByUser, now);
+              if (unaccounted.length > 0) {
+                const lines = unaccounted
+                  .map((p) => `• ${p.displayName} — ${unaccountedReasonText(p, now, lastFixByUser)}`)
+                  .join('\n');
+                if (!window.confirm(
+                  `${unaccounted.length} player(s) unaccounted-for — open safety alert or no recent location:\n\n${lines}\n\nCheck on them before ending. End anyway?`
+                )) return;
+              } else if (!window.confirm('End the game? This stops play for everyone and shows results.')) {
+                return;
               }
+              run(() => endGame(gameId!));
             }}
           />
         )}

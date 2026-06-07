@@ -20,7 +20,7 @@ import { endGame, openLobby, reopenSetup, startGame, updateGameConfig, deleteGam
 import { friendlyError } from '@/services/errorUtils';
 import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
 import { useNow } from '@/hooks/useNow';
-import { STALE_MS } from '@/services/locationStatus';
+import { STALE_MS, unaccountedPlayers, unaccountedReasonText } from '@/services/locationStatus';
 import type { Checkpoint, GameMember } from '@/types';
 
 type Tab = 'map' | 'alerts';
@@ -151,6 +151,36 @@ export default function GMGameScreen() {
   }
 
   function handleEndGame() {
+    // Block End Game while a player is unaccounted-for (#6): an open unacked SOS, or no
+    // fresh fix. Hard override only — the GM can still end, but must confirm past the
+    // warning so a game isn't closed with someone possibly in trouble.
+    const nowMs = Date.now();
+    const fixes = new Map<string, number>();
+    for (const loc of playerLocations) {
+      const ms = loc.updatedAt?.toMillis?.();
+      if (ms) fixes.set(loc.userId, ms);
+    }
+    const unaccounted = unaccountedPlayers(members, fixes, nowMs);
+
+    if (unaccounted.length > 0) {
+      const lines = unaccounted
+        .map((p) => `• ${p.displayName} — ${unaccountedReasonText(p, nowMs, fixes)}`)
+        .join('\n');
+      Alert.alert(
+        `${unaccounted.length} player${unaccounted.length === 1 ? '' : 's'} unaccounted-for`,
+        `These players have an open safety alert or no recent location:\n\n${lines}\n\nCheck on them before ending. End anyway?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'End anyway',
+            style: 'destructive',
+            onPress: () => runPhaseAction(() => endGame(gameId!)),
+          },
+        ]
+      );
+      return;
+    }
+
     Alert.alert(
       'End Game?',
       'This stops play for everyone and shows results.',
