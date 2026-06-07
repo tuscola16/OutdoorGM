@@ -8,9 +8,10 @@ same item numbers. Everything here extends the existing types in
 `sos`/`sosAckAt`/`outOfBounds`, `Game.gameDate`, the `markers`/reveal model) is already in those
 files and is the baseline below.
 
-New fields stay **optional** so legacy games keep working — the **one exception is [§60](#60-checkpoint--runbook-overhaul)**,
-the checkpoint/runbook overhaul, which removes fields and relies on a one-time migration instead.
-Timestamps use the platform-neutral `FsTimestamp` so types compile in both the mobile app and `web/`.
+New fields stay **optional** so legacy games keep working — the **one exception is the now-shipped
+[§60](#60-checkpoint--runbook-overhaul)** overhaul, which removed fields (and chose a fresh start over
+running its migration). Timestamps use the platform-neutral `FsTimestamp` so types compile in both the
+mobile app and `web/`.
 
 Only items with a real data-model/infra delta appear here; pure logic/UI/enforcement items are
 listed under [No schema change](#no-schema-change-enforcement--logic-only). Built items (1–10,
@@ -22,12 +23,17 @@ listed under [No schema change](#no-schema-change-enforcement--logic-only). Buil
 
 ---
 
-## 60. Checkpoint & runbook overhaul
+## 60. Checkpoint & runbook overhaul — **BUILT**
+
+> Shipped. The canonical schema now lives in [types/index.ts](types/index.ts)
+> (`Checkpoint`, `RunbookEntry`, `RunbookEffect`, `TimedBound`, `CheckpointVisibility`,
+> `RevealTrigger`, `CheckpointKind`) and the `RUNBOOK` collection in both `services/firebase.ts`
+> files. The detail below is retained as the design record. A one-time converter
+> (`functions/scripts/migrateRunbook.js`) exists but was **not run** (fresh-start milestone).
 
 **Full replacement** of the per-checkpoint behavior model. A checkpoint shrinks to identity +
-visibility; all behavior moves to a new `runbook` collection of priority-ranked entries. This is the
-one place in this file that **removes** existing fields rather than adding optional ones — see the
-migration note.
+visibility; all behavior moves to a `runbook` collection of priority-ranked entries. This is the
+one place in this file that **removed** existing fields rather than adding optional ones.
 
 ### 60.A `Checkpoint` — slimmed to identity + visibility
 

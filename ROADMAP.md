@@ -13,9 +13,10 @@ the batch below shipped (so it opens at Tier 4 / item 11). The **2026-06-07 fiel
 **48–58**; the P0 playtest fixes (**48–52**), the game-flow items (**55**, **56**), and the
 checkpoint-authoring redesign (**53**, **54**) all shipped (see the Built callout), leaving only test
 tooling (**58**) and per-GM teams (**57**). A follow-on field-test pass added **59** (a flaky-signal
-player bounced to *My Games* every few seconds — fixed, see the Built callout). The current focus is
-**60** — the **checkpoint & runbook overhaul** (Tier 14): a checkpoint shrinks to name/icon/visibility
-while all behavior moves to a new per-checkpoint **runbook** of priority-ranked entries.
+player bounced to *My Games* every few seconds — fixed, see the Built callout). The
+**checkpoint & runbook overhaul** (**60**, Tier 14) has now shipped — a checkpoint shrinks to
+name/icon/visibility while all behavior lives in a new per-checkpoint **runbook** of
+priority-ranked entries (see the Built callout).
 
 > **Built & removed** (retired numbers, never reused — see git history + the
 > [README](README.md#features)):
@@ -41,6 +42,17 @@ while all behavior moves to a new per-checkpoint **runbook** of priority-ranked 
 >   (`checkpointTrips`) with GM away-cooldown + player state-change re-notify; **56**
 >   `autoEndThreshold` (one/zero/manual). Players keep the self mini-map (design decision, no code).
 >   **#49 still wants an on-device locked-phone re-test.**
+> - **60** — **checkpoint & runbook overhaul** (Tier 14): a checkpoint is now identity +
+>   visibility only (`name`/`icon`/geometry/`visibility` = `hidden`/`shown`/`shown-on-trigger`);
+>   all behavior moved to a top-level GM-only **`runbook`** collection of priority-ranked
+>   entries (`fixed-order`/`always-on`/`timed`/`gm-prompted`, kinds `hazard`/`boon`/`notify`/
+>   `gm-notify`). The geofence resolves the single highest-priority matching entry per crossing
+>   (preserving pass-through/fix-quality/streak/district/reveal); a new `fireRunbookEntry`
+>   callable powers GM-prompted firing with a target picker. Fully replaced `event`/`eventQueue`/
+>   `opensAt`–`closesAt`/`initialState`/`transitions`/`currentState` and the run sheet's
+>   open/close-site actions. Web gets a standalone **Runbook editor** (`/games/:id/runbook`);
+>   mobile is web-first (placement + visibility + read-only entries + fire). A one-time converter
+>   (`functions/scripts/migrateRunbook.js`) exists but was **not run** (fresh-start milestone).
 > - **59** — **player bounced to "My Games" every few seconds** (2026-06-07 field test, follow-on):
 >   the player member-doc listener (`app/(app)/player/game.tsx`) treated *any* `snap.exists === false`
 >   as a GM removal and `router.replace`d to the games list. On a weak connection RNFirebase delivers
@@ -58,29 +70,6 @@ while all behavior moves to a new per-checkpoint **runbook** of priority-ranked 
 >   `Checkpoint.icon` picker (`constants/checkpointIcons.ts`), a shared `components/checkpointForm.tsx`,
 >   and `gameService.stateEventFields` (makes a scheduled checkpoint's initial state effective at
 >   start; the sweep handles later transitions).
-
----
-
-## Tier 14 — Checkpoint & runbook overhaul *(current focus)*
-
-**60. Split checkpoints from their behavior; introduce the runbook.** A checkpoint shrinks to
-**identity + visibility only** — `name`, `icon`, geofence geometry (`latitude`/`longitude`/`radius`),
-and a `visibility` of `hidden` / `shown` / `shown-on-trigger` (trigger = `player` / `gm` / `timed`).
-**Everything else moves to a new `runbook`** collection: a checkpoint owns 0..N **runbook entries**,
-each with a `name`, a `priority`, a type (`hazard` / `boon` / `gm-notify` / `notify`), and one of four
-triggers — **fixed-order** (Nth *arriver* gets a per-slot effect, each slot carrying its own
-type+message or "nothing"), **always-on**, **timed** (start = game-start|time, end = game-end|time), or
-**gm-prompted** (GM taps to fire and picks the target player[s]). On a crossing a player receives
-**exactly one event — the highest-priority matching entry** (a sponsor drop outranks a trap); the
-GM-only arrival ping stays independent. This **fully replaces** today's `event` / `eventQueue` /
-`opensAt`–`closesAt` window / `initialState` / `transitions` / `currentState` model (a "changes over
-time" checkpoint becomes several timed entries). New full-page **web editor**: a left sidebar of
-runbook *entries* in two groups — Always-on (priority desc) and Timed (priority desc, then start time
-asc) — and a right pane to edit the selected entry. The run sheet's timed broadcasts / GM reminders /
-player-count rows (`ScheduledEvent`) stay a separate schedule tool; only checkpoint *effects* move to
-the runbook. A one-time migration converts existing games (`event`→always-on, `eventQueue`→fixed-order,
-`opensAt/closesAt`+`transitions`→timed entries; visibility/reveal renamed in place). Full schema +
-resolution algorithm in [ROADMAP_DATA_MODEL.md §60](ROADMAP_DATA_MODEL.md#60-checkpoint--runbook-overhaul).
 
 ---
 
@@ -211,8 +200,6 @@ its bundle ID / SHA-1 and the Maps SDK in Cloud Console before wide release. Con
 
 ## Suggested order
 
-0. **Tier 14** (60) — checkpoint & runbook overhaul — is the current focus and reshapes the
-   checkpoint data model several other items touch; land it (with its migration) first.
 1. **Tier 4** (11–12) completes the ration loop.
 2. **Tier 6** (16) trims the last geofence read cost; **Tier 7** (20–28) — integrity invariants —
    land alongside the features they protect.

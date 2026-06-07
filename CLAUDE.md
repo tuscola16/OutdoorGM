@@ -119,7 +119,16 @@ games/{gameId}
   startedAt?, endedAt?, createdAt
 
 games/{gameId}/checkpoints/{checkpointId}
-  name, latitude, longitude, radius (meters), order (optional)
+  // #60: identity + visibility only — all behavior lives in `runbook` (below).
+  name, icon, latitude, longitude, radius (meters), order (optional),
+  visibility ('hidden'|'shown'|'shown-on-trigger'), reveal?, revealedAt?, revealedTo?
+
+games/{gameId}/runbook/{entryId}
+  // #60: the behavior attached to a checkpoint. GM-only; a checkpoint owns 0..N entries.
+  // On a crossing the geofence delivers the single highest-`priority` matching entry.
+  checkpointId, name, priority, trigger ('fixed-order'|'always-on'|'timed'|'gm-prompted'),
+  effect ({ kind: 'hazard'|'boon'|'notify'|'gm-notify', message?, audience? }),
+  queueSlots? (fixed-order), startAt?/endAt? (timed), firedAt? (gm-prompted), createdAt
 
 games/{gameId}/members/{userId}
   userId, role ('player'|'gm'), displayName, email, fcmToken, out?, outAt?, archived?, joinedAt
@@ -146,8 +155,13 @@ games/{gameId}/arrivals/{arrivalId}
 **Geofence detection** (`functions/src/geofence.ts`):
 - **Server-authoritative**: Cloud Function triggers on every location update and runs Haversine formula against all checkpoints
 - On entry (distance < radius), creates an arrival record and triggers notifications
+- **Runbook resolution (#60)**: on a confirmed crossing, the function gathers the checkpoint's
+  matching `runbook` entries (always-on; timed in-window; fixed-order slot for the arrival ordinal —
+  `gm-prompted` never fires on a crossing) and delivers the single **highest-`priority`** effect
+  (ties → earliest `createdAt`). The GM-only arrival ping is independent.
 - Deduplication: prevents duplicate arrivals for the same player-checkpoint pair within a time window
 - GMs only: non-players (GMs) don't trigger checkpoint arrivals even if their location is updated
+- **GM-prompted entries** are fired on demand via the `fireRunbookEntry` callable (GM picks targets)
 
 ### Game Phases
 
