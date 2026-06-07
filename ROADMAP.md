@@ -22,6 +22,9 @@ the batch below shipped (so it opens at Tier 4 / item 11).
 >   **32** SMS rebrand · **34** dropped the unused `arrivals` index.
 > - **36–38** Tier 9 UX (game-list sort + `gameDate`, join name prefill, navigate-after-join).
 > - **39–40** Tier 10 follow-ons (web polygon authoring; per-player checkpoints + GM↔GM messaging).
+> - **13–15** Tier 5 ration review/submit UX (terminal review action, viewport-fit photo review,
+>   state-driven `RationPanel`) · **30** single `shouldTrack`-keyed tracking controller ·
+>   **33** login loading reset — all found already shipped in the **2026-06-07 audit**.
 
 ---
 
@@ -35,24 +38,6 @@ is field-proven. Tester-confirmed wanted.
 **12. Auto per-interval "N remaining" broadcast.** A config toggle that seeds repeating
 player-count entries each ration interval, so the GM needn't add each run-sheet row by hand.
 Low priority — the run-sheet covers it manually today.
-
----
-
-## Tier 5 — Ration review / submission UX
-
-All in the built Rules 6–9 path (`components/RationPanel.tsx`, `gm/[gameId]/rations.tsx`, web `RationsModal`).
-
-**13. Terminal GM review action.** Once a card is `valid`/`rejected`, replace the Approve/Reject
-pair with a resolved chip ("✓ Approved" / "✕ Rejected") — no ever-present opposite button. Any
-flip is a deliberate "change decision" control.
-
-**14. Viewport-fit, scrollable photo review.** The review image must fit the viewport
-(`resizeMode:'contain'`, aspect preserved) inside a scrollable surface, so a tall portrait card
-isn't clipped — mobile lightbox and web modal alike.
-
-**15. One submission per window, state-driven panel.** Drive `RationPanel` off the current
-interval's doc: `pending` → "approval pending" (capture hidden); `valid` → "approved" + countdown
-to next window; `rejected` (open) → re-enable capture; closed → missed state. No multiple submits.
 
 ---
 
@@ -86,8 +71,10 @@ zero joined players, or no GM holding a valid FCM token (the partial fix-warning
 `durationMinutes`, `startedAt` once `play` begins — changing them rescrambles ration intervals and
 could retroactively starve everyone. Editable only in setup, shown disabled with a reason.
 
-**25. Preserve history on checkpoint edits.** Deleting/moving a checkpoint mid-game keeps its
-`arrivals`; warn if pending run-sheet events still point at it. Never orphan arrival/scheduled records.
+**25. Warn on checkpoint edits with pending run-sheet events.** A deleted/moved checkpoint already
+keeps its `arrivals` (independent docs) and its paired reveal row is cleaned up; the remaining gap is
+warning the GM when other pending run-sheet events (open/close/reveal) still point at it, so none are
+left dangling.
 
 **26. Idempotent destructive server actions.** Winner detection, the starvation sweep (item 11),
 and the run-sheet dedupe must be safe under retry/double-trigger (deterministic ids / `firedAt`),
@@ -106,13 +93,6 @@ take a two-step confirm and are logged.
 **29. Handle the sole-GM case in `deleteAccount`.** Membership deletes are already chunked into
 ≤450-write batches; the remaining gap is the *sole GM* of a game — deleting them orphans it (players
 remain, no GM). Transfer GM, or server-side end the game.
-
-**30. Stabilize the player tracking effect.** Drive tracking from one controller keyed on a stable
-`shouldTrack` boolean so `displayName` arriving (`'' → name`) doesn't stop/restart the background
-service, and the AppState effect can't start it concurrently.
-
-**33. Reset login button loading on stuck nav.** `app/(auth)/login.tsx` only clears `loading` on
-error; add `finally { setLoading(false) }` so the button can't spin forever if nav stalls.
 
 **35. Low-battery beacon.** Players report battery level with each fix; the GM roster flags a
 player about to go dark (Rule 21) so they can be checked on before they vanish.
@@ -148,10 +128,10 @@ after the event.
 Only matter when going **wide** (public store listing / large distribution); they do **not** block
 the functional APK.
 
-**46. App Check enforcement + callable rate-limiting.** `functions/src/games.ts` has
-`ENFORCE_APP_CHECK = false` and no callable throttle. Before a public launch: register App Check on
-both platforms, verify real builds get tokens, flip the flag, and add a per-UID throttle on
-`joinGameByCode`. *(Pull the rate-limit forward independently if abuse shows up in the trusted group.)*
+**46. App Check enforcement.** The per-UID `joinGameByCode` throttle (`enforceJoinRateLimit`) is
+already in place; the remaining gap is App Check: `functions/src/games.ts` has
+`ENFORCE_APP_CHECK = false`. Before a public launch, register App Check on both platforms, verify
+real builds get tokens, then flip the flag.
 
 **47. Restrict the Google Maps API keys.** `app.json` ships Maps keys in the binary — lock each to
 its bundle ID / SHA-1 and the Maps SDK in Cloud Console before wide release. Console/ops task, no code.
@@ -160,9 +140,9 @@ its bundle ID / SHA-1 and the Maps SDK in Cloud Console before wide release. Con
 
 ## Suggested order
 
-1. **Tier 4** (11–12) completes the ration loop; **Tier 5** (13–15) cleans up its UX.
+1. **Tier 4** (11–12) completes the ration loop.
 2. **Tier 6** (16) trims the last geofence read cost; **Tier 7** (20–28) — integrity invariants —
    land alongside the features they protect.
-3. **Tier 8** (29, 30, 33, 35) trails as robustness/polish.
+3. **Tier 8** (29, 35) trails as robustness/polish.
 4. **Tier 11** (41–45) is P3 polish (43/45 deprioritized).
 5. **Deferred** (46–47) waits for a real public-store launch.

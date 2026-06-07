@@ -12,8 +12,9 @@ New fields stay **optional** so legacy games keep working. Timestamps use the pl
 `FsTimestamp` so types compile in both the mobile app and `web/`.
 
 Only items with a real data-model/infra delta appear here; pure logic/UI/enforcement items are
-listed under [No schema change](#no-schema-change-enforcement--logic-only). Built items (1–10, 17,
-18, 19, 31, 32, 34, 36–40) have shipped and been removed — their numbers are retired.
+listed under [No schema change](#no-schema-change-enforcement--logic-only). Built items (1–10,
+13–15, 17, 18, 19, 30, 31, 32, 33, 34, 36–40) have shipped and been removed — their numbers are
+retired.
 
 ---
 
@@ -93,12 +94,12 @@ every member token **except the setter** (reuses the broadcast/push pipeline). R
 outbound `Linking.openURL` / `<a target="_blank">` links — no in-app player. Add `'media'` to the
 game-doc `affectedKeys().hasOnly([...])` whitelist in `firestore.rules`.
 
-## 46. App Check enforcement + callable rate-limiting
+## 46. App Check enforcement
 
-Flip `ENFORCE_APP_CHECK → true` in `functions/src/games.ts` after both platforms are registered and
-verified. Add a per-UID throttle to `joinGameByCode`: an internal, admin-SDK-only
-`rateLimits/{uid}` doc (not in `Collections`, not client-readable) stamped each attempt, rejecting
-> N tries / window with `resource-exhausted`. No game-doc change.
+The per-UID throttle on `joinGameByCode` already shipped (`enforceJoinRateLimit` — an internal,
+admin-SDK-only `rateLimits/{uid}` doc, not client-readable, rejecting > N tries / window with
+`resource-exhausted`). Remaining: flip `ENFORCE_APP_CHECK → true` in `functions/src/games.ts` after
+both platforms are registered and verified. No game-doc change.
 
 ---
 
@@ -106,21 +107,18 @@ verified. Add a per-UID throttle to `joinGameByCode`: an internal, admin-SDK-onl
 
 These items are pure logic, rules, client architecture, or ops — no new fields or collections:
 
-- **12** Auto per-interval count — a `playerCountBroadcast` toggle seeds repeating run-sheet rows (existing `template:'player-count'`).
-- **13–15** Ration review/submit UX — render off the existing `RationSubmission.status`; `resizeMode:'contain'` + scroll; one-doc-per-window state machine.
+- **12** Auto per-interval count — wire the `playerCountBroadcast` toggle to actually seed repeating run-sheet rows each interval (existing `template:'player-count'`); today the toggle is stored but does nothing automatic.
 - **16** Geofence read cost — remaining work: cache phase/role per write (lobby short-circuit, zero-checkpoint skip, and checkpoint cache already shipped).
 - **20** No mid-game delete — deny member `delete` when `gamePhase(game) === 'play'` (`firestore.rules` + `removePlayer`).
 - **21** Reversible elimination — `revivePlayer()` clears `out`/`outAt`/`cause`, posts a correcting broadcast, and reverts `results → play` if needed.
 - **22** Monotonic phases — phase-transition helpers; `reopenSetup` warns; End Game confirm-gated and single-fire.
 - **23** Start-Game preflight — checks in `startGame` (boundary, ≥1 checkpoint, ≥1 player, ≥1 GM FCM token).
 - **24** Config lock — freeze interval-defining fields in `updateGameConfig` once `play` begins.
-- **25** Checkpoint-edit history — keep `arrivals`; warn on pending run-sheet events; never orphan records.
+- **25** Checkpoint-edit history — remaining work: warn when pending run-sheet events still point at a deleted/moved checkpoint (`arrivals` are already preserved as independent docs; the paired reveal row is already cleaned up).
 - **26** Idempotent server actions — deterministic ids / `firedAt` across winner/starvation/run-sheet.
-- **27** Late-join lock — `joinGameByCode` rejects any join once `gamePhase(game) !== 'lobby'`.
+- **27** Late-join lock — `joinGameByCode` rejects any join once `gamePhase(game) !== 'lobby'` (today it only checks `status === 'active'`).
 - **28** Confirm destructive broadcasts — two-step confirm + log for void-economy / End Game.
 - **29** `deleteAccount` — remaining work: sole-GM transfer or server-side end (chunked ≤450-write batches already shipped). Maybe a small `transferGm`/`deleteGameForce` callable.
-- **30** Tracking controller — collapse the effect + AppState re-assert into one `shouldTrack`-gated controller.
-- **33** Login loading reset — `finally { setLoading(false) }` (or a mounted guard) in `app/(auth)/login.tsx`.
 - **42** Arena map overlay — a GM-uploaded image overlay (asset/storage + map layer; spec when prioritized).
 - **44** Voucher-site preset — a one-tap scaffold of open/close/announce run-sheet rows on a time-windowed checkpoint.
 - **47** Maps-key restriction — Cloud Console ops task.
