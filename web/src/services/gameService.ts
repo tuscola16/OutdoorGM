@@ -16,6 +16,8 @@ import {
   deleteField,
   arrayUnion,
   Timestamp,
+  type UpdateData,
+  type DocumentData,
 } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { db, functions, Collections } from './firebase';
@@ -26,8 +28,7 @@ import {
   type GameConfig,
   type Broadcast,
   type Checkpoint,
-  type CheckpointKind,
-  type CheckpointState,
+  type RunbookEntry,
   type GamePhase,
   type GameStatus,
   type MapBoundary,
@@ -349,44 +350,65 @@ export async function updateCheckpoint(
   );
 }
 
-const STATE_TO_KIND: Record<Exclude<CheckpointState, 'closed'>, CheckpointKind> = {
-  boon: 'boon',
-  hazard: 'hazard',
-  notification: 'player-notify',
-};
-
-/**
- * The checkpoint-doc fields that make a `CheckpointState` effective immediately
- * (before the run-sheet sweep next runs), mirroring the mobile stateEventFields.
- * `closed` shuts the window; others map to a CheckpointKind and open the window.
- * Spread the result into an `updateCheckpoint` payload (cast as needed).
- */
-export function stateEventFields(
-  state: CheckpointState,
-  message?: string
-): Record<string, unknown> {
-  if (state === 'closed') {
-    return {
-      currentState: 'closed',
-      event: deleteField(),
-      opensAt: deleteField(),
-      closesAt: serverTimestamp(),
-    };
-  }
-  return {
-    currentState: state,
-    event: { kind: STATE_TO_KIND[state], ...(message ? { message } : {}) },
-    opensAt: serverTimestamp(),
-    closesAt: deleteField(),
-  };
-}
-
 export async function deleteCheckpoint(gameId: string, checkpointId: string): Promise<void> {
   await deleteDoc(doc(db, Collections.GAMES, gameId, Collections.CHECKPOINTS, checkpointId));
-  // Drop any paired game-time reveal row (#48) so a deleted checkpoint can't be revealed.
+  // Drop any paired timed reveal row (#60) so a deleted checkpoint can't be revealed.
   await deleteDoc(
     doc(db, Collections.GAMES, gameId, Collections.SCHEDULED_EVENTS, `reveal_${checkpointId}`)
   ).catch(() => {});
+  // Cascade-delete the checkpoint's runbook entries so none are left dangling (#60).
+  const entries = await getDocs(
+    query(runbookCol(gameId), where('checkpointId', '==', checkpointId))
+  );
+  if (!entries.empty) {
+    const batch = writeBatch(db);
+    entries.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+}
+
+// --- Runbook entries (#60) ---
+
+const runbookCol = (gameId: string) =>
+  collection(db, Collections.GAMES, gameId, Collections.RUNBOOK);
+
+/** Create a runbook entry attached to a checkpoint. */
+export async function addRunbookEntry(
+  gameId: string,
+  entry: Omit<RunbookEntry, 'id' | 'createdAt'>
+): Promise<string> {
+  const ref = await addDoc(runbookCol(gameId), { ...entry, createdAt: serverTimestamp() });
+  return ref.id;
+}
+
+/** Update a runbook entry. Pass `deleteField()` to drop trigger-specific fields. */
+export async function updateRunbookEntry(
+  gameId: string,
+  entryId: string,
+  updates: Record<string, unknown>
+): Promise<void> {
+  await updateDoc(
+    doc(db, Collections.GAMES, gameId, Collections.RUNBOOK, entryId),
+    updates as UpdateData<DocumentData>
+  );
+}
+
+export async function deleteRunbookEntry(gameId: string, entryId: string): Promise<void> {
+  await deleteDoc(doc(db, Collections.GAMES, gameId, Collections.RUNBOOK, entryId));
+}
+
+/**
+ * Fire a `gm-prompted` runbook entry now (#60): the GM picks target player(s). Runs
+ * server-side (the fireRunbookEntry callable) so it can push to players. Omit
+ * `targetPlayerIds` to deliver to every living player.
+ */
+export async function fireRunbookEntry(
+  gameId: string,
+  entryId: string,
+  targetPlayerIds?: string[]
+): Promise<void> {
+  const callable = httpsCallable(functions, 'fireRunbookEntry');
+  await callable({ gameId, entryId, targetPlayerIds: targetPlayerIds ?? null });
 }
 
 /** Resolve a reveal's player audience into a marker's `audiencePlayerIds` (#48):
@@ -444,46 +466,6 @@ export async function setRevealSchedule(
     offsetMinutes,
     firedAt: null,
     createdAt: serverTimestamp(),
-  });
-}
-
-// --- Timed site windows (#12) ---
-
-export type CheckpointWindowState = 'always' | 'pending' | 'open' | 'closed';
-
-export function checkpointWindowState(
-  cp: { opensAt?: FsTimestamp | null; closesAt?: FsTimestamp | null },
-  nowMs: number = Date.now()
-): CheckpointWindowState {
-  const opens = cp.opensAt?.toMillis?.() ?? null;
-  const closes = cp.closesAt?.toMillis?.() ?? null;
-  if (opens == null && closes == null) return 'always';
-  if (opens != null && nowMs < opens) return 'pending';
-  if (closes != null && nowMs > closes) return 'closed';
-  return 'open';
-}
-
-const cpDoc = (gameId: string, checkpointId: string) =>
-  doc(db, Collections.GAMES, gameId, Collections.CHECKPOINTS, checkpointId);
-
-/** GM opens a timed site now: live from this moment, no scheduled close (#12). */
-export async function openCheckpointNow(gameId: string, checkpointId: string): Promise<void> {
-  await updateDoc(cpDoc(gameId, checkpointId), {
-    opensAt: serverTimestamp(),
-    closesAt: deleteField(),
-  });
-}
-
-/** GM closes a timed site now (#12). */
-export async function closeCheckpointNow(gameId: string, checkpointId: string): Promise<void> {
-  await updateDoc(cpDoc(gameId, checkpointId), { closesAt: serverTimestamp() });
-}
-
-/** GM removes the window so the site is always live again (#12). */
-export async function clearCheckpointWindow(gameId: string, checkpointId: string): Promise<void> {
-  await updateDoc(cpDoc(gameId, checkpointId), {
-    opensAt: deleteField(),
-    closesAt: deleteField(),
   });
 }
 

@@ -3,6 +3,7 @@ import { useAuth } from '@/context/AuthContext';
 import { LoginScreen } from '@/screens/LoginScreen';
 import { GamesScreen } from '@/screens/GamesScreen';
 import { GameScreen } from '@/screens/GameScreen';
+import { RunbookScreen } from '@/screens/RunbookScreen';
 import { DemoScreen } from '@/screens/DemoScreen';
 
 function FullScreenMessage({ text }: { text: string }) {
@@ -59,6 +60,14 @@ export function App() {
         element={
           <RequireAuth>
             <GameScreen />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/games/:gameId/runbook"
+        element={
+          <RequireAuth>
+            <RunbookScreen />
           </RequireAuth>
         }
       />

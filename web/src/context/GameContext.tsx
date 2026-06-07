@@ -9,13 +9,15 @@ import {
 } from 'firebase/firestore';
 import { db, Collections } from '@/services/firebase';
 import { gamePhase } from '@/services/gameService';
-import type { Game, Checkpoint, GameMember, PlayerLocation, Arrival, GamePhase, RationSubmission, ScheduledEvent } from '@shared/types';
+import type { Game, Checkpoint, RunbookEntry, GameMember, PlayerLocation, Arrival, GamePhase, RationSubmission, ScheduledEvent } from '@shared/types';
 
 interface GameContextValue {
   game: Game | null;
   phase: GamePhase;
   myRole: 'player' | 'gm' | null;
   checkpoints: Checkpoint[];
+  /** Runbook entries (GM only, #60) — the behavior attached to checkpoints. */
+  runbookEntries: RunbookEntry[];
   members: GameMember[];
   playerLocations: PlayerLocation[];
   arrivals: Arrival[];
@@ -34,6 +36,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   const [myRole, setMyRole] = useState<'player' | 'gm' | null>(null);
   const [game, setGame] = useState<Game | null>(null);
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
+  const [runbookEntries, setRunbookEntries] = useState<RunbookEntry[]>([]);
   const [members, setMembers] = useState<GameMember[]>([]);
   const [playerLocations, setPlayerLocations] = useState<PlayerLocation[]>([]);
   const [arrivals, setArrivals] = useState<Arrival[]>([]);
@@ -50,6 +53,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     setMyRole(null);
     setGame(null);
     setCheckpoints([]);
+    setRunbookEntries([]);
     setMembers([]);
     setPlayerLocations([]);
     setArrivals([]);
@@ -78,6 +82,16 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
       (err) => console.error('[GameContext] checkpoints listener error', err)
     );
   }, [gameId]);
+
+  // Runbook entries (GMs only, #60)
+  useEffect(() => {
+    if (!gameId || myRole !== 'gm') return;
+    return onSnapshot(
+      collection(db, Collections.GAMES, gameId, Collections.RUNBOOK),
+      (snap) => setRunbookEntries(snap.docs.map((d) => ({ id: d.id, ...d.data() } as RunbookEntry))),
+      (err) => console.error('[GameContext] runbook listener error', err)
+    );
+  }, [gameId, myRole]);
 
   // Members (GMs only)
   useEffect(() => {
@@ -142,7 +156,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <GameContext.Provider
-      value={{ game, phase: gamePhase(game), myRole, checkpoints, members, playerLocations, arrivals, rations, scheduledEvents, loadGame, clearGame }}
+      value={{ game, phase: gamePhase(game), myRole, checkpoints, runbookEntries, members, playerLocations, arrivals, rations, scheduledEvents, loadGame, clearGame }}
     >
       {children}
     </GameContext.Provider>

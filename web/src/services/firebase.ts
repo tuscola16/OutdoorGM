@@ -35,6 +35,7 @@ export const Collections = {
   USERS: 'users',
   GAMES: 'games',
   CHECKPOINTS: 'checkpoints',
+  RUNBOOK: 'runbook',
   MEMBERS: 'members',
   LOCATIONS: 'locations',
   ARRIVALS: 'arrivals',

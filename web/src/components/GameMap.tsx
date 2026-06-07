@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import mapboxgl from 'mapbox-gl';
 import MapboxDraw from '@mapbox/mapbox-gl-draw';
 import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
-import type { Checkpoint, PlayerLocation, MapBoundary } from '@shared/types';
+import type { Checkpoint, PlayerLocation, MapBoundary, RunbookEntry } from '@shared/types';
 import { KIND_META, checkpointKind } from '@/services/checkpointKinds';
 
 mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN ?? '';
@@ -17,6 +17,8 @@ export interface DeathMarker {
 
 interface GameMapProps {
   checkpoints: Checkpoint[];
+  /** Runbook entries (#60) — used to color a checkpoint's pin by its top effect. */
+  runbookEntries?: RunbookEntry[];
   playerLocations: PlayerLocation[];
   deathMarkers?: DeathMarker[];
   boundary?: MapBoundary | null;
@@ -40,6 +42,17 @@ const COLORS = {
   playerDot: '#4fc3f7',
   danger: '#e8402a',
 };
+
+/** Group runbook entries by checkpointId, for per-pin coloring (#60). */
+function groupEntries(entries: RunbookEntry[]): Map<string, RunbookEntry[]> {
+  const m = new Map<string, RunbookEntry[]>();
+  for (const e of entries) {
+    const list = m.get(e.checkpointId) ?? [];
+    list.push(e);
+    m.set(e.checkpointId, list);
+  }
+  return m;
+}
 
 /** Build a GeoJSON polygon approximating a circle of `radiusM` meters. */
 function circlePolygon(lng: number, lat: number, radiusM: number, steps = 64): number[][] {
@@ -79,6 +92,7 @@ function emptyFc(): GeoJSON.FeatureCollection {
 
 export function GameMap({
   checkpoints,
+  runbookEntries = [],
   playerLocations,
   deathMarkers = [],
   boundary,
@@ -304,9 +318,10 @@ export function GameMap({
       boundary ? boundaryFc(boundary) : emptyFc()
     );
 
+    const entriesByCp = groupEntries(runbookEntries);
     const circleFeatures: GeoJSON.Feature[] = checkpoints.map((cp) => ({
       type: 'Feature',
-      properties: { color: KIND_META[checkpointKind(cp)].color },
+      properties: { color: KIND_META[checkpointKind(entriesByCp.get(cp.id) ?? [])].color },
       geometry: { type: 'Polygon', coordinates: [circlePolygon(cp.longitude, cp.latitude, cp.radius)] },
     }));
     (map.getSource('checkpoint-circles') as mapboxgl.GeoJSONSource | undefined)?.setData({
@@ -350,6 +365,7 @@ export function GameMap({
     const map = mapRef.current;
     if (!map) return;
     checkpointMarkers.current.forEach((m) => m.remove());
+    const entriesByCp = groupEntries(runbookEntries);
     checkpointMarkers.current = checkpoints.map((cp) => {
       const el = document.createElement('div');
       // The element box is just the dot (16×16) so Mapbox's default `center` anchor
@@ -364,7 +380,7 @@ export function GameMap({
       // the dot from its true coordinate. The element is still a positioned
       // ancestor (absolute, via Mapbox), so the label's `left:50%` resolves fine.
       el.style.cssText = `width:16px;height:16px;cursor:pointer;`;
-      const cpColor = KIND_META[checkpointKind(cp)].color;
+      const cpColor = KIND_META[checkpointKind(entriesByCp.get(cp.id) ?? [])].color;
       el.innerHTML = `
         <div style="width:16px;height:16px;border-radius:50%;background:${cpColor};border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.5)"></div>
         <div style="position:absolute;top:20px;left:50%;transform:translateX(-50%);font-size:11px;font-weight:700;color:#fff;text-shadow:0 1px 2px #000;white-space:nowrap">${escapeHtml(cp.name)}</div>`;

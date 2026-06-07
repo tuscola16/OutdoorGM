@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { Arrival, Checkpoint, GameMember, EliminationCause } from '@shared/types';
+import type { Arrival, RunbookEntry, GameMember, EliminationCause } from '@shared/types';
 import { KIND_META, checkpointKind } from '@/services/checkpointKinds';
 
 type Category = 'event' | 'arrival' | 'sos' | 'death';
@@ -48,23 +48,27 @@ function formatTime(ms: number): string {
  *  - ☠️ eliminations (member.out + cause)
  */
 export function NotificationFeed({
-  arrivals, checkpoints, members,
+  arrivals, runbookEntries = [], members,
 }: {
   arrivals: Arrival[];
-  checkpoints: Checkpoint[];
+  runbookEntries?: RunbookEntry[];
   members: GameMember[];
 }) {
   const [filter, setFilter] = useState<'all' | Category>('all');
 
   const notifs = useMemo<Notif[]>(() => {
-    const cpById = new Map(checkpoints.map((c) => [c.id, c]));
+    const entriesByCp = new Map<string, RunbookEntry[]>();
+    for (const e of runbookEntries) {
+      const list = entriesByCp.get(e.checkpointId) ?? [];
+      list.push(e);
+      entriesByCp.set(e.checkpointId, list);
+    }
     const items: Notif[] = [];
 
     for (const a of arrivals) {
-      const cp = cpById.get(a.checkpointId);
-      const kind = cp ? checkpointKind(cp) : 'gm-only';
+      const kind = checkpointKind(entriesByCp.get(a.checkpointId) ?? []);
       const meta = KIND_META[kind];
-      if (kind === 'gm-only') {
+      if (kind === 'gm-notify') {
         items.push({
           id: `arr-${a.id}`, time: toMillis(a.timestamp), icon: '📍', color: meta.color,
           title: a.playerName, subtitle: `reached ${a.checkpointName}`, category: 'arrival',
@@ -73,7 +77,7 @@ export function NotificationFeed({
         items.push({
           id: `arr-${a.id}`, time: toMillis(a.timestamp), icon: meta.emoji, color: meta.color,
           title: `${a.playerName} · ${meta.label}`,
-          subtitle: cp?.event?.message || `${meta.label} at ${a.checkpointName}`,
+          subtitle: `${meta.label} at ${a.checkpointName}`,
           category: 'event',
         });
       }
@@ -96,7 +100,7 @@ export function NotificationFeed({
     }
 
     return items.sort((a, b) => b.time - a.time);
-  }, [arrivals, checkpoints, members]);
+  }, [arrivals, runbookEntries, members]);
 
   const shown = notifs.filter((n) =>
     filter === 'all' ? true : filter === 'sos' ? (n.category === 'sos' || n.category === 'death') : n.category === filter
