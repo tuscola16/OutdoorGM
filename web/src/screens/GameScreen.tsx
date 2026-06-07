@@ -14,7 +14,6 @@ import {
   addCheckpoint, updateCheckpoint, deleteCheckpoint,
   updateMemberRole, removePlayer, eliminatePlayer, clearSos, ackSos, sendBroadcast,
   deleteGame, setGameArchived, reviewRation, rationInterval, setMemberDistrict,
-  addScheduledEvent, updateScheduledEvent, deleteScheduledEvent,
   revealCheckpointNow, setRevealSchedule, parseEventDate, formatEventDate,
   sendGmMessage, subscribeGmMessages,
 } from '@/services/gameService';
@@ -25,7 +24,7 @@ import {
 import { deleteField } from 'firebase/firestore';
 import type {
   Arrival, Checkpoint, RunbookEntry, GameMember, MapBoundary, PlayerLocation, RationSubmission,
-  ScheduledEvent, ScheduledActionType, CheckpointVisibility, RevealTrigger, RevealAudience, CheckpointReveal, FsTimestamp, Broadcast,
+  CheckpointVisibility, RevealTrigger, RevealAudience, CheckpointReveal, FsTimestamp, Broadcast,
 } from '@shared/types';
 
 const PHASE_LABEL: Record<string, string> = {
@@ -35,7 +34,7 @@ const PHASE_LABEL: Record<string, string> = {
 export function GameScreen() {
   const { gameId } = useParams<{ gameId: string }>();
   const navigate = useNavigate();
-  const { game, phase, checkpoints, runbookEntries, members, playerLocations, arrivals, rations, scheduledEvents, loadGame, clearGame } = useGame();
+  const { game, phase, checkpoints, runbookEntries, members, playerLocations, arrivals, rations, loadGame, clearGame } = useGame();
   const { user } = useAuth();
   const [busy, setBusy] = useState(false);
   const [showCodes, setShowCodes] = useState(false);
@@ -44,7 +43,6 @@ export function GameScreen() {
   const [showGmMessages, setShowGmMessages] = useState(false); // co-GM messaging (#40)
   const [showConfig, setShowConfig] = useState(false);
   const [showRations, setShowRations] = useState(false);
-  const [showRunSheet, setShowRunSheet] = useState(false);
   const elapsed = useElapsed(game?.startedAt, game?.endedAt);
   const remaining = useRemaining(game?.startedAt, gameConfig(game).durationMinutes, game?.endedAt);
   const now = useNow(10000);
@@ -150,11 +148,6 @@ export function GameScreen() {
           </button>
         )}
         <button className="btn btn--ghost" style={{ padding: '8px 12px' }} onClick={() => setShowGmMessages(true)}>Co-GM</button>
-        {phase !== 'results' && (
-          <button className="btn btn--ghost" style={{ padding: '8px 12px' }} onClick={() => setShowRunSheet(true)}>
-            Run-sheet{scheduledEvents.length ? ` (${scheduledEvents.length})` : ''}
-          </button>
-        )}
         <button className="btn btn--ghost" style={{ padding: '8px 12px' }} onClick={() => setShowPlayers(true)}>
           Players ({players.length})
         </button>
@@ -274,14 +267,6 @@ export function GameScreen() {
           totalWindows={rationInterval(game, now)?.total ?? null}
           enforceUnique={gameConfig(game).enforceUniqueRationCards}
           onClose={() => setShowRations(false)}
-        />
-      )}
-      {showRunSheet && (
-        <RunSheetModal
-          gameId={gameId!}
-          events={scheduledEvents}
-          checkpoints={checkpoints}
-          onClose={() => setShowRunSheet(false)}
         />
       )}
     </div>
@@ -780,201 +765,6 @@ function RulesModal({ gameId, initial, onClose }: { gameId: string; initial: str
       <div style={{ display: 'flex', gap: 12 }}>
         <button className="btn btn--ghost" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
         <button className="btn" style={{ flex: 1 }} onClick={save} disabled={busy}>Save</button>
-      </div>
-    </Modal>
-  );
-}
-
-// --- Run-sheet (#11) ---
-type RunAction = {
-  key: string;
-  type: ScheduledActionType;
-  template?: 'player-count';
-  label: string;
-  needs: 'message' | 'checkpoint' | 'none';
-};
-const RUN_ACTIONS: RunAction[] = [
-  { key: 'broadcast', type: 'broadcast', label: 'Announcement', needs: 'message' },
-  { key: 'player-count', type: 'broadcast', template: 'player-count', label: 'Player count', needs: 'none' },
-  { key: 'gear-drop', type: 'gear-drop', label: 'Gear drop', needs: 'message' },
-  { key: 'gm-reminder', type: 'gm-reminder', label: 'GM reminder', needs: 'message' },
-  { key: 'reveal-checkpoint', type: 'reveal-checkpoint', label: 'Reveal marker', needs: 'checkpoint' },
-];
-const runActionFor = (key: string) => RUN_ACTIONS.find((a) => a.key === key)!;
-const runKeyForEvent = (ev: ScheduledEvent) => (ev.template === 'player-count' ? 'player-count' : ev.type);
-
-function RunSheetModal({
-  gameId, events, checkpoints, onClose,
-}: {
-  gameId: string;
-  events: ScheduledEvent[];
-  checkpoints: Checkpoint[];
-  onClose: () => void;
-}) {
-  const [editId, setEditId] = useState<string | null>(null);
-  const [actionKey, setActionKey] = useState('broadcast');
-  const [offset, setOffset] = useState('0');
-  const [message, setMessage] = useState('');
-  const [checkpointId, setCheckpointId] = useState<string | undefined>(undefined);
-  const [busy, setBusy] = useState(false);
-  const [behaviorCheckpointId, setBehaviorCheckpointId] = useState<string | null>(null);
-  const action = runActionFor(actionKey);
-
-  const { runbookEntries } = useGame();
-  const entriesByCp = new Map<string, RunbookEntry[]>();
-  for (const e of runbookEntries) {
-    const list = entriesByCp.get(e.checkpointId) ?? [];
-    list.push(e);
-    entriesByCp.set(e.checkpointId, list);
-  }
-
-  function reset() {
-    setEditId(null); setActionKey('broadcast'); setOffset('0'); setMessage(''); setCheckpointId(undefined);
-  }
-  function startEdit(ev: ScheduledEvent) {
-    setEditId(ev.id);
-    setActionKey(runKeyForEvent(ev));
-    setOffset(ev.offsetMinutes != null ? String(ev.offsetMinutes) : '0');
-    setMessage(ev.message ?? '');
-    setCheckpointId(ev.checkpointId);
-  }
-  async function save() {
-    const offsetMinutes = parseInt(offset, 10);
-    if (isNaN(offsetMinutes) || offsetMinutes < 0) { window.alert('Enter minutes after game start (0 or more).'); return; }
-    if (action.needs === 'message' && !message.trim()) { window.alert('Enter a message for this action.'); return; }
-    if (action.needs === 'checkpoint' && !checkpointId) { window.alert('Pick a checkpoint for this action.'); return; }
-    const data = {
-      type: action.type,
-      offsetMinutes,
-      template: action.template ?? null,
-      message: action.needs === 'message' ? message.trim() : '',
-      ...(action.needs === 'checkpoint' ? { checkpointId } : {}),
-    };
-    setBusy(true);
-    try {
-      if (editId) await updateScheduledEvent(gameId, editId, data);
-      else await addScheduledEvent(gameId, data);
-      reset();
-    } catch (err) { window.alert(friendlyError(err)); }
-    finally { setBusy(false); }
-  }
-  async function remove(ev: ScheduledEvent) {
-    if (!window.confirm('Delete this run-sheet action?')) return;
-    try { await deleteScheduledEvent(gameId, ev.id); if (editId === ev.id) reset(); }
-    catch (err) { window.alert(friendlyError(err)); }
-  }
-  function summary(ev: ScheduledEvent): string {
-    const a = runActionFor(runKeyForEvent(ev));
-    if (a.needs === 'checkpoint') {
-      const cp = checkpoints.find((c) => c.id === ev.checkpointId);
-      return `${a.label} · ${cp?.name ?? 'deleted checkpoint'}`;
-    }
-    if (a.key === 'player-count') return 'Pushes the living-tribute count to all players';
-    return ev.message || a.label;
-  }
-  const sorted = [...events].sort((a, b) => (a.offsetMinutes ?? Infinity) - (b.offsetMinutes ?? Infinity));
-
-  const behaviorCp = behaviorCheckpointId ? checkpoints.find((c) => c.id === behaviorCheckpointId) ?? null : null;
-
-  if (behaviorCp) {
-    return (
-      <CheckpointBehaviorModal
-        gameId={gameId}
-        cp={behaviorCp}
-        onClose={() => setBehaviorCheckpointId(null)}
-      />
-    );
-  }
-
-  return (
-    <Modal title="Run-sheet" onClose={onClose}>
-      {/* Checkpoint hub — mirrors mobile runsheet.tsx */}
-      {checkpoints.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Checkpoints</span>
-          {checkpoints.map((cp) => (
-            <button
-              key={cp.id}
-              type="button"
-              onClick={() => setBehaviorCheckpointId(cp.id)}
-              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderRadius: 8, background: 'var(--card)', border: '1px solid var(--border)', cursor: 'pointer', textAlign: 'left', width: '100%' }}
-            >
-              <span style={{ fontSize: 20 }}>{checkpointIconEmoji(cp.icon)}</span>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 600, fontSize: 14 }}>{cp.name}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{behaviorSummary(entriesByCp.get(cp.id) ?? [])}</div>
-              </div>
-              <span style={{ color: 'var(--text-muted)', fontSize: 16 }}>›</span>
-            </button>
-          ))}
-        </div>
-      )}
-
-      <div style={{ borderTop: checkpoints.length > 0 ? '1px solid var(--border)' : 'none', paddingTop: checkpoints.length > 0 ? 12 : 0 }}>
-        <p style={{ margin: '0 0 8px', color: 'var(--text-secondary)', fontSize: 13 }}>
-          Timed actions fire automatically, measured from when you Start the game. They run only while the game is in play.
-        </p>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 240, overflowY: 'auto' }}>
-        {sorted.length === 0 && <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>No timed actions yet.</span>}
-        {sorted.map((ev) => {
-          const a = runActionFor(runKeyForEvent(ev));
-          const fired = ev.firedAt != null;
-          return (
-            <div key={ev.id} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', opacity: fired ? 0.6 : 1 }}>
-              <strong style={{ width: 56, fontVariant: 'tabular-nums' }}>{ev.offsetMinutes === 0 ? 'Start' : `+${ev.offsetMinutes}m`}</strong>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 700, fontSize: 13 }}>{a.label}{fired ? ' · fired' : ''}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{summary(ev)}</div>
-              </div>
-              <button className="btn btn--ghost" style={{ padding: '4px 8px', fontSize: 12 }} onClick={() => startEdit(ev)}>Edit</button>
-              <button className="btn btn--ghost" style={{ padding: '4px 8px', fontSize: 12, color: 'var(--danger)' }} onClick={() => remove(ev)}>Delete</button>
-            </div>
-          );
-        })}
-      </div>
-
-      <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <strong style={{ fontSize: 13 }}>{editId ? 'Edit action' : 'Add action'}</strong>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {RUN_ACTIONS.map((a) => (
-            <button key={a.key} type="button" className={a.key === actionKey ? 'btn' : 'btn btn--ghost'} style={{ padding: '6px 10px', fontSize: 12 }} onClick={() => setActionKey(a.key)}>{a.label}</button>
-          ))}
-        </div>
-        <div className="field">
-          <label>Minutes after game start</label>
-          <input className="input" type="number" value={offset} onChange={(e) => setOffset(e.target.value)} />
-        </div>
-        {action.needs === 'message' && (
-          <textarea
-            className="input"
-            rows={2}
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            placeholder={action.key === 'gm-reminder' ? 'e.g. Send Aaron to The Dock now' : action.key === 'gear-drop' ? 'e.g. A supply drop is at Trestle Bridge' : 'e.g. The storm is closing in — head for high ground'}
-            style={{ resize: 'vertical' }}
-          />
-        )}
-        {action.key === 'player-count' && (
-          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Auto-fills the living-tribute count and pushes it to all players.</span>
-        )}
-        {action.key === 'gm-reminder' && (
-          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Only you (the GM) are notified — players see nothing.</span>
-        )}
-        {action.needs === 'checkpoint' && (
-          checkpoints.length === 0 ? (
-            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No checkpoints yet — add one on the map first.</span>
-          ) : (
-            <select className="input" value={checkpointId ?? ''} onChange={(e) => setCheckpointId(e.target.value || undefined)}>
-              <option value="">Select checkpoint…</option>
-              {checkpoints.map((cp) => <option key={cp.id} value={cp.id}>{cp.name}</option>)}
-            </select>
-          )
-        )}
-        <div style={{ display: 'flex', gap: 8 }}>
-          {editId && <button className="btn btn--ghost" style={{ flex: 1 }} onClick={reset}>Cancel edit</button>}
-          <button className="btn" style={{ flex: 1 }} onClick={save} disabled={busy}>{editId ? 'Save action' : 'Add action'}</button>
-        </div>
-      </div>
       </div>
     </Modal>
   );

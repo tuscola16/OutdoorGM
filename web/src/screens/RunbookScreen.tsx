@@ -257,6 +257,7 @@ function EntryEditor({
   const [trigger, setTrigger] = useState<RunbookTriggerType>(entry?.trigger ?? 'always-on');
   const [effect, setEffect] = useState<RunbookEffect>(entry?.effect ?? { kind: 'gm-notify' });
   const [slots, setSlots] = useState<(RunbookEffect | null)[]>(entry?.queueSlots ?? []);
+  const [defaultNone, setDefaultNone] = useState(entry?.defaultNone ?? false);
   const [startAt, setStartAt] = useState<TimedBound>(entry?.startAt ?? { kind: 'game-start' });
   const [endAt, setEndAt] = useState<TimedBound>(entry?.endAt ?? { kind: 'game-end' });
   const [busy, setBusy] = useState(false);
@@ -280,8 +281,10 @@ function EntryEditor({
     // Trigger-specific fields (set the relevant ones; clear the rest on update).
     if (trigger === 'fixed-order') {
       base.queueSlots = slots.map((s) => (s ? cleanEffect(s) : null));
+      base.defaultNone = defaultNone;
     } else {
       base.queueSlots = entry ? deleteField() : undefined;
+      base.defaultNone = entry ? deleteField() : undefined;
     }
     if (trigger === 'timed') {
       base.startAt = cleanBound(startAt);
@@ -362,7 +365,20 @@ function EntryEditor({
       {/* Effect (the default for fixed-order) */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <span style={labelStyle}>{trigger === 'fixed-order' ? 'Default effect' : 'Effect'}</span>
-        <EffectEditor value={effect} onChange={setEffect} />
+        {trigger === 'fixed-order' && (
+          <>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: -4 }}>
+              Fires for arrivers past the slots below, and for anyone who revisits.
+            </span>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+              <input type="checkbox" checked={defaultNone} onChange={(e) => setDefaultNone(e.target.checked)} />
+              Nothing fires by default
+            </label>
+          </>
+        )}
+        {!(trigger === 'fixed-order' && defaultNone) && (
+          <EffectEditor value={effect} onChange={setEffect} />
+        )}
       </div>
 
       {/* Trigger-specific */}

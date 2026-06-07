@@ -28,6 +28,7 @@ interface RunbookEntry {
   trigger: 'fixed-order' | 'always-on' | 'timed' | 'gm-prompted';
   effect: RunbookEffect;
   queueSlots?: (RunbookEffect | null)[];
+  defaultNone?: boolean;
   startAt?: TimedBound;
   endAt?: TimedBound;
   createdAt?: admin.firestore.Timestamp;
@@ -93,12 +94,11 @@ function resolveCrossingEffect(
     } else if (e.trigger === 'timed') {
       if (timedEligible(e, nowMs, startedMs)) candidate = e.effect;
     } else if (e.trigger === 'fixed-order') {
-      if (ordinal == null) {
-        candidate = e.effect; // revisit → the default effect, no slot consumed
-      } else if (Array.isArray(e.queueSlots) && ordinal < e.queueSlots.length) {
+      if (ordinal != null && Array.isArray(e.queueSlots) && ordinal < e.queueSlots.length) {
         candidate = e.queueSlots[ordinal]; // may be null → nothing fires for this arriver
       } else {
-        candidate = e.effect; // beyond the slot list → default
+        // Default position: arrivers past the slot list, and revisits (ordinal == null).
+        candidate = e.defaultNone ? null : e.effect; // defaultNone → nothing fires
       }
     }
     if (!candidate) continue;

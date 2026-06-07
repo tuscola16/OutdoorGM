@@ -16,7 +16,9 @@ tooling (**58**) and per-GM teams (**57**). A follow-on field-test pass added **
 player bounced to *My Games* every few seconds — fixed, see the Built callout). The
 **checkpoint & runbook overhaul** (**60**, Tier 14) has now shipped — a checkpoint shrinks to
 name/icon/visibility while all behavior lives in a new per-checkpoint **runbook** of
-priority-ranked entries (see the Built callout).
+priority-ranked entries (see the Built callout). Its follow-on **61** retires the web run-sheet UI
+(superseded by the Runbook) and tracks the one run-sheet capability the Runbook doesn't yet
+cover — clock-triggered actions with no player crossing.
 
 > **Built & removed** (retired numbers, never reused — see git history + the
 > [README](README.md#features)):
@@ -82,7 +84,28 @@ is field-proven. Tester-confirmed wanted.
 
 **12. Auto per-interval "N remaining" broadcast.** A config toggle that seeds repeating
 player-count entries each ration interval, so the GM needn't add each run-sheet row by hand.
-Low priority — the run-sheet covers it manually today.
+Low priority — depends on #61 (timed actions are not yet authorable now that the run-sheet UI is gone).
+
+---
+
+## Tier 14 — Runbook follow-ons
+
+**61. Timed, crossing-independent actions in the Runbook.** The web **run-sheet UI was removed**
+(the Runbook supersedes per-checkpoint behavior), but the run-sheet also carried **time-triggered
+actions that fire on a clock, with no player crossing** — which the Runbook's `timed` trigger does
+*not* cover (a `timed` runbook entry only gates a *crossing* effect to a window). The orphaned
+capabilities (still fired by the `runScheduledEvents` sweep over `games/{id}/scheduledEvents`, and
+still authorable on the **mobile** run-sheet) are:
+  - **Timed announcement** — a game-wide broadcast at `+Nm`.
+  - **Auto living-player-count broadcast** — the `player-count` template ("N tributes remain").
+  - **Gear-drop announcement** — a themed timed broadcast.
+  - **GM-only timed reminder** — a nudge to the GMs, players see nothing.
+
+  (Timed **checkpoint reveal** is *not* lost — it's covered by the checkpoint's own reveal config,
+  `reveal.trigger: 'timed'` + `offsetMinutes`.) Fold these into the Runbook editor — e.g. a timed
+  entry with no `checkpointId`, or a dedicated "Scheduled announcements" pane — so a GM keeps the
+  capability from the web dashboard, then retire the orphaned backend/mobile run-sheet (and revisit
+  #12, #44, which assume run-sheet rows).
 
 ---
 
@@ -200,7 +223,8 @@ its bundle ID / SHA-1 and the Maps SDK in Cloud Console before wide release. Con
 
 ## Suggested order
 
-1. **Tier 4** (11–12) completes the ration loop.
+1. **Tier 4** (11–12) completes the ration loop; **Tier 14** (61) restores timed announcements in
+   the Runbook (the web run-sheet UI was removed alongside #60).
 2. **Tier 6** (16) trims the last geofence read cost; **Tier 7** (20–28) — integrity invariants —
    land alongside the features they protect.
 3. **Tier 8** (29, 35) trails as robustness/polish.

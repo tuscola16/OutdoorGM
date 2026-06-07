@@ -103,6 +103,9 @@ export interface RunbookEntry {
   // trigger: 'fixed-order' (keyed by ARRIVAL ORDER, not player identity)
   queueSlots?: (RunbookEffect | null)[]; // position N → its own effect, or null = "nothing fires";
                                           // positions past the array fall back to `effect`
+  defaultNone?: boolean;                  // true → the default position (past the slots, and revisits)
+                                          // fires nothing instead of `effect`; entry-level mirror of a
+                                          // null slot. `effect` is still stored (drives pin color).
 
   // trigger: 'timed'
   startAt?: TimedBound;              // default { kind: 'game-start' }
@@ -117,8 +120,8 @@ export interface RunbookEntry {
 
 **Triggers:**
 - **fixed-order** — the Nth distinct arriver (0-based, counted via the `checkpointTrips` latch) gets
-  `queueSlots[N]`, falling back to `effect`; a `null` slot fires nothing for that arriver. Replaces
-  `eventQueue`.
+  `queueSlots[N]`, falling back to the default (`effect`, or **nothing** when `defaultNone` is set);
+  a `null` slot fires nothing for that arriver. Replaces `eventQueue`.
 - **always-on** — fires `effect` for every crossing. Replaces the single `event`.
 - **timed** — eligible only while `now ∈ [startAt, endAt]`. Replaces `opensAt`/`closesAt` **and** the
   `transitions`/`currentState` schedule.
@@ -155,6 +158,10 @@ rules). Checkpoint placement (name + icon + visibility + radius) stays on the ma
 - The run sheet (`ScheduledEvent`: timed broadcasts, GM reminders, player-count) stays a **separate**
   schedule tool — only checkpoint *effects* move to the runbook. Its `open-site`/`close-site`/
   `reveal-checkpoint` action types are superseded by timed entries + the reveal model and can be retired.
+  **Update (web run-sheet UI removed):** the web GM dashboard's run-sheet pane has now been deleted —
+  the remaining clock-triggered, crossing-independent actions (timed announcement, player-count,
+  gear-drop, GM reminder) are tracked by **[§61](#61)** to fold into the Runbook; the
+  `runScheduledEvents` sweep + `scheduledEvents` collection + mobile run-sheet still drive them meanwhile.
 - `firestore.rules`: add `runbook` (GM-only); the geofence/sweep functions read it via admin SDK.
 
 **Open sub-points (don't block):** per-slot effect overrides are in (above); whether `gm-prompted`

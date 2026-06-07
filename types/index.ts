@@ -248,9 +248,16 @@ export interface RunbookEntry {
   effect: RunbookEffect;
   /**
    * `fixed-order` only: the Nth distinct arriver (0-based) gets `queueSlots[N]`; a `null`
-   * slot fires nothing for that arriver; positions beyond the array fall back to `effect`.
+   * slot fires nothing for that arriver; positions beyond the array fall back to `effect`
+   * (or to nothing when `defaultNone` is set).
    */
   queueSlots?: (RunbookEffect | null)[];
+  /**
+   * `fixed-order` only: when true, the default position (arrivers past `queueSlots`, and
+   * revisits) fires nothing instead of `effect` — the entry-level mirror of a `null` slot.
+   * `effect` is still stored (it drives the entry's pin color) but is not delivered.
+   */
+  defaultNone?: boolean;
   /** `timed` only: window start (default `{ kind: 'game-start' }`). */
   startAt?: TimedBound;
   /** `timed` only: window end (default `{ kind: 'game-end' }`). */

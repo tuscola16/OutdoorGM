@@ -48,75 +48,78 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     setMyRole(role);
   }, []);
 
+  // Only null the keys here — each subscription effect below clears its own slice of
+  // state in its cleanup, which runs exactly when the listener is torn down (gameId →
+  // null, or a real game switch). Wiping the data arrays here too would clobber a
+  // same-game re-mount: navigating between two screens of the same game (e.g. Game ↔
+  // Runbook) batches clearGame()+loadGame() so `gameId` ends unchanged, the listeners
+  // never re-fire, and the just-cleared data would never be repopulated.
   const clearGame = useCallback(() => {
     setGameId(null);
     setMyRole(null);
-    setGame(null);
-    setCheckpoints([]);
-    setRunbookEntries([]);
-    setMembers([]);
-    setPlayerLocations([]);
-    setArrivals([]);
-    setRations([]);
-    setScheduledEvents([]);
   }, []);
 
   // Game document
   useEffect(() => {
     if (!gameId) return;
-    return onSnapshot(
+    const unsub = onSnapshot(
       doc(db, Collections.GAMES, gameId),
       (snap) => {
         if (snap.exists()) setGame({ id: snap.id, ...snap.data() } as Game);
       },
       (err) => console.error('[GameContext] game listener error', err)
     );
+    return () => { unsub(); setGame(null); };
   }, [gameId]);
 
   // Checkpoints
   useEffect(() => {
     if (!gameId) return;
-    return onSnapshot(
+    const unsub = onSnapshot(
       collection(db, Collections.GAMES, gameId, Collections.CHECKPOINTS),
       (snap) => setCheckpoints(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Checkpoint))),
       (err) => console.error('[GameContext] checkpoints listener error', err)
     );
+    return () => { unsub(); setCheckpoints([]); };
   }, [gameId]);
 
   // Runbook entries (GMs only, #60)
   useEffect(() => {
     if (!gameId || myRole !== 'gm') return;
-    return onSnapshot(
+    const unsub = onSnapshot(
       collection(db, Collections.GAMES, gameId, Collections.RUNBOOK),
       (snap) => setRunbookEntries(snap.docs.map((d) => ({ id: d.id, ...d.data() } as RunbookEntry))),
       (err) => console.error('[GameContext] runbook listener error', err)
     );
+    return () => { unsub(); setRunbookEntries([]); };
   }, [gameId, myRole]);
 
   // Members (GMs only)
   useEffect(() => {
     if (!gameId || myRole !== 'gm') return;
-    return onSnapshot(
+    const unsub = onSnapshot(
       collection(db, Collections.GAMES, gameId, Collections.MEMBERS),
       (snap) => setMembers(snap.docs.map((d) => ({ userId: d.id, ...d.data() } as GameMember))),
       (err) => console.error('[GameContext] members listener error', err)
     );
+    return () => { unsub(); setMembers([]); };
   }, [gameId, myRole]);
 
   // Player locations (GMs only)
   useEffect(() => {
     if (!gameId || myRole !== 'gm') return;
-    return onSnapshot(
+    const unsub = onSnapshot(
       collection(db, Collections.GAMES, gameId, Collections.LOCATIONS),
       (snap) => setPlayerLocations(snap.docs.map((d) => ({ ...d.data() } as PlayerLocation))),
       (err) => console.error('[GameContext] locations listener error', err)
     );
+    return () => { unsub(); setPlayerLocations([]); };
   }, [gameId, myRole]);
 
   // Arrivals
   useEffect(() => {
     if (!gameId) return;
-    return onSnapshot(
+    const unsub = onSnapshot(
       query(
         collection(db, Collections.GAMES, gameId, Collections.ARRIVALS),
         orderBy('timestamp', 'desc'),
@@ -125,12 +128,13 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
       (snap) => setArrivals(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Arrival))),
       (err) => console.error('[GameContext] arrivals listener error', err)
     );
+    return () => { unsub(); setArrivals([]); };
   }, [gameId]);
 
   // Rations (GMs only) — the review feed.
   useEffect(() => {
     if (!gameId || myRole !== 'gm') return;
-    return onSnapshot(
+    const unsub = onSnapshot(
       query(
         collection(db, Collections.GAMES, gameId, Collections.RATIONS),
         orderBy('submittedAt', 'desc'),
@@ -139,12 +143,13 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
       (snap) => setRations(snap.docs.map((d) => ({ id: d.id, ...d.data() } as RationSubmission))),
       (err) => console.error('[GameContext] rations listener error', err)
     );
+    return () => { unsub(); setRations([]); };
   }, [gameId, myRole]);
 
   // Run-sheet (GM only, #11).
   useEffect(() => {
     if (!gameId || myRole !== 'gm') return;
-    return onSnapshot(
+    const unsub = onSnapshot(
       query(
         collection(db, Collections.GAMES, gameId, Collections.SCHEDULED_EVENTS),
         orderBy('createdAt', 'asc')
@@ -152,6 +157,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
       (snap) => setScheduledEvents(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ScheduledEvent))),
       (err) => console.error('[GameContext] scheduledEvents listener error', err)
     );
+    return () => { unsub(); setScheduledEvents([]); };
   }, [gameId, myRole]);
 
   return (
