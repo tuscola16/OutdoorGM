@@ -272,6 +272,14 @@ shipped; remaining is the **web-only** draw/edit UI (e.g. `@mapbox/mapbox-gl-dra
 geofence (only needed once the boundary-exit alert, item 7, lands). Low priority — the rectangle
 works.
 
+> **Built:** the geofence ray-cast `pointInPolygon` already landed with #7. The web authoring is now
+> done: `@mapbox/mapbox-gl-draw` is wired into `GameMap` behind a `drawingPolygon` prop — it loads an
+> existing polygon for vertex editing or starts a fresh draw, and on create/update emits
+> `{ polygon, …bbox }` (vertices + their min/max box) which `GameScreen`'s setup persists via
+> `updateGameConfig`. The setup panel offers **Draw rectangle** / **Draw·Edit polygon** with a
+> live banner + Done button. Mobile viewing was already polygon-aware; mobile authoring stays
+> rectangle-only by design.
+
 **40. GM per-player follow-ons.** On the built per-player screen: author **per-player checkpoints**
 (the GM side of the built reveal model's per-player case — `reveal.audience: specific-players`) and
 **GM↔GM messaging** (new — broadcasts are GM→player only today).

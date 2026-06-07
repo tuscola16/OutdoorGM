@@ -151,6 +151,12 @@ bbox); and a **point-in-polygon** (ray-cast) test in `functions/src/geofence.ts`
 boundary check, used when `polygon` is set (absent → unchanged box behavior). The geofence test is
 only needed once the boundary-exit alert (item 7) lands.
 
+> **Built:** geofence `pointInPolygon` ray-cast shipped with #7. Web authoring uses
+> `@mapbox/mapbox-gl-draw` (added to `web/package.json`) behind `GameMap`'s `drawingPolygon` prop:
+> loads an existing polygon for editing or draws fresh, emits `{ polygon, minLat/maxLat/minLng/maxLng }`
+> (vertices + bbox) on create/update, persisted by `updateGameConfig`. Setup panel: Draw rectangle /
+> Draw·Edit polygon. ✅ BUILT.
+
 ## 40. GM↔GM messaging *(per-player checkpoints need no new schema)* — ✅ BUILT
 
 Per-player checkpoints reuse the built reveal model's `reveal.audience: 'specific-players'` +

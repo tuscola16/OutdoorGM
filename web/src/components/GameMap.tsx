@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react';
 import mapboxgl from 'mapbox-gl';
+import MapboxDraw from '@mapbox/mapbox-gl-draw';
+import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
 import type { Checkpoint, PlayerLocation, MapBoundary } from '@shared/types';
 import { KIND_META, checkpointKind } from '@/services/checkpointKinds';
 
@@ -26,6 +28,9 @@ interface GameMapProps {
   onCheckpointClick?: (cp: Checkpoint) => void;
   /** Setup: while true, a click-drag on the map defines the rectangular boundary. */
   drawingBoundary?: boolean;
+  /** Setup: while true, mapbox-gl-draw is active to draw/edit a polygon boundary (#39).
+   * An existing polygon is loaded for vertex editing; otherwise a fresh polygon is drawn. */
+  drawingPolygon?: boolean;
   onBoundaryDrawn?: (b: MapBoundary) => void;
 }
 
@@ -81,6 +86,7 @@ export function GameMap({
   onMapClick,
   onCheckpointClick,
   drawingBoundary = false,
+  drawingPolygon = false,
   onBoundaryDrawn,
 }: GameMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -105,6 +111,13 @@ export function GameMap({
   onBoundaryDrawnRef.current = onBoundaryDrawn;
   editRef.current = editMode;
   drawingRef.current = drawingBoundary;
+
+  // Polygon drawing (#39): the mapbox-gl-draw instance + a ref to the latest boundary so
+  // entering polygon mode can load the existing polygon for editing.
+  const drawRef = useRef<MapboxDraw | null>(null);
+  const drawHandlerRef = useRef<(() => void) | null>(null);
+  const boundaryRef = useRef<MapBoundary | null | undefined>(boundary);
+  boundaryRef.current = boundary;
 
   // Init map once.
   useEffect(() => {
@@ -201,6 +214,83 @@ export function GameMap({
     if (drawingBoundary) map.dragPan.disable();
     else map.dragPan.enable();
   }, [drawingBoundary]);
+
+  // Read the current polygon out of mapbox-gl-draw and emit it as a boundary (#39):
+  // the polygon vertices plus their bbox (kept in min/max for legacy/framing).
+  function emitPolygonFromDraw(draw: MapboxDraw): void {
+    const all = draw.getAll();
+    const poly = all.features.find(
+      (f) => f.geometry?.type === 'Polygon'
+    ) as GeoJSON.Feature<GeoJSON.Polygon> | undefined;
+    if (!poly) return;
+    const ring = poly.geometry.coordinates[0];
+    if (!ring || ring.length < 4) return; // ≥3 distinct verts + closing point
+    const verts = ring.slice(0, -1).map(([lng, lat]) => ({ latitude: lat, longitude: lng }));
+    if (verts.length < 3) return;
+    const lats = verts.map((v) => v.latitude);
+    const lngs = verts.map((v) => v.longitude);
+    onBoundaryDrawnRef.current?.({
+      minLat: Math.min(...lats),
+      maxLat: Math.max(...lats),
+      minLng: Math.min(...lngs),
+      maxLng: Math.max(...lngs),
+      polygon: verts,
+    });
+  }
+
+  // Activate mapbox-gl-draw while in polygon mode (#39); tear it down when leaving.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const teardown = () => {
+      const m = mapRef.current;
+      if (drawHandlerRef.current && m) {
+        (m as mapboxgl.Map).off('draw.create' as never, drawHandlerRef.current as never);
+        (m as mapboxgl.Map).off('draw.update' as never, drawHandlerRef.current as never);
+        drawHandlerRef.current = null;
+      }
+      if (drawRef.current && m) {
+        try { m.removeControl(drawRef.current as unknown as mapboxgl.IControl); } catch { /* already gone */ }
+        drawRef.current = null;
+      }
+    };
+
+    if (!drawingPolygon) { teardown(); return; }
+
+    const setup = () => {
+      if (drawRef.current) return;
+      const draw = new MapboxDraw({ displayControlsDefault: false, controls: {} });
+      drawRef.current = draw;
+      map.addControl(draw as unknown as mapboxgl.IControl);
+
+      // Load an existing polygon for vertex editing; otherwise start a fresh draw.
+      const b = boundaryRef.current;
+      if (b?.polygon && b.polygon.length >= 3) {
+        const ring = b.polygon.map((v) => [v.longitude, v.latitude]);
+        ring.push(ring[0]);
+        const ids = draw.add({
+          type: 'Feature',
+          properties: {},
+          geometry: { type: 'Polygon', coordinates: [ring] },
+        });
+        draw.changeMode('direct_select', { featureId: ids[0] });
+      } else {
+        draw.changeMode('draw_polygon');
+      }
+
+      const onChange = () => emitPolygonFromDraw(draw);
+      drawHandlerRef.current = onChange;
+      (map as mapboxgl.Map).on('draw.create' as never, onChange as never);
+      (map as mapboxgl.Map).on('draw.update' as never, onChange as never);
+    };
+
+    if (readyRef.current) setup();
+    else map.once('load', setup);
+
+    return teardown;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawingPolygon]);
 
   function syncSources() {
     const map = mapRef.current;

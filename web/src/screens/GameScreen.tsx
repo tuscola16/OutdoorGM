@@ -294,7 +294,8 @@ function SetupView({
 }) {
   const { game, checkpoints, members } = useGame();
   const playerMembers = members.filter((m) => m.role === 'player');
-  const [drawing, setDrawing] = useState(false);
+  const [drawing, setDrawing] = useState(false); // rectangle drag
+  const [drawingPoly, setDrawingPoly] = useState(false); // polygon draw/edit (#39)
   const [cpModal, setCpModal] = useState<{ coord: { latitude: number; longitude: number }; edit?: Checkpoint } | null>(null);
   const [showRules, setShowRules] = useState(false);
 
@@ -303,7 +304,9 @@ function SetupView({
   }
 
   async function handleBoundaryDrawn(b: MapBoundary) {
-    setDrawing(false);
+    // Rectangle is one-shot (exit after); polygon stays active so the GM can keep
+    // adjusting vertices until they click Done (#39).
+    if (!b.polygon) setDrawing(false);
     await run(() => updateGameConfig(gameId, { boundary: b }));
   }
 
@@ -314,18 +317,27 @@ function SetupView({
           checkpoints={checkpoints}
           playerLocations={[]}
           boundary={game?.boundary}
-          editMode
+          editMode={!drawingPoly}
           drawingBoundary={drawing}
+          drawingPolygon={drawingPoly}
           onMapClick={handleMapClick}
           onCheckpointClick={(cp) => setCpModal({ coord: { latitude: cp.latitude, longitude: cp.longitude }, edit: cp })}
           onBoundaryDrawn={handleBoundaryDrawn}
         />
-        {drawing && (
+        {(drawing || drawingPoly) && (
           <div style={{
             position: 'absolute', top: 12, left: 12, right: 12, textAlign: 'center',
             background: 'rgba(0,0,0,0.75)', color: '#fff', padding: '8px 12px', borderRadius: 8, fontSize: 13,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
           }}>
-            Click and drag on the map to draw the play-area boundary.
+            <span>
+              {drawing
+                ? 'Click and drag on the map to draw a rectangular boundary.'
+                : 'Click to add points, double-click to finish. Drag points to adjust — saves automatically.'}
+            </span>
+            {drawingPoly && (
+              <button className="btn" style={{ padding: '4px 12px', fontSize: 13 }} onClick={() => setDrawingPoly(false)}>Done</button>
+            )}
           </div>
         )}
       </div>
@@ -341,10 +353,23 @@ function SetupView({
         <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <strong>Play boundary</strong>
           <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-            {game?.boundary ? 'Boundary set ✓' : 'Not set yet'}
+            {game?.boundary
+              ? game.boundary.polygon && game.boundary.polygon.length >= 3
+                ? `Polygon set ✓ (${game.boundary.polygon.length} points)`
+                : 'Rectangle set ✓'
+              : 'Not set yet'}
           </span>
-          <button className={`btn ${drawing ? 'btn--ghost' : ''}`} onClick={() => setDrawing((d) => !d)}>
-            {drawing ? 'Cancel drawing' : game?.boundary ? 'Redraw boundary' : 'Draw boundary'}
+          <button
+            className={`btn ${drawing ? 'btn--ghost' : ''}`}
+            onClick={() => { setDrawingPoly(false); setDrawing((d) => !d); }}
+          >
+            {drawing ? 'Cancel drawing' : 'Draw rectangle'}
+          </button>
+          <button
+            className={`btn ${drawingPoly ? 'btn--ghost' : 'btn--secondary'}`}
+            onClick={() => { setDrawing(false); setDrawingPoly((d) => !d); }}
+          >
+            {drawingPoly ? 'Done editing polygon' : game?.boundary?.polygon ? 'Edit polygon' : 'Draw polygon'}
           </button>
         </div>
 
