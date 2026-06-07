@@ -92,9 +92,13 @@ export function GamesScreen() {
     }
   }
 
+  // Newest-first by the GM's event date when set, else createdAt (#36). In-memory.
+  const sortKey = (e: GameEntry) =>
+    e.game.gameDate?.toMillis?.() ?? e.game.createdAt?.toMillis?.() ?? 0;
+  const byDateDesc = (a: GameEntry, b: GameEntry) => sortKey(b) - sortKey(a);
   const gmGames = games.filter((g) => g.role === 'gm');
-  const activeGames = gmGames.filter((g) => !g.archived);
-  const archivedGames = gmGames.filter((g) => g.archived);
+  const activeGames = gmGames.filter((g) => !g.archived).sort(byDateDesc);
+  const archivedGames = gmGames.filter((g) => g.archived).sort(byDateDesc);
   const visibleGames = showArchived ? archivedGames : activeGames;
 
   return (
@@ -191,6 +195,7 @@ export function GamesScreen() {
                         <span style={{ display: 'block', fontSize: 16, fontWeight: 700 }}>{entry.game.name}</span>
                         <span style={{ display: 'block', fontSize: 13, color: 'var(--text-secondary)', marginTop: 2 }}>
                           {PHASE_TEXT[phase]}
+                          {entry.game.gameDate?.toDate ? ` · ${entry.game.gameDate.toDate().toLocaleDateString()}` : ''}
                         </span>
                       </span>
                       <span style={{ color: 'var(--text-muted)' }}>›</span>

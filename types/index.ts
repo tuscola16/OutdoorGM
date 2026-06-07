@@ -62,6 +62,12 @@ export interface Game {
   startedAt?: FsTimestamp | null;
   /** When the GM pressed End (phase → results). */
   endedAt?: FsTimestamp | null;
+  /**
+   * GM-set event date (ROADMAP #36), distinct from the system `createdAt`. When present
+   * it's used to sort/label "My Games"; absent → fall back to `createdAt`. Editable by the
+   * GM in setup. An all-day date (stored as that day's local midnight).
+   */
+  gameDate?: FsTimestamp | null;
   /** GM-tunable parameters; absent on legacy games (resolve with BASE_GAME_CONFIG). */
   config?: Partial<GameConfig>;
   /**

@@ -16,7 +16,7 @@ import { AlertFeed } from '@/components/AlertFeed';
 import { Button } from '@/components/ui/Button';
 import { Colors } from '@/constants/colors';
 import { onForegroundMessage } from '@/services/notificationService';
-import { endGame, openLobby, reopenSetup, startGame, updateGameConfig, deleteGame, setGameArchived, sendBroadcast, gameConfig } from '@/services/gameService';
+import { endGame, openLobby, reopenSetup, startGame, updateGameConfig, deleteGame, setGameArchived, sendBroadcast, gameConfig, parseEventDate, formatEventDate } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
 import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
 import { useNow } from '@/hooks/useNow';
@@ -45,6 +45,7 @@ export default function GMGameScreen() {
   const [broadcastText, setBroadcastText] = useState('');
   const [showConfig, setShowConfig] = useState(false);
   const [cfgDuration, setCfgDuration] = useState('');
+  const [cfgGameDate, setCfgGameDate] = useState(''); // 'YYYY-MM-DD' event date (#36)
   const [cfgPlayerCount, setCfgPlayerCount] = useState(true);
   const [cfgWinner, setCfgWinner] = useState(true);
   const [cfgBattery, setCfgBattery] = useState(true);
@@ -234,6 +235,7 @@ export default function GMGameScreen() {
   function openConfigEditor() {
     const cfg = gameConfig(game);
     setCfgDuration(String(cfg.durationMinutes));
+    setCfgGameDate(formatEventDate(game?.gameDate));
     setCfgPlayerCount(cfg.playerCountBroadcast);
     setCfgWinner(cfg.winnerDetection);
     setCfgBattery(cfg.batterySaver);
@@ -254,6 +256,8 @@ export default function GMGameScreen() {
     );
     await runPhaseAction(() =>
       updateGameConfig(gameId!, {
+        // Event date (#36): a parsed timestamp when valid, else null to clear it.
+        gameDate: parseEventDate(cfgGameDate),
         config: {
           durationMinutes: minutes,
           playerCountBroadcast: cfgPlayerCount,
@@ -587,6 +591,20 @@ export default function GMGameScreen() {
               placeholderTextColor={Colors.textMuted}
             />
             <Text style={styles.settingHint}>210 = 3.5 hours</Text>
+
+            <Text style={styles.codeLabel}>EVENT DATE (OPTIONAL)</Text>
+            <TextInput
+              style={styles.durationInput}
+              value={cfgGameDate}
+              onChangeText={setCfgGameDate}
+              placeholder="YYYY-MM-DD"
+              placeholderTextColor={Colors.textMuted}
+              autoCapitalize="none"
+            />
+            <Text style={styles.settingHint}>
+              The day you're running this game. Sorts it in My Games; leave blank to use the
+              created date.
+            </Text>
 
             <ConfigToggle
               label="Auto player-count updates"

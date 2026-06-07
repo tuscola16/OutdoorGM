@@ -243,12 +243,24 @@ player about to go dark (Rule 21) so they can be checked on before they vanish.
 `gameDate ?? createdAt` descending; add an optional GM-set `gameDate` (event date, distinct from
 `createdAt`) editable at create/setup.
 
+> **Built:** `Game.gameDate` added; My Games sorts by `gameDate ?? createdAt` desc in-memory
+> (mobile + web), shows the date on each card, and the GM sets it in the Game-settings editor
+> (a `YYYY-MM-DD` field on mobile, native date picker on web; blank clears it). `parseEventDate`/
+> `formatEventDate` helpers; `gameDate` added to the game-doc rules update whitelist. No new index.
+
 **37. Pre-populate join display name from profile.** `app/(app)/join.tsx` seeds from
 `profile?.displayName` but should handle a late-arriving profile and show a "from your profile"
 hint so the player knows it's an overridable default.
 
+> **Built:** `join.tsx` re-syncs the name from a late-arriving `profile` until the player edits it
+> (a `nameTouched` flag), and shows a "From your profile — edit it for this game if you like" hint
+> while the field is still the untouched default.
+
 **38. Navigate to the game after joining.** `joinGameByCode` returns `{ gameId, role }` — navigate
 straight into the game screen instead of back to My Games. "Enter code → you're in the game."
+
+> **Built:** `join.tsx` uses the returned `{ gameId, role }` to `router.replace` straight into the
+> GM screen or the player game screen instead of bouncing back to My Games.
 
 ---
 

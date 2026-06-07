@@ -121,6 +121,7 @@ export default function GamesScreen() {
   function renderGame({ item }: { item: GameEntry }) {
     const isGM = item.role === 'gm';
     const phase = gamePhase(item.game);
+    const eventDate = item.game.gameDate?.toDate?.();
     const hasActions = (isGM && (phase === 'setup' || phase === 'lobby')) || phase === 'results';
     return (
       <TouchableOpacity style={styles.gameCard} onPress={() => openGame(item)} activeOpacity={0.8}>
@@ -130,7 +131,7 @@ export default function GamesScreen() {
         <View style={styles.gameInfo}>
           <Text style={styles.gameName}>{item.game.name}</Text>
           <Text style={styles.gameStatus}>
-            {PHASE_TEXT[phase]}
+            {PHASE_TEXT[phase]}{eventDate ? ` · ${eventDate.toLocaleDateString()}` : ''}
           </Text>
         </View>
         {hasActions ? (
@@ -148,8 +149,13 @@ export default function GamesScreen() {
     );
   }
 
-  const activeGames = games.filter((g) => !g.archived);
-  const archivedGames = games.filter((g) => g.archived);
+  // Newest-first by the GM's event date when set, else the system createdAt (#36).
+  // In-memory sort — no Firestore index needed.
+  const sortKey = (e: GameEntry) =>
+    e.game.gameDate?.toMillis?.() ?? e.game.createdAt?.toMillis?.() ?? 0;
+  const byDateDesc = (a: GameEntry, b: GameEntry) => sortKey(b) - sortKey(a);
+  const activeGames = games.filter((g) => !g.archived).sort(byDateDesc);
+  const archivedGames = games.filter((g) => g.archived).sort(byDateDesc);
   const visibleGames = showArchived ? archivedGames : activeGames;
 
   return (

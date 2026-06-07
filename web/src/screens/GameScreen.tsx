@@ -16,13 +16,13 @@ import {
   deleteGame, setGameArchived, reviewRation, rationInterval, setMemberDistrict,
   openCheckpointNow, closeCheckpointNow, clearCheckpointWindow, checkpointWindowState,
   addScheduledEvent, updateScheduledEvent, deleteScheduledEvent,
-  revealCheckpointNow, setRevealSchedule,
+  revealCheckpointNow, setRevealSchedule, parseEventDate, formatEventDate,
 } from '@/services/gameService';
 import { KIND_META, KIND_ORDER, checkpointKind, buildEvent, VIS_META, VIS_ORDER } from '@/services/checkpointKinds';
 import { deleteField } from 'firebase/firestore';
 import type {
   Arrival, Checkpoint, CheckpointEvent, CheckpointKind, EventAudience, GameMember, MapBoundary, PlayerLocation, RationSubmission,
-  ScheduledEvent, ScheduledActionType, CheckpointVisibility, RevealTrigger, RevealAudience, CheckpointReveal,
+  ScheduledEvent, ScheduledActionType, CheckpointVisibility, RevealTrigger, RevealAudience, CheckpointReveal, FsTimestamp,
 } from '@shared/types';
 
 const PHASE_LABEL: Record<string, string> = {
@@ -245,7 +245,7 @@ export function GameScreen() {
         />
       )}
       {showConfig && (
-        <ConfigModal gameId={gameId!} initial={gameConfig(game)} onClose={() => setShowConfig(false)} />
+        <ConfigModal gameId={gameId!} initial={gameConfig(game)} gameDateInitial={game?.gameDate ?? null} onClose={() => setShowConfig(false)} />
       )}
       {showRations && (
         <RationsModal
@@ -1474,13 +1474,15 @@ function BroadcastModal({
 }
 
 function ConfigModal({
-  gameId, initial, onClose,
+  gameId, initial, gameDateInitial, onClose,
 }: {
   gameId: string;
   initial: ReturnType<typeof gameConfig>;
+  gameDateInitial: FsTimestamp | null;
   onClose: () => void;
 }) {
   const [duration, setDuration] = useState(String(initial.durationMinutes));
+  const [gameDate, setGameDate] = useState(formatEventDate(gameDateInitial)); // 'YYYY-MM-DD' (#36)
   const [playerCount, setPlayerCount] = useState(initial.playerCountBroadcast);
   const [winner, setWinner] = useState(initial.winnerDetection);
   const [battery, setBattery] = useState(initial.batterySaver);
@@ -1501,6 +1503,7 @@ function ConfigModal({
     setBusy(true);
     try {
       await updateGameConfig(gameId, {
+        gameDate: parseEventDate(gameDate), // valid date or null to clear (#36)
         config: {
           durationMinutes: minutes,
           playerCountBroadcast: playerCount,
@@ -1525,6 +1528,13 @@ function ConfigModal({
         <label>Game length (minutes)</label>
         <input className="input" type="number" value={duration} onChange={(e) => setDuration(e.target.value)} />
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>210 = 3.5 hours</span>
+      </div>
+      <div className="field">
+        <label>Event date (optional)</label>
+        <input className="input" type="date" value={gameDate} onChange={(e) => setGameDate(e.target.value)} />
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+          The day you're running this game. Sorts it in My Games; leave blank to use the created date.
+        </span>
       </div>
       <Toggle label="Auto player-count updates" checked={playerCount} onChange={setPlayerCount} />
       <Toggle label="Declare a winner" checked={winner} onChange={setWinner} />

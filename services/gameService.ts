@@ -118,10 +118,34 @@ export async function startGame(gameId: string): Promise<void> {
   });
 }
 
-/** Update the play-area boundary, rules text, and/or per-GM config during setup. */
+/** Parse a 'YYYY-MM-DD' event-date string into a Firestore Timestamp at that day's local
+ * midnight, or null when blank/invalid — for the GM event-date field (#36). */
+export function parseEventDate(ymd: string): FsTimestamp | null {
+  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(ymd.trim());
+  if (!m) return null;
+  const date = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  if (isNaN(date.getTime())) return null;
+  return firestore.Timestamp.fromDate(date) as unknown as FsTimestamp;
+}
+
+/** Format a stored event-date timestamp back to 'YYYY-MM-DD' for the editor ('' if unset). */
+export function formatEventDate(ts: FsTimestamp | null | undefined): string {
+  if (!ts?.toDate) return '';
+  const d = ts.toDate();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** Update the play-area boundary, rules text, event date, and/or per-GM config during setup. */
 export async function updateGameConfig(
   gameId: string,
-  updates: { boundary?: MapBoundary; rules?: string; config?: Partial<GameConfig> }
+  updates: {
+    boundary?: MapBoundary;
+    rules?: string;
+    config?: Partial<GameConfig>;
+    /** GM-set event date (#36); pass null to clear it. */
+    gameDate?: FsTimestamp | null;
+  }
 ): Promise<void> {
   await firestore().collection(Collections.GAMES).doc(gameId).update(updates);
 }

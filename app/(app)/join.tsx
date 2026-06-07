@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, Alert
 } from 'react-native';
@@ -17,8 +17,21 @@ export default function JoinScreen() {
   const { user, profile } = useAuth();
   const [code, setCode] = useState('');
   const [displayName, setDisplayName] = useState(profile?.displayName ?? '');
+  // Whether the player has edited the name field. Until they do, we keep it synced to the
+  // profile default so a late-arriving profile (#37) still pre-fills it.
+  const [nameTouched, setNameTouched] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  // Profile loads asynchronously, so it may arrive after this screen mounts (#37). Seed
+  // the name from it as long as the player hasn't started typing their own.
+  useEffect(() => {
+    if (!nameTouched && profile?.displayName) setDisplayName(profile.displayName);
+  }, [profile?.displayName, nameTouched]);
+
+  // Show a "from your profile" hint while the field is still the untouched profile default.
+  const showProfileHint =
+    !nameTouched && !!profile?.displayName && displayName === profile.displayName;
 
   async function handleJoin() {
     setError('');
@@ -35,8 +48,14 @@ export default function JoinScreen() {
     setLoading(true);
     try {
       const fcmToken = await getFcmToken();
-      await joinGameByCode(code.trim(), displayName.trim(), fcmToken ?? undefined);
-      router.replace('/(app)/games');
+      // joinGameByCode returns the resolved game + role, so we can drop the player
+      // straight into the game (#38) instead of bouncing back to My Games.
+      const { gameId, role } = await joinGameByCode(code.trim(), displayName.trim(), fcmToken ?? undefined);
+      if (role === 'gm') {
+        router.replace(`/(app)/gm/${gameId}`);
+      } else {
+        router.replace({ pathname: '/(app)/player/game', params: { gameId } });
+      }
     } catch (err) {
       setError(friendlyError(err));
     } finally {
@@ -69,10 +88,13 @@ export default function JoinScreen() {
           <Input
             label="Your Name (shown to the GM)"
             value={displayName}
-            onChangeText={(t) => { setDisplayName(t); setError(''); }}
+            onChangeText={(t) => { setDisplayName(t); setNameTouched(true); setError(''); }}
             placeholder="e.g. Katniss"
             maxLength={32}
           />
+          {showProfileHint ? (
+            <Text style={styles.hint}>From your profile — edit it for this game if you like.</Text>
+          ) : null}
           {error ? <Text style={styles.error}>{error}</Text> : null}
           <Button title="Join Game" onPress={handleJoin} loading={loading} />
         </View>
@@ -90,4 +112,5 @@ const styles = StyleSheet.create({
   subtitle: { fontSize: 15, color: Colors.textSecondary, marginBottom: 32, lineHeight: 22 },
   form: { gap: 16 },
   error: { color: Colors.danger, fontSize: 14, textAlign: 'center' },
+  hint: { color: Colors.textMuted, fontSize: 12, marginTop: -8 },
 });

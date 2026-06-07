@@ -116,7 +116,7 @@ export interface PlayerLocation {
 Player writes its own `battery` with each location fix (allowed by the existing self-write rule);
 the GM roster flags a player below a threshold.
 
-## 36. Game-list ordering + optional `gameDate`
+## 36. Game-list ordering + optional `gameDate` — ✅ BUILT
 
 ```ts
 export interface Game {
@@ -128,6 +128,11 @@ export interface Game {
 
 Client sorts My Games by `gameDate ?? createdAt` descending (in-memory — no index). GM create/setup
 gains an optional date picker.
+
+> **Built:** field added; in-memory sort + card display on mobile (`games.tsx`) and web
+> (`GamesScreen`). The GM sets it in the Game-settings editor via `parseEventDate`/`formatEventDate`
+> (`YYYY-MM-DD` text field on mobile, `<input type="date">` on web). `gameDate` added to the
+> game-doc `affectedKeys().hasOnly([...])` rules whitelist. No native date-picker dep added.
 
 ## 39. Polygon boundary authoring + point-in-polygon
 
@@ -246,8 +251,8 @@ These items are pure logic, rules, client architecture, or ops — no new fields
 - **32** SMS rebrand — change the `[HungerGamesLocator]` prefix in `functions/src/sms.ts`.
 - **33** Login loading reset — `finally { setLoading(false) }` (or a mounted guard) in `app/(auth)/login.tsx`.
 - **34** Drop unused `arrivals` composite index from `firestore.indexes.json`.
-- **37** Join name prefill — handle late-arriving `profile` + a "from your profile" hint in `join.tsx`.
-- **38** Navigate-after-join — use `joinGameByCode`'s returned `{ gameId, role }` to route into the game.
+- **37** ✅ BUILT — Join name prefill: `join.tsx` re-syncs from a late-arriving `profile` until edited (`nameTouched`) + a "from your profile" hint.
+- **38** ✅ BUILT — Navigate-after-join: `join.tsx` routes into the GM/player game screen using the returned `{ gameId, role }`.
 - **42** Arena map overlay — a GM-uploaded image overlay (asset/storage + map layer; spec when prioritized).
 - **44** Voucher-site preset — a one-tap scaffold of open/close/announce run-sheet rows on a time-windowed checkpoint.
 - **47** Maps-key restriction — Cloud Console ops task.
