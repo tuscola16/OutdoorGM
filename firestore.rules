@@ -161,6 +161,13 @@ service cloud.firestore {
         allow delete: if isGameGM(gameId);
       }
 
+      // Per-player/per-checkpoint crossing latch (#50/#55). Written only by Cloud
+      // Functions (admin SDK); never readable or writable by clients. Tracks inside/
+      // outside state, streak count, and last-notified state for debouncing + re-notify.
+      match /checkpointTrips/{tripId} {
+        allow read, write: if false;
+      }
+
       // Revealed checkpoint markers (#48) — the player-readable projection of a
       // checkpoint's label + location once it's visible. The `checkpoints` collection
       // stays GM-only (it holds coords + the secret event payload); this is the only

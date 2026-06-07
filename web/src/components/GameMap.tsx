@@ -251,6 +251,10 @@ export function GameMap({
         drawHandlerRef.current = null;
       }
       if (drawRef.current && m) {
+        // Commit whatever polygon exists before removing the control. Covers the case
+        // where Done was clicked before double-click-finishing, or the draw.create /
+        // draw.update events didn't fire (#51).
+        emitPolygonFromDraw(drawRef.current);
         try { m.removeControl(drawRef.current as unknown as mapboxgl.IControl); } catch { /* already gone */ }
         drawRef.current = null;
       }

@@ -21,8 +21,7 @@ interface CheckpointReveal {
 }
 
 // Same-district trap suppression window (#5): if a tribute's same-district partner
-// arrived at the same trap site within this many ms, the trap is withheld (the
-// explicit rule "don't give a trap if both tributes from a district arrive together").
+// arrived at the same trap site within this many ms, the trap is withheld.
 const COARRIVAL_WINDOW_MS = 90_000;
 
 /** Resolve who sees an event from its kind, honoring an explicit audience for notifies. */
@@ -39,8 +38,7 @@ function resolveAudience(event: CheckpointEvent): EventAudience {
   }
 }
 
-// Play-area boundary (#7), mirrored from types/index.ts MapBoundary. A polygon (≥3
-// verts) wins when present; otherwise the min/max rectangle is used.
+// Play-area boundary (#7), mirrored from types/index.ts MapBoundary.
 interface MapBoundary {
   minLat: number;
   maxLat: number;
@@ -49,8 +47,7 @@ interface MapBoundary {
   polygon?: { latitude: number; longitude: number }[];
 }
 
-/** Ray-casting point-in-polygon test (#39's geofence half, used by #7). `poly` is an
- * ordered ring of {latitude, longitude}; longitude is x, latitude is y. */
+/** Ray-casting point-in-polygon test (#39's geofence half). */
 function pointInPolygon(
   lat: number,
   lng: number,
@@ -77,8 +74,7 @@ function pointInBoundary(lat: number, lng: number, b: MapBoundary): boolean {
   return lat >= b.minLat && lat <= b.maxLat && lng >= b.minLng && lng <= b.maxLng;
 }
 
-/** GM FCM tokens + phones for a game, optionally excluding one token (the crossing
- * player's own device, #9). One read; reused by the boundary-exit alert (#7). */
+/** GM FCM tokens + phones for a game, optionally excluding one token (#9). */
 async function getGmRecipients(
   db: admin.firestore.Firestore,
   gameId: string,
@@ -102,7 +98,7 @@ function distanceMeters(
   lat1: number, lng1: number,
   lat2: number, lng2: number
 ): number {
-  const R = 6371000; // Earth radius in meters
+  const R = 6371000;
   const φ1 = (lat1 * Math.PI) / 180;
   const φ2 = (lat2 * Math.PI) / 180;
   const Δφ = ((lat2 - lat1) * Math.PI) / 180;
@@ -113,12 +109,39 @@ function distanceMeters(
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// Short-TTL cache of each game's checkpoints, reused across warm invocations of this
-// trigger (#29). onLocationUpdate fires on every player's location write (~every 5s), and
-// re-reading the whole checkpoints collection each time is the redundant cost. Checkpoints
-// change rarely; a brand-new checkpoint or a run-sheet-driven open/close window is honored
-// within CP_CACHE_TTL_MS — well under the run-sheet's 60s sweep cadence. Arrivals are still
-// read fresh every time, so dedup/arrival-ordinal correctness is unaffected.
+// Cap (meters) on the prev→curr segment we'll interpolate for pass-through detection (#49).
+// Beyond this, the straight-line guess between two fixes is unreliable (the player may have
+// taken a curved path), so we fall back to the point test. Comfortably covers a few minutes
+// of walking between throttled background fixes while rejecting implausible GPS teleports.
+const MAX_SEGMENT_METERS = 400;
+
+/** Distance (m) from point P to segment AB, via a local equirectangular projection centered
+ * on P — accurate at geofence scales (<~1 km). Powers #49 pass-through detection. */
+function pointToSegmentMeters(
+  pLat: number, pLng: number,
+  aLat: number, aLng: number,
+  bLat: number, bLng: number
+): number {
+  const R = 6371000;
+  const latRef = (pLat * Math.PI) / 180;
+  const toXY = (lat: number, lng: number): [number, number] => [
+    R * ((lng * Math.PI) / 180) * Math.cos(latRef),
+    R * ((lat * Math.PI) / 180),
+  ];
+  const [px, py] = toXY(pLat, pLng);
+  const [ax, ay] = toXY(aLat, aLng);
+  const [bx, by] = toXY(bLat, bLng);
+  const abx = bx - ax;
+  const aby = by - ay;
+  const lenSq = abx * abx + aby * aby;
+  let t = lenSq === 0 ? 0 : ((px - ax) * abx + (py - ay) * aby) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + t * abx;
+  const cy = ay + t * aby;
+  return Math.hypot(px - cx, py - cy);
+}
+
+// Short-TTL cache of each game's checkpoints, reused across warm invocations (#29).
 interface CachedCheckpoint {
   id: string;
   data: FirebaseFirestore.DocumentData;
@@ -137,11 +160,9 @@ async function getCheckpointsCached(gameId: string): Promise<CachedCheckpoint[]>
 }
 
 export const onLocationUpdate = functions
-  // Bind Twilio secrets so sendArrivalSMS can read them from process.env (#25).
   .runWith({ secrets: TWILIO_SECRETS })
   .firestore.document('games/{gameId}/locations/{userId}')
   .onWrite(async (change, context) => {
-    // Only process on create or update (not delete)
     if (!change.after.exists) return;
 
     const { gameId, userId } = context.params;
@@ -152,43 +173,50 @@ export const onLocationUpdate = functions
       accuracy?: number;
     };
 
-    // Only fire checkpoint arrivals while the game is actually in play. Players now
-    // upload location during the lobby too (#16) so they're already on the GM's map at
-    // kickoff — but a lobby/setup/results fix must never trigger a checkpoint. Mirror the
-    // gamePhase() resolver: legacy games (no `phase`) are `play` while active.
+    // Previous fix for this player — the location doc is overwritten on every update, so
+    // `change.before` is the prior position. Used for pass-through detection (#49): while
+    // the phone is locked the OS throttles background location, so a player can walk
+    // entirely through a checkpoint radius between two fixes that both fall outside it. We
+    // test the path segment prev→curr against each checkpoint, not just the current point.
+    const prevData = change.before.exists
+      ? (change.before.data() as { latitude?: number; longitude?: number })
+      : undefined;
+    const prevLoc =
+      prevData && typeof prevData.latitude === 'number' && typeof prevData.longitude === 'number'
+        ? { latitude: prevData.latitude, longitude: prevData.longitude }
+        : null;
+
+    // Only fire checkpoint arrivals while the game is in play. Players upload location
+    // during the lobby too (#16) — lobby fixes must never trigger a checkpoint.
     const gameSnap = await admin.firestore().collection('games').doc(gameId).get();
     const gameData = gameSnap.data();
     if (!gameData) return;
     const phase = gameData.phase ?? (gameData.status === 'ended' ? 'results' : 'play');
     if (phase !== 'play') return;
 
-    // GPS is only accurate to ~10–30m, so a strict "distance <= radius" test
-    // misses real arrivals at tight radii. Allow the reported accuracy as slack
-    // (capped so a wildly inaccurate fix can't trigger everything), i.e. count an
-    // arrival if the player *could* be inside the circle given GPS uncertainty.
-    const accuracySlack = Math.min(Math.max(location.accuracy ?? 0, 0), 30);
+    // Resolve geofence config knobs with defaults (#50/#55/#56).
+    const rawConfig = (gameData.config ?? {}) as {
+      minFixAccuracyMeters?: number;
+      geofenceConfirmFixes?: number;
+      reNotifyAwayCooldownMinutes?: number;
+    };
+    const minFixAccuracy = rawConfig.minFixAccuracyMeters ?? 30;
+    const confirmFixes = rawConfig.geofenceConfirmFixes ?? 2;
+    const reNotifyAwayCooldownMs = (rawConfig.reNotifyAwayCooldownMinutes ?? 5) * 60_000;
 
-    // Skip if the player is a GM (GMs don't trigger checkpoint arrivals)
+    // Skip if the player is a GM (GMs don't trigger checkpoint arrivals).
     const memberSnap = await admin.firestore()
-      .collection('games')
-      .doc(gameId)
-      .collection('members')
-      .doc(userId)
-      .get();
-
+      .collection('games').doc(gameId).collection('members').doc(userId).get();
     if (!memberSnap.exists || memberSnap.data()?.role === 'gm') return;
     const playerFcmToken = memberSnap.data()?.fcmToken as string | undefined;
-    // District/tribute pairing (#10), used for same-district trap suppression (#5).
     const crossingDistrict = memberSnap.data()?.district as string | number | undefined;
 
     const db = admin.firestore();
     const arrivalsCol = db.collection('games').doc(gameId).collection('arrivals');
 
-    // Player-left-the-boundary alert (#7). Runs before the checkpoint work so it fires
-    // even in a game with zero checkpoints. A per-member `outOfBounds` latch flips on the
-    // boundary transition, so the GM is pinged exactly once on exit and once on re-entry
-    // (no per-fix spam). Reuses gameData/memberSnap already in hand — no extra reads on
-    // the steady-state in-bounds path; a read for GM recipients happens only on a flip.
+    // Player-left-the-boundary alert (#7). Runs before checkpoint work so it fires even
+    // in a game with zero checkpoints. A per-member `outOfBounds` latch means the GM is
+    // pinged exactly once on exit and once on re-entry.
     const boundary = gameData.boundary as MapBoundary | undefined;
     if (boundary) {
       const inside = pointInBoundary(location.latitude, location.longitude, boundary);
@@ -205,39 +233,44 @@ export const onLocationUpdate = functions
         await memberSnap.ref.update({ outOfBounds: false });
         const { tokens } = await getGmRecipients(db, gameId, playerFcmToken);
         await sendPushToTokens(
-          tokens,
-          '✅ Back in the area',
-          `${location.displayName} re-entered the play area`,
-          'arrivals'
+          tokens, '✅ Back in the area',
+          `${location.displayName} re-entered the play area`, 'arrivals'
         );
       }
     }
 
-    // Fetch checkpoints (cached, #29) and this player's existing arrivals (always fresh)
-    // in parallel — they're independent, so this trims the trigger's wall-time.
-    const [checkpoints, existingArrivalsSnap] = await Promise.all([
-      getCheckpointsCached(gameId),
-      arrivalsCol.where('playerId', '==', userId).get(),
-    ]);
+    // GPS quality gate (#50): poor fixes are rejected from checkpoint eval — the map dot
+    // still updates via the location write above. Reject is for checkpoint eval only.
+    if (location.accuracy != null && location.accuracy > minFixAccuracy) return;
 
+    const checkpoints = await getCheckpointsCached(gameId);
     if (checkpoints.length === 0) return;
 
-    // Existing arrivals for this player, to avoid duplicate notifications.
-    const arrivedCheckpointIds = new Set(
-      existingArrivalsSnap.docs.map((d) => d.data().checkpointId as string)
+    // Batch-read trip latches for all checkpoints (#50/#55). One RPC for all docs.
+    const tripsCol = db.collection('games').doc(gameId).collection('checkpointTrips');
+    const tripRefs = checkpoints.map((cp) => tripsCol.doc(`${userId}_${cp.id}`));
+    const tripSnaps = await db.getAll(...tripRefs);
+    const tripMap = new Map<string, FirebaseFirestore.DocumentData | null>(
+      checkpoints.map((cp, i) => [cp.id, tripSnaps[i].exists ? tripSnaps[i].data()! : null])
     );
 
-    // Events resolved for this crossing: `event` is undefined → GM-only arrival ping.
+    const nowMs = Date.now();
+
+    // Events resolved for this crossing.
     const newArrivals: Array<{
       checkpointName: string;
       playerName: string;
       event?: CheckpointEvent;
-      /** GM-only note (e.g. a withheld trap) shown instead of the default arrival line. */
       gmNote?: string;
     }> = [];
 
+    // In-invocation dedup: if the same checkpoint somehow appears twice, skip it.
+    const processedIds = new Set<string>();
+
     for (const cpEntry of checkpoints) {
       const checkpointId = cpEntry.id;
+      if (processedIds.has(checkpointId)) continue;
+
       const cp = cpEntry.data as {
         latitude: number;
         longitude: number;
@@ -249,14 +282,10 @@ export const onLocationUpdate = functions
         closesAt?: admin.firestore.Timestamp | null;
         visibility?: 'gm-only' | 'always' | 'on-reveal';
         reveal?: CheckpointReveal;
+        currentState?: string; // #54
       };
 
-      if (arrivedCheckpointIds.has(checkpointId)) continue;
-
-      // Time-gate (#12): a site only fires while live, i.e. now ∈ [opensAt, closesAt].
-      // Crossings outside the window are ignored (not recorded), so a site that opens
-      // later still fires once the player is inside it during the live window.
-      const nowMs = Date.now();
+      // Time-gate (#12): only fire while the site is live, i.e. now ∈ [opensAt, closesAt].
       const opensMs = cp.opensAt ? cp.opensAt.toMillis() : null;
       const closesMs = cp.closesAt ? cp.closesAt.toMillis() : null;
       if ((opensMs !== null && nowMs < opensMs) || (closesMs !== null && nowMs > closesMs)) {
@@ -264,26 +293,113 @@ export const onLocationUpdate = functions
       }
 
       const dist = distanceMeters(
-        location.latitude,
-        location.longitude,
-        cp.latitude,
-        cp.longitude
+        location.latitude, location.longitude,
+        cp.latitude, cp.longitude
       );
+      const inRadius = dist <= cp.radius; // strict check — no accuracy expansion (#50)
 
-      if (dist > cp.radius + accuracySlack) continue;
+      const trip = tripMap.get(checkpointId) ?? null;
+      const tripRef = tripsCol.doc(`${userId}_${checkpointId}`);
+
+      // Pass-through (#49): the current fix is outside, but the path from the previous fix
+      // to it clips the radius and the player wasn't already inside — i.e. they crossed
+      // between two sparse (locked-phone) fixes with no fix landing in the circle. Only
+      // checked when not in-radius; a segment crossing is its own confirmation, so it
+      // bypasses the #50 confirm-fixes streak and latches as already-exited below.
+      let passThrough = false;
+      if (!inRadius && prevLoc && !trip?.inside) {
+        const segLen = distanceMeters(
+          prevLoc.latitude, prevLoc.longitude,
+          location.latitude, location.longitude
+        );
+        if (segLen > 0 && segLen <= MAX_SEGMENT_METERS) {
+          const segDist = pointToSegmentMeters(
+            cp.latitude, cp.longitude,
+            prevLoc.latitude, prevLoc.longitude,
+            location.latitude, location.longitude
+          );
+          passThrough = segDist <= cp.radius;
+        }
+      }
+
+      // --- Exit path: player was inside, now outside (and not a fresh pass-through) ---
+      if (!inRadius && !passThrough) {
+        if (trip?.inside) {
+          await tripRef.set(
+            { inside: false, insideStreak: 0, lastExitAt: admin.firestore.FieldValue.serverTimestamp() },
+            { merge: true }
+          );
+        } else if ((trip?.insideStreak ?? 0) > 0) {
+          // Reset partial streak on any outside fix.
+          await tripRef.set({ insideStreak: 0 }, { merge: true });
+        }
+        continue;
+      }
+
+      // --- Still inside: no new trigger ---
+      if (trip?.inside) continue;
+
+      // --- Accumulate streak toward confirmation (#50 debounce) ---
+      // A pass-through (#49) skips the streak — the player is already gone, so there's no
+      // chance to gather consecutive in-radius fixes; the segment crossing confirms it.
+      const newStreak = (trip?.insideStreak ?? 0) + 1;
+      if (!passThrough && newStreak < confirmFixes) {
+        await tripRef.set(
+          { playerId: userId, checkpointId, inside: false, insideStreak: newStreak },
+          { merge: true }
+        );
+        continue;
+      }
+
+      // --- Confirmed crossing (lingering entry or pass-through) ---
+      // A normal entry latches inside=true; a pass-through latches as already-exited so the
+      // away-cooldown (#55) is measured from now and a later return can re-fire.
+      const enteredInside = !passThrough;
+      const buildLatch = (): Record<string, unknown> =>
+        enteredInside
+          ? {
+              playerId: userId, checkpointId, inside: true, insideStreak: newStreak,
+              lastEnterAt: admin.firestore.FieldValue.serverTimestamp(),
+            }
+          : {
+              playerId: userId, checkpointId, inside: false, insideStreak: 0,
+              lastEnterAt: admin.firestore.FieldValue.serverTimestamp(),
+              lastExitAt: admin.firestore.FieldValue.serverTimestamp(),
+            };
+
+      // GM re-notification gate (#55): re-alert on return after cooldown.
+      const lastExitMs = trip?.lastExitAt
+        ? (trip.lastExitAt as admin.firestore.Timestamp).toMillis()
+        : null;
+      const gmShouldNotify = lastExitMs === null || (nowMs - lastExitMs >= reNotifyAwayCooldownMs);
+
+      // Player re-notification gate (#55): only notify if state changed since last time.
+      const cpState = (cp.currentState ?? cp.event?.kind) ?? null;
+      const lastNotifiedState = (trip?.lastNotifiedState as string | null | undefined) ?? null;
+      const playerShouldNotify = lastNotifiedState === null || cpState !== lastNotifiedState;
+
+      if (!gmShouldNotify && !playerShouldNotify) {
+        // Update the latch but suppress all notifications.
+        await tripRef.set(buildLatch(), { merge: true });
+        processedIds.add(checkpointId);
+        continue;
+      }
 
       if (cp.eventQueue && cp.eventQueue.length > 0) {
-        // Arrival-order queue: the Nth distinct arriver gets eventQueue[N]. Record the
-        // arrival and compute the ordinal atomically so simultaneous crossings don't
-        // collide on the same slot.
+        // Arrival-order queue: ordinal is the count of non-revisit arrivers before this one.
         const queue = cp.eventQueue;
         const result = await db.runTransaction(async (tx) => {
+          // Race guard: if another concurrent write already confirmed entry, skip.
+          const freshTrip = await tx.get(tripRef);
+          if (freshTrip.exists && freshTrip.data()?.inside) return null;
+
           const existing = await tx.get(arrivalsCol.where('checkpointId', '==', checkpointId));
-          // Idempotency: if this player somehow already arrived, don't re-fire.
-          if (existing.docs.some((d) => d.data().playerId === userId)) return null;
-          const n = existing.size; // distinct prior arrivers → this player's ordinal
-          // Same-district co-arrival suppression (#5): withhold the trap if a tribute
-          // from the SAME district arrived at this site within the co-arrival window.
+          const alreadyArrived = existing.docs.some(
+            (d) => d.data().playerId === userId && !d.data().revisit
+          );
+          const nonRevisitCount = existing.docs.filter((d) => !d.data().revisit).length;
+
+          // Same-district co-arrival suppression (#5).
           const suppressed =
             crossingDistrict != null &&
             existing.docs.some((d) => {
@@ -292,40 +408,12 @@ export const onLocationUpdate = functions
               const ms = a.timestamp?.toMillis?.() ?? null;
               return ms != null && nowMs - ms <= COARRIVAL_WINDOW_MS;
             });
-          const ref = arrivalsCol.doc();
-          tx.set(ref, {
-            playerId: userId,
-            playerName: location.displayName,
-            checkpointId,
-            checkpointName: cp.name,
-            timestamp: admin.firestore.FieldValue.serverTimestamp(),
-            latitude: location.latitude,
-            longitude: location.longitude,
-            ...(crossingDistrict != null ? { district: crossingDistrict } : {}),
-          });
-          return { n, suppressed };
-        });
-        if (result === null) continue; // raced — already recorded
-        const { n: ordinal, suppressed } = result;
-        newArrivals.push({
-          checkpointName: cp.name,
-          playerName: location.displayName,
-          // Queue exhausted (more arrivers than events) → GM-only ping. Same-district
-          // co-arrival → trap withheld (GM-only ping with a note explaining why).
-          event: suppressed ? undefined : ordinal < queue.length ? queue[ordinal] : undefined,
-          gmNote: suppressed
-            ? `${location.displayName} & a District ${crossingDistrict} partner arrived together at ${cp.name} — trap withheld`
-            : undefined,
-        });
-      } else {
-        // Single event (same for every arriver) or no event (GM-only ping). Record the
-        // arrival in a transaction (#33) so two concurrent location writes for the same
-        // player can't both pass the in-memory dedup and create duplicate arrivals/pushes.
-        // Mirrors the queue path: query by checkpointId (single-field auto index) and
-        // filter playerId in memory, so no composite index is needed.
-        const wrote = await db.runTransaction(async (tx) => {
-          const existing = await tx.get(arrivalsCol.where('checkpointId', '==', checkpointId));
-          if (existing.docs.some((d) => d.data().playerId === userId)) return false;
+
+          // Update trip latch atomically with the arrival write.
+          const latchData = buildLatch();
+          if (playerShouldNotify && cpState != null) latchData.lastNotifiedState = cpState;
+          tx.set(tripRef, latchData, { merge: true });
+
           tx.set(arrivalsCol.doc(), {
             playerId: userId,
             playerName: location.displayName,
@@ -334,57 +422,100 @@ export const onLocationUpdate = functions
             timestamp: admin.firestore.FieldValue.serverTimestamp(),
             latitude: location.latitude,
             longitude: location.longitude,
+            ...(alreadyArrived ? { revisit: true } : {}),
             ...(crossingDistrict != null ? { district: crossingDistrict } : {}),
           });
-          return true;
+
+          return { ordinal: alreadyArrived ? null : nonRevisitCount, suppressed, alreadyArrived };
         });
-        if (!wrote) continue; // raced — already recorded
-        newArrivals.push({
-          checkpointName: cp.name,
-          playerName: location.displayName,
-          event: cp.event,
+
+        if (result === null) continue; // raced — another write confirmed entry first
+
+        const { ordinal, suppressed, alreadyArrived } = result;
+        // On revisit the player gets the current single event (if any); no new queue slot.
+        const event = suppressed
+          ? undefined
+          : ordinal != null && ordinal < queue.length
+            ? queue[ordinal]
+            : alreadyArrived ? cp.event : undefined;
+        const firePlayer = playerShouldNotify && !suppressed;
+
+        if (gmShouldNotify || (firePlayer && event && event.kind !== 'gm-only')) {
+          newArrivals.push({
+            checkpointName: cp.name,
+            playerName: location.displayName,
+            event: firePlayer ? event : undefined,
+            gmNote: suppressed
+              ? `${location.displayName} & a District ${crossingDistrict} partner arrived together at ${cp.name} — trap withheld`
+              : undefined,
+          });
+        } else if (gmShouldNotify) {
+          newArrivals.push({ checkpointName: cp.name, playerName: location.displayName });
+        }
+      } else {
+        // Single event (or no event — GM-only ping).
+        const result = await db.runTransaction(async (tx) => {
+          const freshTrip = await tx.get(tripRef);
+          if (freshTrip.exists && freshTrip.data()?.inside) return null;
+
+          const existing = await tx.get(arrivalsCol.where('checkpointId', '==', checkpointId));
+          const alreadyArrived = existing.docs.some(
+            (d) => d.data().playerId === userId && !d.data().revisit
+          );
+
+          const latchData = buildLatch();
+          if (playerShouldNotify && cpState != null) latchData.lastNotifiedState = cpState;
+          tx.set(tripRef, latchData, { merge: true });
+
+          tx.set(arrivalsCol.doc(), {
+            playerId: userId,
+            playerName: location.displayName,
+            checkpointId,
+            checkpointName: cp.name,
+            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+            latitude: location.latitude,
+            longitude: location.longitude,
+            ...(alreadyArrived ? { revisit: true } : {}),
+            ...(crossingDistrict != null ? { district: crossingDistrict } : {}),
+          });
+
+          return { alreadyArrived };
         });
+
+        if (result === null) continue;
+
+        if (gmShouldNotify || playerShouldNotify) {
+          newArrivals.push({
+            checkpointName: cp.name,
+            playerName: location.displayName,
+            event: playerShouldNotify ? cp.event : undefined,
+          });
+        }
       }
+
       // Reveal-on-crossing (#48 case A): the trap this player just sprang becomes a
-      // marker visible to them only (and any prior triggerers — projectMarker merges).
-      // Carries label + location only, never the event payload.
+      // marker visible only to them.
       if (cp.visibility === 'on-reveal' && cp.reveal?.trigger === 'on-crossing') {
         await projectMarker(db, gameId, checkpointId, cp, [userId]);
       }
 
-      // Prevent duplicate arrivals within the same write
-      arrivedCheckpointIds.add(checkpointId);
+      processedIds.add(checkpointId);
     }
 
     if (newArrivals.length === 0) return;
 
-    // Fetch all GMs to notify
     const gmsSnap = await admin.firestore()
-      .collection('games')
-      .doc(gameId)
-      .collection('members')
-      .where('role', '==', 'gm')
-      .get();
+      .collection('games').doc(gameId).collection('members')
+      .where('role', '==', 'gm').get();
 
     const gmTokens: string[] = [];
     const gmPhones: string[] = [];
-
     for (const gmDoc of gmsSnap.docs) {
       const gm = gmDoc.data();
-      // Never push GM-internal text to the crossing player's own device (#9). On a
-      // device signed into both a player and a GM account, both member docs carry the
-      // same per-install FCM token, so an unfiltered GM alert would land on the crosser —
-      // a double push (alongside their player-facing push) that also leaks GM-only text
-      // ("X hit a hazard at Y"). Dropping their token from gmTokens is sufficient: the
-      // crossing player still gets their crossing-player push directly, and the
-      // all-players push (where the crosser is a legitimate recipient, with no separate
-      // direct push) via allPlayerTokens — so exactly one push reaches the device.
       if (gm.fcmToken && gm.fcmToken !== playerFcmToken) gmTokens.push(gm.fcmToken as string);
       if (gm.phone) gmPhones.push(gm.phone as string);
     }
 
-    // For all-players events we need every living player's token. Only fetch the
-    // full roster if at least one resolved event broadcasts to everyone.
     const needsAllPlayers = newArrivals.some(
       (a) => a.event && resolveAudience(a.event) === 'all-players'
     );
@@ -396,11 +527,8 @@ export const onLocationUpdate = functions
           .filter((t): t is string => !!t)
       : [];
 
-    // Fire notifications + events for each new arrival.
     await Promise.all(
       newArrivals.map(async ({ playerName, checkpointName, event, gmNote }) => {
-        // Default behavior (no event, or an explicit gm-only): notify the GM only.
-        // A `gmNote` (e.g. a withheld same-district trap) replaces the default line.
         if (!event || event.kind === 'gm-only') {
           const body = gmNote ?? `${playerName} reached ${checkpointName}`;
           await Promise.allSettled([
@@ -409,7 +537,6 @@ export const onLocationUpdate = functions
           ]);
           return;
         }
-
         await dispatchCheckpointEvent({
           gameId,
           event,
@@ -456,7 +583,6 @@ async function dispatchCheckpointEvent(args: {
   const audience = resolveAudience(event);
   const db = admin.firestore();
 
-  // Always tell the GM something fired (so they can react in person).
   const gmBody = `${playerName} ${KIND_VERBS[event.kind]} at ${checkpointName}`;
   const work: Promise<unknown>[] = [
     sendArrivalPushNotifications(args.gmTokens, '⚡ Event triggered', gmBody),
@@ -468,7 +594,6 @@ async function dispatchCheckpointEvent(args: {
     return;
   }
 
-  // Write an in-app broadcast so the player(s) see it in their feed, and push it.
   if (audience === 'all-players') {
     work.push(
       db.collection('games').doc(gameId).collection('broadcasts').add({
@@ -481,8 +606,6 @@ async function dispatchCheckpointEvent(args: {
     );
     work.push(sendPushToTokens(args.allPlayerTokens, title, body, 'broadcasts'));
   } else {
-    // crossing-player: a targeted broadcast (so it lands in that player's feed)
-    // plus a direct push.
     work.push(
       db.collection('games').doc(gameId).collection('broadcasts').add({
         kind: 'checkpoint-event',

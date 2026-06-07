@@ -21,6 +21,7 @@ import { startLocationTracking, stopLocationTracking, getTrackingDiagnostics } f
 import { eliminatePlayer, raiseSos, setDeathLocation, gamePhase, gameConfig } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
 import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
+import { useRationReminders } from '@/hooks/useRationReminders';
 import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
 import { Collections } from '@/services/firebase';
 import type { GameConfig, GamePhase, MapBoundary, RevealedMarker } from '@/types';
@@ -81,6 +82,15 @@ export default function PlayerGameScreen() {
   // Tracks whether we've ever observed our own membership doc, so we only treat a
   // *disappearing* doc (GM removed us) as a removal — not a not-yet-loaded one.
   const sawMemberRef = useRef(false);
+
+  // Schedule eat-window open notifications unconditionally while playing — not gated on the
+  // Stats tab so the player is alerted even while they stay on the Map (#52).
+  useRationReminders({
+    gameId: gameId ?? undefined,
+    startedAt,
+    config,
+    active: phase === 'play' && !out,
+  });
 
   // Elapsed play time: ticks during play, freezes at outAt (if out) or endedAt.
   const frozenEnd = out ? outAt : phase === 'results' ? endedAt : null;
@@ -144,6 +154,8 @@ export default function PlayerGameScreen() {
   // Subscribe to revealed checkpoint markers (#48) — global ones (audiencePlayerIds
   // null) plus ones aimed at this player (array-contains uid). Firestore can't OR those
   // in one query, so we run two listeners and merge (same shape as the broadcast feed).
+  // Client-side: markers with a future `visibleFrom` are filtered out on each render
+  // (defense-in-depth against stale pre-written markers).
   useEffect(() => {
     if (!gameId || !user) return;
     const col = firestore()
@@ -151,7 +163,14 @@ export default function PlayerGameScreen() {
       .doc(gameId)
       .collection(Collections.MARKERS);
     const merged = new Map<string, RevealedMarker>();
-    const emit = () => setMarkers([...merged.values()]);
+    const emit = () => {
+      const nowMs = Date.now();
+      setMarkers(
+        [...merged.values()].filter(
+          (m) => !m.visibleFrom || m.visibleFrom.toMillis() <= nowMs
+        )
+      );
+    };
     const handle = (snap: FirebaseFirestoreTypes.QuerySnapshot) => {
       snap.docChanges().forEach((c) => {
         if (c.type === 'removed') merged.delete(c.doc.id);

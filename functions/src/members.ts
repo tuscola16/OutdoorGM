@@ -78,12 +78,18 @@ async function handleDeath(
   const livingTokens = livingNonGm.map((m) => m.fcmToken).filter((t): t is string => !!t);
   await sendPushToTokens(livingTokens, '☠️ A tribute has fallen', `${livingCount} remaining`, 'broadcasts');
 
-  // Winner detection only kicks in once the field could plausibly be down to the
-  // last player; skip the expensive grace+transaction otherwise.
+  // Winner detection only kicks in once the field could plausibly be at the threshold;
+  // skip the expensive grace+transaction otherwise.
   const gameSnap = await gameRef.get();
-  const cfg = (gameSnap.data()?.config ?? {}) as { winnerDetection?: boolean };
-  if (cfg.winnerDetection === false) return; // default on
-  if (livingCount > 1) return;
+  const cfg = (gameSnap.data()?.config ?? {}) as {
+    winnerDetection?: boolean;
+    autoEndThreshold?: string;
+  };
+  // Resolve threshold: explicit setting wins; legacy winnerDetection:false → 'manual'.
+  const threshold = cfg.autoEndThreshold ?? (cfg.winnerDetection === false ? 'manual' : 'one');
+  if (threshold === 'manual') return;
+  if (threshold === 'one' && livingCount > 1) return;
+  if (threshold === 'zero' && livingCount > 0) return;
 
   // Let simultaneous deaths settle, then decide atomically.
   await sleep(WINNER_GRACE_MS);
@@ -97,10 +103,12 @@ async function handleDeath(
       .map((d) => d.data() as MemberData)
       .filter((m) => m.role !== 'gm' && !m.out);
 
-    if (living.length > 1) return; // someone is still standing — not over yet
+    // Re-check the threshold with fresh data (another death may have landed).
+    if (threshold === 'one' && living.length > 1) return;
+    if (threshold === 'zero' && living.length > 0) return;
 
     const bRef = gameRef.collection('broadcasts').doc();
-    if (living.length === 1) {
+    if (threshold === 'one' && living.length === 1) {
       t.set(bRef, {
         kind: 'winner',
         message: `${living[0].displayName ?? 'The last tribute'} is the winner! 🏆`,
@@ -108,7 +116,7 @@ async function handleDeath(
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     } else {
-      // Zero survivors (e.g. simultaneous final blows, Rule 17) — no winner.
+      // Zero survivors (simultaneous final blows, Rule 17; or 'zero' threshold).
       t.set(bRef, {
         kind: 'winner',
         message: 'All tributes have fallen — there is no winner.',

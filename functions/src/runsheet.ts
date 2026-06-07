@@ -15,6 +15,14 @@ type ScheduledActionType =
   | 'gear-drop'
   | 'gm-reminder';
 
+// Mirror of CheckpointState / CheckpointTransition from types/index.ts (#54).
+type CheckpointState = 'closed' | 'boon' | 'hazard' | 'notification';
+interface CheckpointTransition {
+  atMinute: number;
+  state: CheckpointState;
+  message?: string;
+}
+
 interface ScheduledEventData {
   type: ScheduledActionType;
   offsetMinutes?: number | null;
@@ -47,6 +55,9 @@ export const runScheduledEvents = functions.pubsub
       }
       return gameCache.get(gameId) ?? null;
     };
+
+    // Apply time-based checkpoint state transitions (#54) alongside the run-sheet sweep.
+    await applyCheckpointTransitions(db, nowMs);
 
     await Promise.all(
       pending.docs.map(async (evDoc) => {
@@ -210,4 +221,74 @@ async function countLivingPlayers(
 ): Promise<number> {
   const snap = await db.collection('games').doc(gameId).collection('members').get();
   return snap.docs.map((d) => d.data()).filter((m) => m.role !== 'gm' && !m.out).length;
+}
+
+/**
+ * Apply time-based checkpoint state transitions (#54). For each running game, reads
+ * all checkpoints with a `transitions` array and applies the latest transition whose
+ * `atMinute ≤ elapsed game time`. Writes `currentState` + adjusts `event`/window only
+ * when the state actually changes — idempotent under repeated sweeps (#26).
+ */
+async function applyCheckpointTransitions(
+  db: admin.firestore.Firestore,
+  nowMs: number
+): Promise<void> {
+  const gamesSnap = await db
+    .collection('games')
+    .where('status', '==', 'active')
+    .where('phase', '==', 'play')
+    .get();
+  if (gamesSnap.empty) return;
+
+  await Promise.allSettled(
+    gamesSnap.docs.map(async (gameDoc) => {
+      const game = gameDoc.data();
+      const startedMs = game.startedAt?.toMillis?.() ?? null;
+      if (startedMs == null) return;
+      const elapsedMinutes = (nowMs - startedMs) / 60_000;
+
+      const cpsSnap = await db
+        .collection('games').doc(gameDoc.id).collection('checkpoints').get();
+
+      await Promise.allSettled(
+        cpsSnap.docs.map(async (cpDoc) => {
+          const cp = cpDoc.data();
+          const transitions = cp.transitions as CheckpointTransition[] | undefined;
+          if (!Array.isArray(transitions) || transitions.length === 0) return;
+
+          // Find the latest applicable transition.
+          const applicable = transitions
+            .filter((t) => t.atMinute <= elapsedMinutes)
+            .sort((a, b) => b.atMinute - a.atMinute);
+          if (applicable.length === 0) return;
+          const target = applicable[0];
+
+          // Idempotent: skip if the stored currentState already matches.
+          if (cp.currentState === target.state) return;
+
+          const update: Record<string, unknown> = { currentState: target.state };
+
+          if (target.state === 'closed') {
+            // Close the site window so the geofence ignores it.
+            update.closesAt = admin.firestore.FieldValue.serverTimestamp();
+          } else {
+            // Map CheckpointState → CheckpointKind and open the window.
+            const kindMap: Record<Exclude<CheckpointState, 'closed'>, string> = {
+              boon: 'boon',
+              hazard: 'hazard',
+              notification: 'player-notify',
+            };
+            update.event = {
+              kind: kindMap[target.state as Exclude<CheckpointState, 'closed'>],
+              ...(target.message ? { message: target.message } : {}),
+            };
+            update.opensAt = admin.firestore.FieldValue.serverTimestamp();
+            update.closesAt = admin.firestore.FieldValue.delete();
+          }
+
+          await cpDoc.ref.update(update);
+        })
+      );
+    })
+  );
 }

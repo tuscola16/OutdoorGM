@@ -122,6 +122,33 @@ export interface GameConfig {
   // --- Tracking (Rule 21) ---
   /** Coarser GPS cadence when the player is stationary. */
   batterySaver: boolean;
+
+  // --- Geofence quality (#50/#55) ---
+  /**
+   * GPS fix quality gate for checkpoint evaluation. Fixes with reported accuracy (m)
+   * worse than this threshold are skipped for checkpoint eval — the map dot still
+   * updates. Default 30 m.
+   */
+  minFixAccuracyMeters?: number;
+  /**
+   * Consecutive in-radius location fixes required before recording a checkpoint arrival.
+   * Debounces a lone jumpy fix. Default 2.
+   */
+  geofenceConfirmFixes?: number;
+  /**
+   * GM re-notification cooldown: the GM is re-alerted when a player returns to a
+   * checkpoint they previously visited and was away at least this many minutes. Default 5.
+   */
+  reNotifyAwayCooldownMinutes?: number;
+
+  // --- Auto-end (#56) ---
+  /**
+   * When to auto-end the game based on living-player count.
+   * - `'one'`    — end when 1 living player remains and crown them winner (default).
+   * - `'zero'`   — end only when 0 living players remain ("no winner").
+   * - `'manual'` — never auto-end; maps from legacy `winnerDetection: false`.
+   */
+  autoEndThreshold?: 'one' | 'zero' | 'manual';
 }
 
 /** Seed defaults for a new game = the base game rules. */
@@ -145,6 +172,51 @@ export const BASE_GAME_CONFIG: GameConfig = {
  * - `gm-only`      — only the GM is alerted; the player sees nothing (the default ping).
  */
 export type CheckpointKind = 'hazard' | 'boon' | 'player-notify' | 'gm-only';
+
+/**
+ * Declarative time-based state a checkpoint can be in (ROADMAP #54). Applied by the
+ * run-sheet sweep from `Checkpoint.transitions[]`. `'closed'` shuts the site window;
+ * `'boon'`/`'hazard'`/`'notification'` map to the corresponding CheckpointKind and
+ * open the window.
+ */
+export type CheckpointState = 'closed' | 'boon' | 'hazard' | 'notification';
+
+/**
+ * A single timed state transition on a checkpoint (ROADMAP #54). The sweep applies
+ * the latest transition whose `atMinute ≤ elapsed game time` — ordering matters when
+ * multiple transitions are due. `atMinute` is relative to `game.startedAt`.
+ */
+export interface CheckpointTransition {
+  atMinute: number;
+  state: CheckpointState;
+  /** Optional message to surface when this state becomes active. */
+  message?: string;
+}
+
+/**
+ * Per-player/per-checkpoint crossing latch (ROADMAP #50/#55). Written only by Cloud
+ * Functions (admin SDK); never readable by clients. Tracks inside/outside state and
+ * consecutive-fix streak for arrival debouncing, plus the away timestamp for GM
+ * re-notification and the last surfaced state for player re-notification.
+ * Path: games/{gameId}/checkpointTrips/{playerId}_{checkpointId}.
+ */
+export interface CheckpointTrip {
+  playerId: string;
+  checkpointId: string;
+  /** True while the player is confirmed inside the radius. */
+  inside: boolean;
+  /** Consecutive in-radius fixes since last non-inside write. Feeds #50 debounce. */
+  insideStreak: number;
+  /** Timestamp of the most recent confirmed entry. */
+  lastEnterAt?: FsTimestamp | null;
+  /** Timestamp of the most recent confirmed exit. */
+  lastExitAt?: FsTimestamp | null;
+  /**
+   * The resolved checkpoint state (event.kind or currentState) at the last time a
+   * player notification was sent (#55). Used to re-notify only on state changes.
+   */
+  lastNotifiedState?: string | null;
+}
 
 export type EventAudience = 'crossing-player' | 'all-players' | 'gm-only';
 
@@ -237,6 +309,23 @@ export interface Checkpoint {
   revealedAt?: FsTimestamp | null;
   /** For `specific-players`/`triggerer` audiences: member ids it's been revealed to so far. */
   revealedTo?: string[];
+  /**
+   * Initial state before any transition fires (ROADMAP #54). Typically `'closed'` for
+   * timed checkpoints. Absent → static checkpoint (existing behavior unchanged).
+   */
+  initialState?: CheckpointState;
+  /**
+   * Ordered time-based state transitions applied by the run-sheet sweep (ROADMAP #54).
+   * Absent or empty → static checkpoint. Each `atMinute` is relative to `game.startedAt`.
+   */
+  transitions?: CheckpointTransition[];
+  /**
+   * Currently-applied state, written by the run-sheet sweep on each transition (ROADMAP #54).
+   * Never set by clients. Read by the geofence for player re-notification (#55).
+   */
+  currentState?: CheckpointState;
+  /** Icon key for map authoring (ROADMAP #53). Rendered via Ionicons. */
+  icon?: string;
 }
 
 /**
@@ -255,6 +344,13 @@ export interface RevealedMarker {
   /** Null/absent = visible to all players; set = only these uids may read/see it (A/D). */
   audiencePlayerIds?: string[] | null;
   revealedAt: FsTimestamp;
+  /**
+   * Client-side visibility gate (ROADMAP #48 defense-in-depth). The player map hides
+   * this marker until `visibleFrom` is in the past. Absent/null → visible immediately.
+   * Set for game-time reveals so stale markers from a prior run are suppressed until
+   * their reveal time.
+   */
+  visibleFrom?: FsTimestamp | null;
 }
 
 export interface GameMember {

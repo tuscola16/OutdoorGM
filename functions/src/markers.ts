@@ -87,9 +87,12 @@ function phaseOf(g: admin.firestore.DocumentData | undefined): string {
 }
 
 /**
- * On Start Game (the lobby → play transition), project every `visibility: 'always'`
- * checkpoint into `markers` so players see those named locations from kickoff (case C).
- * `on-reveal` checkpoints are projected later by their trigger; `gm-only` never are.
+ * On Start Game (the lobby → play transition):
+ * 1. Delete stale marker docs for checkpoints that are NOT `'always'` — a marker
+ *    left over from a prior run would appear immediately (#48 root cause B).
+ * 2. Project every `visibility: 'always'` checkpoint into `markers` so players see
+ *    those named locations from kickoff (case C). `on-reveal` checkpoints are
+ *    projected later by their trigger; `gm-only` never are.
  */
 export const onGameStartProjectMarkers = functions.firestore
   .document('games/{gameId}')
@@ -100,6 +103,23 @@ export const onGameStartProjectMarkers = functions.firestore
     const { gameId } = context.params;
     const db = admin.firestore();
     const cps = await db.collection('games').doc(gameId).collection('checkpoints').get();
+
+    // Delete any existing marker docs for non-'always' checkpoints. A stale marker
+    // from a previous run of the same game would otherwise show up at Start (#48).
+    const alwaysIds = new Set(
+      cps.docs
+        .filter((d) => (d.data() as CheckpointDoc).visibility === 'always')
+        .map((d) => d.id)
+    );
+    const existingMarkers = await db
+      .collection('games').doc(gameId).collection('markers').get();
+    await Promise.allSettled(
+      existingMarkers.docs
+        .filter((d) => !alwaysIds.has(d.id))
+        .map((d) => d.ref.delete())
+    );
+
+    // Project 'always' checkpoints so players see them from kickoff.
     await Promise.allSettled(
       cps.docs
         .filter((d) => (d.data() as CheckpointDoc).visibility === 'always')

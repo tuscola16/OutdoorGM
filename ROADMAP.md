@@ -9,9 +9,10 @@ implementation-ready schema/enforcement detail for the items below is in
 store launch. Items are grouped by tier, roughly in build order. Numbers are stable and never reused
 once an item lands; the list was **renumbered 2026-06-06** (a one-time reset after a large batch
 shipped — earlier `#`/`§` numbers are retired and don't map forward) and **trimmed 2026-06-07** when
-the batch below shipped (so it opens at Tier 4 / item 11). The **2026-06-07 field test** then added
-items **48–58** — P0 playtest bugs in a Field-test findings section, plus the checkpoint-authoring /
-game-flow redesign tiers below.
+the batch below shipped (so it opens at Tier 4 / item 11). The **2026-06-07 field test** added items
+**48–58**; the P0 playtest fixes (**48–52**), the game-flow items (**55**, **56**), and **54**'s
+backend all shipped the same day (see the Built callout), leaving the checkpoint-authoring redesign
+(**53**, plus **54**'s authoring UI), test tooling (**58**), and per-GM teams (**57**).
 
 > **Built & removed** (retired numbers, never reused — see git history + the
 > [README](README.md#features)):
@@ -27,49 +28,16 @@ game-flow redesign tiers below.
 > - **13–15** Tier 5 ration review/submit UX (terminal review action, viewport-fit photo review,
 >   state-driven `RationPanel`) · **30** single `shouldTrack`-keyed tracking controller ·
 >   **33** login loading reset — all found already shipped in the **2026-06-07 audit**.
-
----
-
-## Field-test findings — 2026-06-07 (P0)
-
-Defects and decisions from the 2026-06-07 on-site playtest. The bugs here block a trustworthy APK
-and come **before** the feature tiers below.
-
-**48. Timed checkpoint visible before its reveal time.** "Park Entrance" was on the player map from
-game start though it was scheduled to appear ~20 min in. The reveal/open-time gate isn't hiding a
-checkpoint until its scheduled time — players see (and could pre-trip) checkpoints early. Ties into
-the time-based lifecycle work (#54): a checkpoint that is hidden/closed until time T must not render
-**or** geofence-trigger before T.
-
-**49. Background (closed-phone) checkpoint alerts unreliable.** Crossing "Death Crossing" with the
-phone locked produced **no** notification; walking away and reopening nearby did nothing; only
-returning with the phone open fired the alert. Yet "Hill Point" *did* trip with the phone closed —
-so background delivery is intermittent, not uniformly broken. Investigate background-location fix
-cadence while locked, the geofence Cloud Function trigger, and FCM data/notification delivery to a
-backgrounded/locked device. **Highest priority** — silent misses break the core GM↔player loop.
-
-**50. GPS accuracy / position jumps.** A checkpoint was tripped accidentally because the fix placed
-the player further up the hill than they were; the dot also jumped to a completely different place
-for a second. Add fix-quality filtering before geofence eval: reject fixes above an `accuracy`
-threshold, debounce/smooth, and/or require N consecutive in-radius fixes before firing an arrival.
-
-**51. Web polygon boundary won't save.** Drawing a polygon works, but **Done** (top bar) and **Done
-drawing polygon** (side panel) both revert to the previously drawn rectangle — the polygon is never
-persisted. Regression on the #39 web polygon authoring; the boundary save path isn't reading the
-drawn polygon geometry on commit.
-
-**52. Ration eat-window open notification never fired.** The scheduled local notification that should
-fire the moment a player's eat-window opens did not arrive, so players had no prompt to photograph
-their ration card. Audit the `scheduleNotificationAsync` path in `RationPanel` (trigger-time math,
-permissions, reschedule on interval rollover).
-
-**Resolved design decisions (this playtest):**
-- **Players keep the self mini-map** — no change; players still see only themselves.
-- **Re-trigger / re-notify model** (specced as #55): a **global** away-cooldown setting governs
-  re-firing. The **GM is re-notified** each time a player returns to a checkpoint after being away ≥
-  the cooldown (so "they're back" is visible even if the player just lingered nearby). The **player
-  is only re-notified when the checkpoint's state has changed** since they last triggered it (e.g. a
-  timed checkpoint flipped boon→hazard, #54) — an unchanged checkpoint stays silent for that player.
+> - **48–52, 54 (backend), 55, 56** — the **2026-06-07 field-test batch**: **48** stale-marker
+>   cleanup at Start + client `visibleFrom` gate; **49** server-side checkpoint **pass-through
+>   detection** (path segment `change.before`→`change.after`, 400 m cap, secrecy-preserving);
+>   **50** GPS fix-quality gate + N-consecutive-fix debounce; **51** web polygon commit-on-teardown;
+>   **52** ration eat-window reminders hoisted to `useRationReminders` (fire regardless of active
+>   tab); **54** declarative checkpoint `transitions[]` applied by the run-sheet sweep
+>   (`currentState`) + geofence integration (**authoring UI still pending — see #54**); **55**
+>   per-player/checkpoint trip latch (`checkpointTrips`) with GM away-cooldown + player
+>   state-change re-notify; **56** `autoEndThreshold` (one/zero/manual). Players keep the self
+>   mini-map (design decision, no code). **#49 still wants an on-device locked-phone re-test.**
 
 ---
 
@@ -144,31 +112,22 @@ player about to go dark (Rule 21) so they can be checked on before they vanish.
 
 ---
 
-## Tier 12 — Checkpoint authoring & game-flow redesign
+## Tier 12 — Checkpoint authoring redesign
+
+The behavior backend these screens drive — time-based transitions (#54), the re-trigger latch
+(#55), and auto-end (#56) — shipped 2026-06-07; what's left is the GM authoring UX.
 
 **53. Split checkpoint authoring: map places, run sheet configures.** On the map the GM only
-*creates* a checkpoint — name + icon, nothing else. Everything a checkpoint *does* (boon / hazard /
-notification behavior, player visibility, timing) moves to the run sheet. Promote the run sheet from
-a modal to its **own full screen** — it's too complex for a modal. The map view becomes a clean
-placement canvas.
+*creates* a checkpoint — name + icon (the `Checkpoint.icon` field already shipped), nothing else.
+Everything a checkpoint *does* (event kind/queue, player visibility/reveal, timed window, and #54
+transitions) moves to the run sheet, promoted from a modal to its **own full screen**. The map view
+becomes a clean placement canvas.
 
-**54. Time-based checkpoint type/state transitions.** A checkpoint's type can change over the game,
-not just by arrival order. A checkpoint can **open at** a time and **close at** a time, and can be a
-**boon at one time and a hazard at another** — a per-checkpoint schedule of state transitions (e.g.
-closed → boon @T1 → hazard @T2 → closed @T3). Drives the early-reveal fix (#48): a checkpoint must
-not render or geofence-trigger before it is open. Builds on the existing run-sheet / scheduled-event
-model.
-
-**55. Re-trigger & re-notification model.** A **global** game setting holds the away-cooldown. The GM
-is re-notified when a player returns to a checkpoint after being away ≥ cooldown; the player is
-re-notified **only** when the checkpoint's state changed since their last trigger (see the resolved
-decision under Field-test findings; #54 supplies the state changes). Requires tracking per-player,
-per-checkpoint last-trigger time and the checkpoint state last surfaced to that player.
-
-**56. Auto-end by remaining-player threshold (GM setting).** A game setting selects auto-end at **1
-remaining** (last-player-standing), **0 remaining** (everyone out/dead), or **manual** (today's
-behavior), tied to the winner function. Reuses GM-excluded winner detection; the triggered end must
-be idempotent (#26).
+**54. Time-based transitions — authoring UI.** The backend shipped: declarative
+`Checkpoint.transitions[]` / `initialState` / `currentState`, applied by the run-sheet sweep
+(`applyCheckpointTransitions`), gating geofence firing and — via #48 — visibility. **Remaining:** a
+GM authoring UI to add/edit a checkpoint's transition schedule (boon @T1 → hazard @T2 → closed @T3),
+folded into #53's full-screen editor. Today transitions can only be written directly to Firestore.
 
 ---
 
@@ -228,13 +187,12 @@ its bundle ID / SHA-1 and the Maps SDK in Cloud Console before wide release. Con
 
 ## Suggested order
 
-1. **Field-test findings** (48–52) — P0 playtest bugs; fix before anything else.
-2. **Tier 12** (53–56) — the checkpoint-authoring / lifecycle redesign + auto-end (the gameplay the
-   bugs touch; #54 also unblocks the #48 early-reveal fix).
-3. **Tier 4** (11–12) completes the ration loop.
-4. **Tier 6** (16) trims the last geofence read cost; **Tier 7** (20–28) — integrity invariants —
+1. **Tier 12** (53 + #54 authoring UI) — the checkpoint-authoring redesign; the field-test backend
+   fixes (#48–52, #54–56) already shipped, so this surfaces the transition/behavior config to GMs.
+2. **Tier 4** (11–12) completes the ration loop.
+3. **Tier 6** (16) trims the last geofence read cost; **Tier 7** (20–28) — integrity invariants —
    land alongside the features they protect.
-5. **Tier 8** (29, 35) trails as robustness/polish.
-6. **Tier 13** (58) — test tooling; useful throughout, build when convenient.
-7. **Tier 11** (41–45, 57) is P3 polish (43/45 and per-GM teams deprioritized).
-8. **Deferred** (46–47) waits for a real public-store launch.
+4. **Tier 8** (29, 35) trails as robustness/polish.
+5. **Tier 13** (58) — test tooling; useful throughout, build when convenient.
+6. **Tier 11** (41–45, 57) is P3 polish (43/45 and per-GM teams deprioritized).
+7. **Deferred** (46–47) waits for a real public-store launch.

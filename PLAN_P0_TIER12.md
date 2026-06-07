@@ -5,6 +5,12 @@
 > doc is the *how* — root causes (with `file:line`), the fix, files to touch, schema deltas,
 > and verification. Built on a code read of the repo as of this commit.
 
+> **Status (shipped 2026-06-07):** #48, #49, #50, #51, #52, #55, #56 are **implemented**, plus
+> #54's backend (transition schema + run-sheet sweep + geofence integration). **Outstanding:**
+> #53 (checkpoint-authoring redesign) and #54's **GM authoring UI**. #49 still wants an on-device
+> locked-phone re-test. The sections below are kept as the implementation record / remaining-work
+> reference — see the roadmap Built callout for the canonical status.
+
 ## Orientation — how the relevant pieces fit
 
 - **Geofencing is server-side polling, not OS geofencing.** Players upload location to

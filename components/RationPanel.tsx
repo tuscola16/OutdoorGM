@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, TextInput, Alert, ActivityIndicator, Keyboard, AppState } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import * as Notifications from 'expo-notifications';
 import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
 import { Collections } from '@/services/firebase';
 import { submitRation, rationInterval } from '@/services/gameService';
@@ -52,7 +51,6 @@ export function RationPanel({
   // On-screen diagnostics so a field tester can see what the camera + reminder
   // scheduling actually did, without needing a logcat. Surfaced as muted lines.
   const [camDebug, setCamDebug] = useState('');
-  const [notifDebug, setNotifDebug] = useState('');
 
   const intervalIndex = interval?.index ?? null;
 
@@ -87,75 +85,6 @@ export function RationPanel({
     return () => sub.remove();
   }, []);
 
-  // Alert the player the moment each future eat-window opens — scheduled as local
-  // notifications so they fire even when the app is backgrounded or the phone is locked.
-  // Deterministic ids (`ration-<game>-<i>`) so a remount/relaunch replaces rather than
-  // duplicates; we cancel them when the panel unmounts (player out / game over / leave).
-  const startedMs = startedAt?.toMillis?.() ?? null;
-  useEffect(() => {
-    if (!gameId || !startedMs || !config.rationsEnabled) return;
-    let cancelled = false;
-    const scheduled: string[] = [];
-    (async () => {
-      // Reminders are useless without notification permission — make sure we have it
-      // (the app asks on launch, but a denial would silently swallow every alert).
-      let perm = await Notifications.getPermissionsAsync();
-      if (!perm.granted && perm.canAskAgain) perm = await Notifications.requestPermissionsAsync();
-      if (!perm.granted) {
-        if (!cancelled) setNotifDebug('Ration alerts OFF — enable notifications in Settings');
-        return;
-      }
-      const windowMs = config.rationIntervalMinutes * 60_000;
-      const total = Math.ceil(config.durationMinutes / config.rationIntervalMinutes);
-      const openMs =
-        Math.min(Math.max(config.rationWindowMinutes, 0), config.rationIntervalMinutes) * 60_000;
-      const nowMs = Date.now();
-      let nextOpensAt: number | null = null;
-      for (let i = 0; i < total; i++) {
-        const opensAt = startedMs + (i + 1) * windowMs - openMs;
-        if (opensAt <= nowMs + 1000) continue; // already open or past — skip
-        try {
-          const id = await Notifications.scheduleNotificationAsync({
-            identifier: `ration-${gameId}-${i}`,
-            content: {
-              title: '🍖 Ration window open',
-              body: 'Photograph your ration card before the window closes — or you starve.',
-              sound: true,
-            },
-            trigger: { date: new Date(opensAt), channelId: 'broadcasts' },
-          });
-          if (cancelled) {
-            Notifications.cancelScheduledNotificationAsync(id).catch(() => {});
-            return;
-          }
-          scheduled.push(id);
-          if (nextOpensAt == null) nextOpensAt = opensAt;
-        } catch (err) {
-          if (!cancelled) setNotifDebug(`alert scheduling failed: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-      if (!cancelled) {
-        setNotifDebug(
-          scheduled.length === 0
-            ? 'No upcoming ration alerts to schedule'
-            : `🔔 ${scheduled.length} ration alert${scheduled.length === 1 ? '' : 's'} set` +
-                (nextOpensAt ? ` · next ${new Date(nextOpensAt).toLocaleTimeString()}` : '')
-        );
-      }
-    })();
-    return () => {
-      cancelled = true;
-      scheduled.forEach((id) => Notifications.cancelScheduledNotificationAsync(id).catch(() => {}));
-    };
-  }, [
-    gameId,
-    startedMs,
-    config.rationsEnabled,
-    config.rationIntervalMinutes,
-    config.rationWindowMinutes,
-    config.durationMinutes,
-  ]);
-
   if (!interval || !interval.isPlaying || intervalIndex == null) return null;
 
   const requireCard = config.enforceUniqueRationCards;
@@ -175,7 +104,6 @@ export function RationPanel({
         <Text style={styles.hint}>
           No card needed yet. When the window opens you'll be alerted to photograph your ration card.
         </Text>
-        {notifDebug ? <Text style={styles.debug}>{notifDebug}</Text> : null}
       </View>
     );
   }
@@ -294,7 +222,6 @@ export function RationPanel({
             loading={busy}
           />
           {camDebug ? <Text style={styles.debug}>camera: {camDebug}</Text> : null}
-          {notifDebug ? <Text style={styles.debug}>{notifDebug}</Text> : null}
         </>
       )}
       <CameraCapture

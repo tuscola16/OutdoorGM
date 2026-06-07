@@ -13,8 +13,11 @@ New fields stay **optional** so legacy games keep working. Timestamps use the pl
 
 Only items with a real data-model/infra delta appear here; pure logic/UI/enforcement items are
 listed under [No schema change](#no-schema-change-enforcement--logic-only). Built items (1–10,
-13–15, 17, 18, 19, 30, 31, 32, 33, 34, 36–40) have shipped and been removed — their numbers are
-retired.
+13–15, 17, 18, 19, 30, 31, 32, 33, 34, 36–40, and the **2026-06-07 field-test batch** 48–52, 54,
+55, 56) have shipped and been removed — their numbers are retired. (#53's `Checkpoint.icon` and
+#54's transition schema — `CheckpointState`/`CheckpointTransition`/`initialState`/`transitions`/
+`currentState` — also shipped; only their GM authoring UI remains, listed under
+[No schema change](#no-schema-change-enforcement--logic-only).)
 
 ---
 
@@ -101,93 +104,6 @@ admin-SDK-only `rateLimits/{uid}` doc, not client-readable, rejecting > N tries 
 `resource-exhausted`). Remaining: flip `ENFORCE_APP_CHECK → true` in `functions/src/games.ts` after
 both platforms are registered and verified. No game-doc change.
 
-## 50. GPS fix-quality filtering
-
-```ts
-export interface GameConfig {
-  // ...existing...
-  /** Reject location fixes worse than this horizontal accuracy (meters) before geofence eval. */
-  minFixAccuracyMeters?: number;   // default ~30
-  /** Consecutive in-radius fixes required before an arrival fires (debounce against jumps). */
-  geofenceConfirmFixes?: number;   // default 2
-}
-```
-
-`PlayerLocation.accuracy` already exists. Filter client-side (drop bad fixes before upload) and/or in
-`onLocationUpdate` (ignore a fix whose `accuracy` exceeds the threshold; require N consecutive
-in-radius fixes per player-checkpoint before creating an arrival).
-
-## 53. Split checkpoint authoring (map = name + icon)
-
-```ts
-export interface Checkpoint {
-  // ...existing: name, latitude, longitude, radius, order...
-  /** Icon key chosen on the map at placement time; behavior lives in the run sheet. */
-  icon?: string;
-}
-```
-
-Map authoring writes only `name` + `icon` + position. All behavioral config (type, visibility,
-timing) is authored in the full-screen run sheet against the existing `CheckpointEvent` /
-`ScheduledEvent` / reveal model plus the #54 transition schedule. The work is mostly UI (modal →
-full screen); the only new field is `icon`.
-
-## 54. Time-based checkpoint type/state transitions
-
-```ts
-export type CheckpointState = 'closed' | 'boon' | 'hazard' | 'notification';
-
-export interface CheckpointTransition {
-  /** Game-relative minutes from startedAt (pick one convention and keep it consistent). */
-  atMinute: number;
-  state: CheckpointState;
-}
-
-export interface Checkpoint {
-  // ...existing...
-  /** State before any transition; default 'closed' for timed checkpoints, legacy = static type. */
-  initialState?: CheckpointState;
-  /** Ordered schedule of state changes; empty/absent = static checkpoint (legacy behavior). */
-  transitions?: CheckpointTransition[];
-}
-```
-
-A scheduled/triggered evaluator (reuse the existing event-queue path) advances each checkpoint's
-current state at its transition times and writes a run-sheet/broadcast row. The resolved state gates
-**both** rendering and geofence eval (#48): a `closed` checkpoint is neither shown to players nor able
-to fire an arrival. State changes are also what unlock player re-notification in #55.
-
-## 55. Re-trigger / re-notification model
-
-```ts
-export interface GameConfig {
-  // ...existing...
-  /** Minutes a player must be outside a checkpoint radius before a return re-fires it. */
-  reNotifyAwayCooldownMinutes?: number;   // global; default ~5
-}
-```
-
-Per-player/per-checkpoint trip tracking (extend the arrival path — e.g. a
-`checkpointTrips/{playerId}_{checkpointId}` doc) records `lastTriggerAt`, whether the player is
-currently inside the radius, and the **checkpoint state last notified to that player**. On a fix:
-- **GM notification** fires when the player re-enters after being away ≥ `reNotifyAwayCooldownMinutes`.
-- **Player notification** fires only when the checkpoint's current state (#54) differs from the state
-  last notified to that player — an unchanged checkpoint stays silent for them.
-
-## 56. Auto-end by remaining-player threshold
-
-```ts
-export interface GameConfig {
-  // ...existing...
-  /** When to auto-end based on living non-GM players; default 'manual'. */
-  autoEndThreshold?: 'one' | 'zero' | 'manual';
-}
-```
-
-Reuses GM-excluded winner detection: after each elimination, count living non-GM members; if it meets
-the configured threshold (`one` → last-standing, `zero` → all out), invoke the existing `endGame()`
-path. Idempotent under double-trigger (#26).
-
 ## 57. Per-GM teams *(later tier)*
 
 ```ts
@@ -208,10 +124,15 @@ GM map/roster views filter to `teamGmId === me`. Unassigned/legacy players fall 
 
 These items are pure logic, rules, client architecture, or ops — no new fields or collections:
 
-- **48** Early checkpoint reveal — logic fix: the resolved state from #54 (and the existing reveal gate) must hide a not-yet-open checkpoint from **both** rendering and geofence eval.
-- **49** Background notification reliability — client/infra: background-location fix cadence while locked, the geofence trigger, and FCM delivery to backgrounded/locked devices.
-- **51** Web polygon save — `web/` bug: the boundary commit must read the drawn polygon geometry instead of falling back to the prior rectangle (the `boundary` polygon model already exists from #39).
-- **52** Ration window notification — client fix to the `scheduleNotificationAsync` eat-window path (trigger-time math, permissions, reschedule on interval rollover).
+- **48** Early checkpoint reveal — **built**: `onGameStartProjectMarkers` deletes stale non-`always` marker docs at Start, the player map filters markers by an optional `RevealedMarker.visibleFrom`, and #54's `closed` state gates geofence firing. (Schema delta: `RevealedMarker.visibleFrom`.)
+- **49** Background notification reliability — **built**: server-side pass-through detection in `onLocationUpdate` (segment `change.before`→`change.after` vs. each checkpoint, capped at 400 m), so a locked-phone crossing between sparse fixes still fires. No schema change. Remaining: on-device locked-phone re-test.
+- **50** GPS fix-quality filtering — **built**: `GameConfig.minFixAccuracyMeters` (reject worse fixes from geofence eval) + `geofenceConfirmFixes` (N consecutive in-radius fixes debounce), enforced in `onLocationUpdate` via the `checkpointTrips` latch.
+- **51** Web polygon save — **built**: `GameMap` teardown commits the current polygon (`emitPolygonFromDraw`) before removing the draw control, so Done persists it.
+- **52** Ration window notification — **built**: eat-window reminders moved out of `RationPanel` into a `useRationReminders` hook mounted unconditionally during play, so they fire even when the player stays on the Map tab.
+- **53** Checkpoint authoring redesign — `Checkpoint.icon` shipped; remaining work is UI only: map authoring = name+icon, all behavior config moved to a full-screen run-sheet editor.
+- **54** Transition authoring — the data model (`transitions[]`/`currentState`) + run-sheet sweep (`applyCheckpointTransitions`) shipped; remaining work is the GM UI to author a checkpoint's transition schedule (folds into #53).
+- **55** Re-trigger / re-notification — **built**: `GameConfig.reNotifyAwayCooldownMinutes` + the server-only `checkpointTrips/{playerId}_{checkpointId}` latch (`inside`/`insideStreak`/`lastEnterAt`/`lastExitAt`/`lastNotifiedState`); GM re-notified past the cooldown, player only on state change.
+- **56** Auto-end threshold — **built**: `GameConfig.autoEndThreshold` (`one`/`zero`/`manual`; legacy `winnerDetection:false` ⇒ `manual`) gating the `onMemberWrite` end/winner transaction.
 - **58** Single-game test checklist — a doc plus an optional `seedTestGame` helper; no new fields.
 - **12** Auto per-interval count — wire the `playerCountBroadcast` toggle to actually seed repeating run-sheet rows each interval (existing `template:'player-count'`); today the toggle is stored but does nothing automatic.
 - **16** Geofence read cost — remaining work: cache phase/role per write (lobby short-circuit, zero-checkpoint skip, and checkpoint cache already shipped).
