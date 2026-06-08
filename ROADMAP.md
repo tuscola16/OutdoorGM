@@ -6,26 +6,13 @@ implementation-ready schema/enforcement detail for the items below is in
 [COMPETITIVE_ANALYSIS.md](COMPETITIVE_ANALYSIS.md) for prioritization rationale.
 
 **Current focus: a beautifully functional APK for a limited, trusted user base** — not a public
-store launch. Items are grouped by tier, roughly in build order. Numbers are stable and never reused
-once an item lands; the list was **renumbered 2026-06-06** (a one-time reset after a large batch
-shipped — earlier `#`/`§` numbers are retired and don't map forward) and **trimmed 2026-06-07** when
-the batch below shipped (so it opens at Tier 4 / item 11). The **2026-06-07 field test** added items
-**48–58**; the P0 playtest fixes (**48–52**), the game-flow items (**55**, **56**), and the
-checkpoint-authoring redesign (**53**, **54**) all shipped (see the Built callout), leaving only test
-tooling (**58**) and per-GM teams (**57**). A follow-on field-test pass added **59** (a flaky-signal
-player bounced to *My Games* every few seconds — fixed, see the Built callout). The
-**checkpoint & runbook overhaul** (**60**, Tier 14) has now shipped — a checkpoint shrinks to
-name/icon/visibility while all behavior lives in a new per-checkpoint **runbook** of
-priority-ranked entries (see the Built callout). Its follow-on **61** retires the web run-sheet UI
-(superseded by the Runbook) and tracks the one run-sheet capability the Runbook doesn't yet
-cover — clock-triggered actions with no player crossing. A second feedback pass (web + play
-testing) added **62–72** — see the dated **Field-test findings — 2026-06-07 (batch 2)** section
-below (P0 defects: ration-review false positives, per-runbook-event tripping, broadcast/checkpoint
-push reliability; plus validation, boundary-constrained checkpoints, and game cloning). After
-deploying that batch, post-deploy testing added **73–77** (**Field-test findings — 2026-06-08, batch
-3**): a P0 regression where a runbook entry tripped more than once, GM-prompted notifications missing
-from the player feed, a GM notifications page for large games, naming a cloned game, and lingering
-closed-phone pass-through flakiness.
+store launch. Items are grouped by tier, roughly in build order. Numbers are **stable and never
+reused**; when an item ships it moves to the **Built & removed** callout below (context preserved)
+rather than being renumbered. Recently shipped: the **#60 checkpoint & runbook overhaul** and the
+**2026-06-07/08 field-test batch** (#65–#70, #73, #76 — game cloning, ration-window gating,
+per-runbook-event tripping, broadcast push, persistent event modal, accurate GM feed). The
+outstanding field-test items (#62–#64, #68, #71, #72, #74, #75, #77) are in the section below; older
+tiers (run-sheet follow-on #61, ration loop, integrity invariants, polish) follow.
 
 > **Built & removed** (retired numbers, never reused — see git history + the
 > [README](README.md#features)):
@@ -79,14 +66,27 @@ closed-phone pass-through flakiness.
 >   `Checkpoint.icon` picker (`constants/checkpointIcons.ts`), a shared `components/checkpointForm.tsx`,
 >   and `gameService.stateEventFields` (makes a scheduled checkpoint's initial state effective at
 >   start; the sweep handles later transitions).
+> - **65–70, 73, 76** — **2026-06-07/08 field-test batch** (built + deployed: rules/functions/web;
+>   the mobile-only pieces — #66 mobile gating, #70, mobile Clone — await the next APK): **65**
+>   `cloneGame` callable (copies boundary + checkpoints + runbook + config; fresh codes; `setup`
+>   phase; no runtime/participant state) + web/mobile Clone, with **76** new-game naming; **66**
+>   ration "not eaten" gates on `rationInterval().isOpen`; **67** per-**entry** trip latch
+>   (`entryTrips/{playerId}_{entryId}`) firing **one entry per `tripIntervalMinutes` tick** (the
+>   "2-minute rule"), arrival ordinal latched on `checkpointTrips`; **69** `onBroadcastCreate` pushes
+>   GM broadcasts to closed phones (server paths stamp `pushed:true` to avoid double-push); **70**
+>   `AlertOverlay` persists per-game dismissals so a closed-phone event re-pops on reopen; **73** GM
+>   `NotificationFeed` derives events from `entryTrips` (accurate, deduped) + neutral arrivals
+>   (replacing the old "label every arrival by `checkpointKind`" that mislabeled arrivals as hazards).
+>   `entryTrips` is GM-readable in the rules and purged on game end.
 
 ---
 
-## Field-test findings — 2026-06-07 (batch 2, web + play feedback)
+## Field-test findings (2026-06-07 → 06-08) — outstanding
 
-Defects and gaps from testing the web dashboard and the app. Priority tags inline (P0 = fix
-before the next real game; P1 = before wider testing; P2 = polish). Schema/enforcement detail for
-the data-model items is in [ROADMAP_DATA_MODEL.md](ROADMAP_DATA_MODEL.md) under the same numbers.
+Defects and gaps from testing the web dashboard and the app; the built items from these passes are
+in the Built & removed callout above. Priority tags inline (P0 = before the next real game; P1 =
+before wider testing; P2 = polish). Schema detail is in
+[ROADMAP_DATA_MODEL.md](ROADMAP_DATA_MODEL.md) under the same numbers.
 
 **62. Audit the `/demo` screen for parity with recent releases.** *(P2)* The `/demo` screenshot
 mocks (`web/src/screens/DemoScreen.tsx`) drifted from shipped features — notably the **#60
@@ -111,99 +111,22 @@ coordinate that fails the point-in-boundary test (reuse the geofence `pointInBou
 ≥3 verts, else bbox), with a clear "outside the play area" message. If no boundary is set yet,
 either require one first or warn. Applies to both web and mobile placement flows.
 
-**65. Clone a game (setup only).** *(P1)* A "Clone" action on a game creates a fresh game that
-copies the **boundary**, **checkpoints**, and their **runbook entries** (the checkpoint behavior),
-plus the game **rules/config knobs** — and copies **nothing runtime/participant**: no members,
-locations, arrivals, rations, `checkpointTrips`, scheduled-event `firedAt`, winner, or timestamps.
-New game starts in `setup` with fresh player/GM codes and the cloner as sole GM. (Open decision noted
-in the data model: whether rules/config travel with the clone — default **yes**, since the ask is to
-re-run the same setup.)
-> **Built (2026-06-07):** `cloneGame` callable (`functions/src/games.ts`) copies boundary + rules +
-> config + checkpoints (new ids) + runbook (re-keyed); resets all runtime/participant state; fresh
-> codes; cloner = sole GM; starts in `setup`. `gameDate` is **not** carried (a clone is a new event).
-> "Clone" action wired into the web games list and the mobile games action sheet.
-
-**66. Ration review shows no players before the window opens.** *(P0)* The GM ration feed's "Not
-eaten this window" list (web `RationsModal`, mobile `rations.tsx`) populates for the *whole interval*,
-but the capture **window** only opens in the last `rationWindowMinutes`. Before the window opens,
-nobody is late — the list must be empty (and the header should read "window opens in …"), gated on
-the actual open time, not just the interval index.
-> **Built (2026-06-07):** "Not eaten this window" now gates on `rationInterval().isOpen` (web
-> `RationsModal` + mobile `rations.tsx`); the web header shows "window not open yet" until it opens.
-
-**67. Treat each runbook event independently, with a periodic re-trip cadence.** *(P0)* Today the
-geofence latches per **player × checkpoint** (`checkpointTrips`) and delivers a single highest-priority
-effect per crossing — so a player who already tripped a checkpoint won't receive a *different* runbook
-entry that becomes live later. Change to: dedup per **player × runbook entry** (a player can trip a
-given entry at most once); while a player is inside a checkpoint, re-evaluate eligible entries on a
-**GM-managed cadence (`tripIntervalMinutes`, default 2)** so a newly-live timed/queued entry gets
-tripped on the next tick even without leaving and re-entering. Preserves pass-through, fix-quality,
-district suppression, and reveal behavior. See data model for the per-entry latch + config.
-> **Built (2026-06-07):** geofence now dedups per **player × runbook entry** (latched once in
-> `entryTrips/{playerId}_{entryId}`) and fires **one entry per tick** — the highest-priority eligible
-> entry the player hasn't tripped. The rest dole out over time: a lingering player is re-evaluated
-> every `GameConfig.tripIntervalMinutes` (default 2, GM-set in the web Game settings — the "2-minute
-> rule"), so a stack of events on one checkpoint is delivered one per tick rather than all at once.
-> Arrival ordinal is latched on `checkpointTrips` for consistent fixed-order slots. Pass-through /
-> fix-quality / district suppression / reveal preserved; `entryTrips` is admin-only in the rules and
-> purged on game end.
-
 **68. Server-enforce unique ration card numbers.** *(P1)* With `enforceUniqueRationCards` on, the
 player can still submit an already-used card number (the GM only sees a "reused" flag after the fact).
 Block it at submission: reject a duplicate (valid/pending) card number for the game server-side
 (callable or `submitRation` guard / Firestore rule), with a clear player-facing error, so the dupe
 never lands. Keep the GM flag as a backstop.
 
-**69. Broadcasts must push to closed/backgrounded phones.** *(P0)* The GM "Broadcast to players"
-writes a `broadcasts/*` doc directly from the client with **no Cloud Function**, so it only surfaces
-in-app — a closed phone gets nothing. Add an `onBroadcastCreate` Firestore trigger (or route
-`sendBroadcast` through a callable) that sends FCM to living players' tokens on the `broadcasts`
-channel, honoring `targetPlayerId` (single recipient) and skipping `audience: 'gm-only'` co-GM
-messages. Ensure the payload shows when backgrounded (notification, not data-only).
-> **Built (2026-06-07):** `onBroadcastCreate` (`functions/src/broadcasts.ts`) pushes player-facing
-> broadcasts (all living players, or `targetPlayerId`); skips co-GM (`gm-only`) and server-written
-> docs (those are stamped `pushed: true` in geofence/runbook/run-sheet/death so there's no double-push).
-
-**70. Checkpoint-event modal must survive a dismissed push.** *(P0)* If a player dismisses a
-checkpoint/event push while outside the app, opening the app should still surface the relevant modal.
-Drive the in-app modal from **unacknowledged** `broadcasts`/event docs (a per-player `ackedAt` /
-seen-set), not from the push tap — so dismissing the OS notification never loses the event. Ties to
-#71 (the player ack/dismiss model).
-> **Built (2026-06-07):** `AlertOverlay` now persists dismissals per game (AsyncStorage
-> `acked_broadcasts_{gameId}`); unacked broadcasts re-pop when the app reopens (so a closed-phone
-> event still shows), and the first open on a device seeds the existing backlog as handled so history
-> isn't replayed. Local-only — no `Broadcast.dismissedBy` server field needed; the cross-device server
-> ack model is deferred to #71.
-
 **71. Players can dismiss notifications from the in-app list.** *(P2)* Give players a way to clear
-items in their notification/broadcast list (per-player dismissed set or `ackedBroadcasts`), so the
-list reflects what they've handled. Shared ack model with #70.
+items in their notification/broadcast list. #70 shipped a **device-local** dismissed set
+(`AlertOverlay`); this item adds an explicit in-list dismiss control and (optionally) a cross-device
+server model (`Broadcast.dismissedBy`) so a dismissal syncs across a player's devices.
 
 **72. Make the ration-window-open notification reliable.** *(P1)* The "window is open" alert
 (scheduled local notification, `useRationReminders`) often fires **2–3 minutes late**, risking
 wrongful starvation. Investigate OS scheduling drift / re-scheduling on config change; consider a
 **server push** at the window boundary (a scheduled function, like `runScheduledEvents`) as the
 source of truth instead of (or alongside) the on-device local notification.
-
----
-
-## Field-test findings — 2026-06-08 (batch 3, post-deploy testing)
-
-From testing the deployed #65–#70 batch. Priority tags inline.
-
-**73. A runbook entry tripped more than once.** *(P0)* A single runbook entry showed **3×** for one
-player in the **GM web notification feed**.
-> **Root cause (diagnosed via live data 2026-06-08):** the server was correct — `entryTrips`/
-> `broadcasts` were empty, one `arrivals` doc, and the timed hazard was correctly withheld before its
-> +3 min window. The bug was the **web `NotificationFeed`**: it built one row per `arrivals` doc and
-> labeled each with `checkpointKind` (the checkpoint's *headline* entry kind), so a plain arrival at a
-> hazard-headlined checkpoint rendered as "hit the hazard" even when nothing fired, and re-crossings
-> showed multiple such rows.
-> **Built (2026-06-08):** the GM feed now derives **event** rows from `entryTrips` (what actually
-> fired — accurate kind/message/time, one per player×entry, naturally deduped) and shows **arrivals**
-> neutrally ("reached X", deduped to latest per player×checkpoint). `entryTrips` is denormalized
-> (player/checkpoint names + delivered effect) and made **GM-readable** in the rules; the web
-> `GameContext` subscribes to it. Needs functions + rules + hosting deploy.
 
 **74. GM-prompted player notification doesn't appear in the player's notification list.** *(P1)*
 Firing a `gm-prompted` runbook entry at a player pushes/broadcasts, but the message isn't showing in
@@ -218,15 +141,7 @@ being conflated with a player-facing one in the test.
 the Play-view **Notifications** list (`NotificationFeed`, web `GameScreen` `PlayView`) gets crowded.
 Show only the **last 4** in the sidebar, and make the **"Notifications" header a button** that opens a
 full, scrollable notifications page/modal (all arrivals + runbook events, ideally filterable by
-player/checkpoint/kind). GM dashboard only; no schema change.
-
-**76. Name the cloned game.** *(P2 — extends #65)* Cloning currently auto-names the new game
-`"<source> (copy)"`. Let the GM enter the new game's name before cloning — a small prompt/modal (web
-`GamesScreen`, mobile games action sheet) feeding the existing `cloneGame({ name })` argument, which
-the callable already accepts.
-> **Built (2026-06-08):** web `CloneGameModal` and a mobile clone-name `Modal` (RN `TextInput`), both
-> prefilled with `"<source> (copy)"` and feeding `cloneGame(sourceId, gmName, name)`. Web needs a
-> hosting deploy; mobile needs the next APK.
+player/checkpoint/kind). GM dashboard only; no schema change. (Builds on #73's `entryTrips`-driven feed.)
 
 **77. Closed-phone pass-through still unreliable.** *(P1 — #49 follow-up)* A player walked most of the
 way through a large (100 m radius) checkpoint with the phone locked and only got the alert when they
@@ -387,12 +302,9 @@ its bundle ID / SHA-1 and the Maps SDK in Cloud Console before wide release. Con
 
 ## Suggested order
 
-0. **Field-test batch 2:** the P0s (**66, 67, 69, 70**) and **65** (clone) are **built + deployed**
-   (rules/web/functions, 2026-06-08); mobile-side pieces (#66 mobile, #70, mobile clone) await the
-   next APK. Remaining batch-2: P1s **63, 64, 68, 72** and P2s **62, 71**.
-0b. **Field-test batch 3** (post-deploy): fix **73** first (P0 — a runbook entry trips more than
-   once), then **74** (GM-prompted not in player feed) and **77** (closed-phone pass-through); **75**,
-   **76** are P2 dashboard/clone polish.
+0. **Field-test follow-ups (outstanding):** P1s **63, 64, 68, 72, 74, 77** before the next APK build;
+   P2s **62, 71, 75** as polish. (The built batch — #65–#70, #73, #76 — is deployed; its mobile-only
+   pieces ship with the next APK.)
 1. **Tier 4** (11–12) completes the ration loop; **Tier 14** (61) restores timed announcements in
    the Runbook (the web run-sheet UI was removed alongside #60).
 2. **Tier 6** (16) trims the last geofence read cost; **Tier 7** (20–28) — integrity invariants —
