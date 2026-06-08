@@ -31,6 +31,7 @@ export function GamesScreen() {
   const [error, setError] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [showJoin, setShowJoin] = useState(false);
+  const [cloneTarget, setCloneTarget] = useState<GameEntry | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -70,19 +71,6 @@ export function GamesScreen() {
       );
       setError(friendlyError(err));
     } finally {
-      setBusyId(null);
-    }
-  }
-
-  async function handleClone(entry: GameEntry) {
-    if (!user) return;
-    const gmName = profile?.displayName?.trim() || 'GM';
-    setBusyId(entry.game.id);
-    try {
-      const { id } = await cloneGame(entry.game.id, gmName);
-      navigate(`/games/${id}`);
-    } catch (err) {
-      setError(friendlyError(err));
       setBusyId(null);
     }
   }
@@ -219,7 +207,7 @@ export function GamesScreen() {
                       style={{ padding: '6px 12px', fontSize: 13 }}
                       disabled={busy}
                       title="Create a new game with this game's boundary and checkpoints"
-                      onClick={() => handleClone(entry)}
+                      onClick={() => setCloneTarget(entry)}
                     >
                       Clone
                     </button>
@@ -269,7 +257,64 @@ export function GamesScreen() {
           }}
         />
       )}
+      {cloneTarget && (
+        <CloneGameModal
+          source={cloneTarget}
+          gmName={profile?.displayName?.trim() || 'GM'}
+          onClose={() => setCloneTarget(null)}
+          onCloned={(id) => navigate(`/games/${id}`)}
+        />
+      )}
     </div>
+  );
+}
+
+function CloneGameModal({
+  source,
+  gmName,
+  onClose,
+  onCloned,
+}: {
+  source: GameEntry;
+  gmName: string;
+  onClose: () => void;
+  onCloned: (gameId: string) => void;
+}) {
+  const [name, setName] = useState(`${source.game.name} (copy)`);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  async function handleClone() {
+    setError('');
+    if (!name.trim()) { setError('Enter a name for the new game'); return; }
+    setLoading(true);
+    try {
+      const { id } = await cloneGame(source.game.id, gmName, name.trim());
+      onCloned(id);
+    } catch (err) {
+      setError(friendlyError(err));
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Modal title="Clone Game" onClose={onClose}>
+      <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: 14 }}>
+        Creates a new game with this game's boundary, checkpoints, runbook, and settings. Players,
+        results, and play history are not copied. You'll be the GM with fresh join codes.
+      </p>
+      <div className="field">
+        <label>New game name</label>
+        <input className="input" value={name} autoFocus onChange={(e) => setName(e.target.value)} placeholder="e.g. Arena 2025 — Round 2" />
+      </div>
+      {error && <div className="error-text">{error}</div>}
+      <div style={{ display: 'flex', gap: 12 }}>
+        <button className="btn btn--ghost" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
+        <button className="btn" style={{ flex: 1 }} onClick={handleClone} disabled={loading}>
+          {loading ? 'Cloning…' : 'Clone Game'}
+        </button>
+      </div>
+    </Modal>
   );
 }
 

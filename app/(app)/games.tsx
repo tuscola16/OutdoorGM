@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, FlatList, TouchableOpacity, Alert
+  View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, Modal, TextInput, ActivityIndicator
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -29,6 +29,9 @@ export default function GamesScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [showArchived, setShowArchived] = useState(false);
+  const [cloneTarget, setCloneTarget] = useState<GameEntry | null>(null);
+  const [cloneName, setCloneName] = useState('');
+  const [cloneBusy, setCloneBusy] = useState(false);
 
   const loadGames = useCallback(async () => {
     if (!user) return;
@@ -99,14 +102,26 @@ export default function GamesScreen() {
     );
   }
 
-  async function handleClone(entry: GameEntry) {
+  function startClone(entry: GameEntry) {
+    setCloneTarget(entry);
+    setCloneName(`${entry.game.name} (copy)`);
+  }
+
+  async function confirmClone() {
+    if (!cloneTarget) return;
+    const name = cloneName.trim();
+    if (!name) { Alert.alert('Name required', 'Enter a name for the new game.'); return; }
     const gmName = profile?.displayName?.trim() || 'GM';
+    setCloneBusy(true);
     try {
       const fcmToken = await getFcmToken();
-      const { id } = await cloneGame(entry.game.id, gmName, undefined, fcmToken ?? undefined);
+      const { id } = await cloneGame(cloneTarget.game.id, gmName, name, fcmToken ?? undefined);
+      setCloneTarget(null);
       router.push(`/(app)/gm/${id}`);
     } catch (err) {
       Alert.alert('Error', friendlyError(err));
+    } finally {
+      setCloneBusy(false);
     }
   }
 
@@ -118,7 +133,7 @@ export default function GamesScreen() {
 
     const options: { text: string; style?: 'cancel' | 'destructive'; onPress?: () => void }[] = [];
     if (isGM) {
-      options.push({ text: 'Clone game (setup only)', onPress: () => handleClone(entry) });
+      options.push({ text: 'Clone game (setup only)', onPress: () => startClone(entry) });
     }
     if (canArchive) {
       options.push({
@@ -251,6 +266,41 @@ export default function GamesScreen() {
           variant="primary"
         />
       </View>
+
+      <Modal
+        visible={cloneTarget != null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => { if (!cloneBusy) setCloneTarget(null); }}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Clone Game</Text>
+            <Text style={styles.modalHint}>
+              Creates a new game with this game's boundary, checkpoints, runbook, and settings.
+              Players and play history aren't copied. You'll be the GM with fresh codes.
+            </Text>
+            <TextInput
+              style={styles.modalInput}
+              value={cloneName}
+              onChangeText={setCloneName}
+              placeholder="New game name"
+              placeholderTextColor={Colors.textMuted}
+              autoFocus
+              editable={!cloneBusy}
+            />
+            <View style={styles.modalActions}>
+              <Button title="Cancel" onPress={() => setCloneTarget(null)} variant="secondary" style={{ flex: 1 }} disabled={cloneBusy} />
+              <View style={{ width: 12 }} />
+              {cloneBusy ? (
+                <View style={[styles.cloneBusy, { flex: 1 }]}><ActivityIndicator color={Colors.primary} /></View>
+              ) : (
+                <Button title="Clone" onPress={confirmClone} variant="primary" style={{ flex: 1 }} />
+              )}
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -337,4 +387,32 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
     paddingTop: 12,
   },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    paddingHorizontal: 28,
+  },
+  modalCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    padding: 20,
+    gap: 14,
+  },
+  modalTitle: { fontSize: 20, fontWeight: '800', color: Colors.text },
+  modalHint: { fontSize: 13, color: Colors.textSecondary, lineHeight: 19 },
+  modalInput: {
+    backgroundColor: Colors.background,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 16,
+    color: Colors.text,
+  },
+  modalActions: { flexDirection: 'row', alignItems: 'center' },
+  cloneBusy: { alignItems: 'center', justifyContent: 'center', paddingVertical: 12 },
 });

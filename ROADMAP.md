@@ -219,6 +219,9 @@ player/checkpoint/kind). GM dashboard only; no schema change.
 `"<source> (copy)"`. Let the GM enter the new game's name before cloning — a small prompt/modal (web
 `GamesScreen`, mobile games action sheet) feeding the existing `cloneGame({ name })` argument, which
 the callable already accepts.
+> **Built (2026-06-08):** web `CloneGameModal` and a mobile clone-name `Modal` (RN `TextInput`), both
+> prefilled with `"<source> (copy)"` and feeding `cloneGame(sourceId, gmName, name)`. Web needs a
+> hosting deploy; mobile needs the next APK.
 
 **77. Closed-phone pass-through still unreliable.** *(P1 — #49 follow-up)* A player walked most of the
 way through a large (100 m radius) checkpoint with the phone locked and only got the alert when they
