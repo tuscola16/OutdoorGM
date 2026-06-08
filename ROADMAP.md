@@ -145,9 +145,10 @@ keeps its `arrivals` (independent docs) and its paired reveal row is cleaned up;
 warning the GM when other pending run-sheet events (open/close/reveal) still point at it, so none are
 left dangling.
 
-**26. Idempotent destructive server actions.** Winner detection, the starvation sweep (item 11),
-and the run-sheet dedupe must be safe under retry/double-trigger (deterministic ids / `firedAt`),
-tested as an explicit invariant.
+**26. Idempotent destructive server actions.** Winner detection, the starvation sweep (#11, now
+built with a per-interval `starvationSweeps/{i}` latch), and the run-sheet dedupe must be safe under
+retry/double-trigger (deterministic ids / `firedAt` / create-if-absent latches) — tested as an
+explicit invariant rather than relying on incidental idempotency.
 
 **27. Late-join lock.** Joining closes once the game reaches `play` (no exceptions for MVP), so an
 eliminated player can't rejoin under a fresh name. (GM opt-in for stragglers is post-MVP.)
