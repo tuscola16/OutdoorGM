@@ -74,41 +74,33 @@ function timedEligible(entry: RunbookEntry, nowMs: number, startedMs: number | n
 }
 
 /**
- * Resolve the single effect a crossing player receives (#60): among the checkpoint's runbook
- * entries, gather those currently matching (always-on; timed in-window; fixed-order slot for
- * this arrival ordinal), then pick the highest `priority` (ties → earliest `createdAt`).
- * `gm-prompted` entries never fire on a crossing. `ordinal` is the 0-based count of prior
- * distinct arrivers, or `null` on a revisit (fixed-order then uses its default effect).
+ * The effect a single runbook entry delivers to a player **right now**, or `null` if it isn't
+ * eligible (ROADMAP #67 — entries are evaluated independently, not collapsed to one per crossing):
+ * always-on always; timed only in-window; fixed-order by this arrival ordinal (the Nth arriver's
+ * slot, else the default — which `defaultNone` can make "nothing"); gm-prompted never on a crossing.
+ * `ordinal` is the 0-based count of prior distinct arrivers, or `null` on a revisit.
  */
-function resolveCrossingEffect(
-  entries: RunbookEntry[],
+function eligibleEffect(
+  e: RunbookEntry,
   ordinal: number | null,
   nowMs: number,
   startedMs: number | null
-): RunbookEffect | undefined {
-  let best: { priority: number; createdMs: number; effect: RunbookEffect } | null = null;
-  for (const e of entries) {
-    let candidate: RunbookEffect | null | undefined;
-    if (e.trigger === 'always-on') {
-      candidate = e.effect;
-    } else if (e.trigger === 'timed') {
-      if (timedEligible(e, nowMs, startedMs)) candidate = e.effect;
-    } else if (e.trigger === 'fixed-order') {
-      if (ordinal != null && Array.isArray(e.queueSlots) && ordinal < e.queueSlots.length) {
-        candidate = e.queueSlots[ordinal]; // may be null → nothing fires for this arriver
-      } else {
-        // Default position: arrivers past the slot list, and revisits (ordinal == null).
-        candidate = e.defaultNone ? null : e.effect; // defaultNone → nothing fires
-      }
+): RunbookEffect | null {
+  if (e.trigger === 'always-on') return e.effect ?? null;
+  if (e.trigger === 'timed') return timedEligible(e, nowMs, startedMs) ? (e.effect ?? null) : null;
+  if (e.trigger === 'fixed-order') {
+    if (ordinal != null && Array.isArray(e.queueSlots) && ordinal < e.queueSlots.length) {
+      return e.queueSlots[ordinal] ?? null; // may be null → nothing fires for this arriver
     }
-    if (!candidate) continue;
-    const createdMs = e.createdAt?.toMillis?.() ?? 0;
-    const wins =
-      !best || e.priority > best.priority ||
-      (e.priority === best.priority && createdMs < best.createdMs);
-    if (wins) best = { priority: e.priority, createdMs, effect: candidate };
+    return e.defaultNone ? null : (e.effect ?? null); // default / revisit
   }
-  return best?.effect;
+  return null; // gm-prompted — fired manually, never on a crossing
+}
+
+/** Stable per-checkpoint firing order: highest priority first, ties → earliest createdAt. */
+function byPriorityThenAge(a: RunbookEntry, b: RunbookEntry): number {
+  return (b.priority ?? 0) - (a.priority ?? 0) ||
+    (a.createdAt?.toMillis?.() ?? 0) - (b.createdAt?.toMillis?.() ?? 0);
 }
 
 // Play-area boundary (#7), mirrored from types/index.ts MapBoundary.
@@ -288,15 +280,18 @@ export const onLocationUpdate = functions
     const phase = gameData.phase ?? (gameData.status === 'ended' ? 'results' : 'play');
     if (phase !== 'play') return;
 
-    // Resolve geofence config knobs with defaults (#50/#55/#56).
+    // Resolve geofence config knobs with defaults (#50/#55/#56/#67).
     const rawConfig = (gameData.config ?? {}) as {
       minFixAccuracyMeters?: number;
       geofenceConfirmFixes?: number;
       reNotifyAwayCooldownMinutes?: number;
+      tripIntervalMinutes?: number;
     };
     const minFixAccuracy = rawConfig.minFixAccuracyMeters ?? 30;
     const confirmFixes = rawConfig.geofenceConfirmFixes ?? 2;
     const reNotifyAwayCooldownMs = (rawConfig.reNotifyAwayCooldownMinutes ?? 5) * 60_000;
+    // #67: re-evaluate a lingering player's runbook entries at most this often (default 2 min).
+    const tripIntervalMs = Math.max(0, rawConfig.tripIntervalMinutes ?? 2) * 60_000;
 
     // Skip if the player is a GM (GMs don't trigger checkpoint arrivals).
     const memberSnap = await admin.firestore()
@@ -346,6 +341,7 @@ export const onLocationUpdate = functions
 
     // Batch-read trip latches for all checkpoints (#50/#55). One RPC for all docs.
     const tripsCol = db.collection('games').doc(gameId).collection('checkpointTrips');
+    const entryTripsCol = db.collection('games').doc(gameId).collection('entryTrips'); // #67
     const tripRefs = checkpoints.map((cp) => tripsCol.doc(`${userId}_${cp.id}`));
     const tripSnaps = await db.getAll(...tripRefs);
     const tripMap = new Map<string, FirebaseFirestore.DocumentData | null>(
@@ -354,13 +350,46 @@ export const onLocationUpdate = functions
 
     const nowMs = Date.now();
 
-    // Effects resolved for this crossing.
+    // Effects to deliver from this location update (one entry per fired runbook entry, plus
+    // GM-only arrival pings / suppression notes).
     const newArrivals: Array<{
       checkpointName: string;
       playerName: string;
       event?: RunbookEffect;
       gmNote?: string;
     }> = [];
+
+    /**
+     * #67: fire every eligible runbook entry this player hasn't tripped yet. Each entry is
+     * latched once in `entryTrips/{userId}_{entryId}` via an atomic create — so an entry fires
+     * at most once per player, independent of the others on the checkpoint. Returns how many
+     * fired (so the caller knows whether to send a bare GM arrival ping instead).
+     */
+    async function fireEligibleEntries(
+      entries: RunbookEntry[],
+      ordinal: number | null,
+      cpId: string,
+      cpName: string
+    ): Promise<number> {
+      let fired = 0;
+      for (const e of [...entries].sort(byPriorityThenAge)) {
+        const effect = eligibleEffect(e, ordinal, nowMs, startedMs);
+        if (!effect) continue;
+        try {
+          await entryTripsCol.doc(`${userId}_${e.id}`).create({
+            playerId: userId,
+            entryId: e.id,
+            checkpointId: cpId,
+            trippedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        } catch {
+          continue; // ALREADY_EXISTS → player already tripped this entry
+        }
+        newArrivals.push({ checkpointName: cpName, playerName: location.displayName, event: effect });
+        fired++;
+      }
+      return fired;
+    }
 
     // In-invocation dedup: if the same checkpoint somehow appears twice, skip it.
     const processedIds = new Set<string>();
@@ -422,8 +451,27 @@ export const onLocationUpdate = functions
         continue;
       }
 
-      // --- Still inside: no new trigger ---
-      if (trip?.inside) continue;
+      const entries = runbookByCp.get(checkpointId) ?? [];
+
+      // --- Already inside: re-evaluate entries on the GM cadence (#67) ---
+      // A lingering player should still trip an entry that becomes eligible later (e.g. a
+      // `timed` window opening) without leaving and re-entering — but at most every
+      // `tripIntervalMinutes`, and each entry only once (entryTrips). Presence/arrival are
+      // unchanged here: no new arrival doc, no streak change.
+      if (trip?.inside) {
+        const lastCheckMs =
+          (trip.lastTripCheckAt as admin.firestore.Timestamp | undefined)?.toMillis?.() ??
+          (trip.lastEnterAt as admin.firestore.Timestamp | undefined)?.toMillis?.() ?? 0;
+        if (nowMs - lastCheckMs < tripIntervalMs) continue;
+        await tripRef.set(
+          { lastTripCheckAt: admin.firestore.FieldValue.serverTimestamp() },
+          { merge: true }
+        );
+        const ordinal = typeof trip.arrivalOrdinal === 'number' ? trip.arrivalOrdinal : null;
+        await fireEligibleEntries(entries, ordinal, checkpointId, cp.name);
+        processedIds.add(checkpointId);
+        continue;
+      }
 
       // --- Accumulate streak toward confirmation (#50 debounce) ---
       // A pass-through (#49) skips the streak — the player is already gone, so there's no
@@ -441,29 +489,16 @@ export const onLocationUpdate = functions
       // A normal entry latches inside=true; a pass-through latches as already-exited so the
       // away-cooldown (#55) is measured from now and a later return can re-fire.
       const enteredInside = !passThrough;
-      const buildLatch = (): Record<string, unknown> =>
-        enteredInside
-          ? {
-              playerId: userId, checkpointId, inside: true, insideStreak: newStreak,
-              lastEnterAt: admin.firestore.FieldValue.serverTimestamp(),
-            }
-          : {
-              playerId: userId, checkpointId, inside: false, insideStreak: 0,
-              lastEnterAt: admin.firestore.FieldValue.serverTimestamp(),
-              lastExitAt: admin.firestore.FieldValue.serverTimestamp(),
-            };
 
       // GM re-notification gate (#55): re-alert on return after cooldown.
       const lastExitMs = trip?.lastExitAt
         ? (trip.lastExitAt as admin.firestore.Timestamp).toMillis()
         : null;
       const gmShouldNotify = lastExitMs === null || (nowMs - lastExitMs >= reNotifyAwayCooldownMs);
-      const lastNotifiedState = (trip?.lastNotifiedState as string | null | undefined) ?? null;
-      const entries = runbookByCp.get(checkpointId) ?? [];
 
-      // One transaction: count the arrival ordinal, apply district suppression (#5), resolve
-      // the single highest-priority runbook effect (#60), gate the player re-notify (#55) on
-      // the resolved effect, then atomically latch + record the arrival.
+      // One transaction: count the arrival ordinal, apply district suppression (#5), then
+      // atomically latch presence + record the arrival. The per-entry effect firing (#67)
+      // happens after the txn — each entry is latched once in entryTrips.
       const result = await db.runTransaction(async (tx) => {
         // Race guard: if another concurrent write already confirmed entry, skip.
         const freshTrip = await tx.get(tripRef);
@@ -486,21 +521,22 @@ export const onLocationUpdate = functions
             return ms != null && nowMs - ms <= COARRIVAL_WINDOW_MS;
           });
 
-        // Resolve the single effect this crossing delivers (#60).
-        const resolved = resolveCrossingEffect(entries, ordinal, nowMs, startedMs);
-        const effect = suppressed ? undefined : resolved;
-        const cpState = effect?.kind ?? null;
-        const playerShouldNotify = lastNotifiedState === null || cpState !== lastNotifiedState;
-
-        // Neither GM nor player needs notifying → refresh the latch, skip the arrival write.
-        if (!gmShouldNotify && !playerShouldNotify) {
-          tx.set(tripRef, buildLatch(), { merge: true });
-          return { skipArrival: true as const };
-        }
-
-        const latchData = buildLatch();
-        if (playerShouldNotify && cpState != null) latchData.lastNotifiedState = cpState;
-        tx.set(tripRef, latchData, { merge: true });
+        const latch: Record<string, unknown> = enteredInside
+          ? {
+              playerId: userId, checkpointId, inside: true, insideStreak: newStreak,
+              lastEnterAt: admin.firestore.FieldValue.serverTimestamp(),
+              lastTripCheckAt: admin.firestore.FieldValue.serverTimestamp(),
+            }
+          : {
+              playerId: userId, checkpointId, inside: false, insideStreak: 0,
+              lastEnterAt: admin.firestore.FieldValue.serverTimestamp(),
+              lastExitAt: admin.firestore.FieldValue.serverTimestamp(),
+              lastTripCheckAt: admin.firestore.FieldValue.serverTimestamp(),
+            };
+        // Latch the arrival ordinal on first arrival so the re-evaluation path (#67) resolves
+        // this player's fixed-order slot consistently.
+        if (!alreadyArrived) latch.arrivalOrdinal = ordinal;
+        tx.set(tripRef, latch, { merge: true });
 
         tx.set(arrivalsCol.doc(), {
           playerId: userId,
@@ -514,24 +550,27 @@ export const onLocationUpdate = functions
           ...(crossingDistrict != null ? { district: crossingDistrict } : {}),
         });
 
-        return { effect, suppressed, playerShouldNotify, gmShouldNotify };
+        return { ordinal, suppressed };
       });
 
       if (result === null) continue; // raced — another write confirmed entry first
-      if ('skipArrival' in result) { processedIds.add(checkpointId); continue; }
 
-      const firePlayer = result.playerShouldNotify && !result.suppressed;
-      const event = firePlayer ? result.effect : undefined;
+      // Fire each eligible, not-yet-tripped runbook entry (#67) — unless this crossing is
+      // district-suppressed (#5), in which case effects are withheld (and may fire on a later
+      // re-eval tick, once the co-arrival window has passed).
+      const firedCount = result.suppressed
+        ? 0
+        : await fireEligibleEntries(entries, result.ordinal, checkpointId, cp.name);
 
-      if (result.gmShouldNotify || (event && event.kind !== 'gm-notify')) {
+      if (result.suppressed) {
         newArrivals.push({
           checkpointName: cp.name,
           playerName: location.displayName,
-          event,
-          gmNote: result.suppressed
-            ? `${location.displayName} & a District ${crossingDistrict} partner arrived together at ${cp.name} — trap withheld`
-            : undefined,
+          gmNote: `${location.displayName} & a District ${crossingDistrict} partner arrived together at ${cp.name} — trap withheld`,
         });
+      } else if (firedCount === 0 && gmShouldNotify) {
+        // Nothing player-facing fired → still give the GM the bare arrival ping.
+        newArrivals.push({ checkpointName: cp.name, playerName: location.displayName });
       }
 
       // Reveal-on-crossing (#60): the trap this player just sprang becomes a marker
@@ -642,6 +681,7 @@ async function dispatchCheckpointEvent(args: {
         eventKind: event.kind,
         message: body,
         targetPlayerId: null,
+        pushed: true, // #69: pushed here, so onBroadcastCreate skips it
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       })
     );
@@ -653,6 +693,7 @@ async function dispatchCheckpointEvent(args: {
         eventKind: event.kind,
         message: body,
         targetPlayerId: args.crossingPlayerId,
+        pushed: true, // #69: pushed here, so onBroadcastCreate skips it
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       })
     );

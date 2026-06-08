@@ -40,6 +40,9 @@ export const cleanupRationPhotosOnGameEnd = functions.firestore
       admin.storage().bucket().deleteFiles({ prefix: `games/${gameId}/rations/`, force: true }),
       db.recursiveDelete(gameRef.collection('locations')),
       db.recursiveDelete(gameRef.collection('arrivals')),
+      // Per-player crossing/entry latches (#50/#55/#67) — transient, tied to play.
+      db.recursiveDelete(gameRef.collection('checkpointTrips')),
+      db.recursiveDelete(gameRef.collection('entryTrips')),
     ]);
 
     functions.logger.info(

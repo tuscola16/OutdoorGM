@@ -8,7 +8,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/context/AuthContext';
 import { Button } from '@/components/ui/Button';
 import { Colors } from '@/constants/colors';
-import { getMyGames, gamePhase, deleteGame, setGameArchived, type MyGameEntry } from '@/services/gameService';
+import { getMyGames, gamePhase, deleteGame, cloneGame, setGameArchived, type MyGameEntry } from '@/services/gameService';
+import { getFcmToken } from '@/services/notificationService';
 import { friendlyError } from '@/services/errorUtils';
 
 const PHASE_TEXT: Record<string, string> = {
@@ -98,12 +99,27 @@ export default function GamesScreen() {
     );
   }
 
+  async function handleClone(entry: GameEntry) {
+    const gmName = profile?.displayName?.trim() || 'GM';
+    try {
+      const fcmToken = await getFcmToken();
+      const { id } = await cloneGame(entry.game.id, gmName, undefined, fcmToken ?? undefined);
+      router.push(`/(app)/gm/${id}`);
+    } catch (err) {
+      Alert.alert('Error', friendlyError(err));
+    }
+  }
+
   function openActions(entry: GameEntry) {
     const phase = gamePhase(entry.game);
-    const canDelete = entry.role === 'gm' && (phase === 'setup' || phase === 'lobby');
+    const isGM = entry.role === 'gm';
+    const canDelete = isGM && (phase === 'setup' || phase === 'lobby');
     const canArchive = phase === 'results';
 
     const options: { text: string; style?: 'cancel' | 'destructive'; onPress?: () => void }[] = [];
+    if (isGM) {
+      options.push({ text: 'Clone game (setup only)', onPress: () => handleClone(entry) });
+    }
     if (canArchive) {
       options.push({
         text: entry.archived ? 'Unarchive' : 'Archive',
@@ -122,7 +138,8 @@ export default function GamesScreen() {
     const isGM = item.role === 'gm';
     const phase = gamePhase(item.game);
     const eventDate = item.game.gameDate?.toDate?.();
-    const hasActions = (isGM && (phase === 'setup' || phase === 'lobby')) || phase === 'results';
+    // GM entries always have actions (Clone is available in any phase); players only when finished.
+    const hasActions = isGM || phase === 'results';
     return (
       <TouchableOpacity style={styles.gameCard} onPress={() => openGame(item)} activeOpacity={0.8}>
         <View style={[styles.roleTag, isGM ? styles.gmTag : styles.playerTag]}>

@@ -205,6 +205,110 @@ export const createGame = functions.https.onCall(async (data, context) => {
 });
 
 /**
+ * Clone a game's **setup** into a fresh game (ROADMAP #65). Copies the boundary, rules,
+ * config, checkpoints (new ids), and their runbook entries (re-keyed to the new checkpoint
+ * ids) — and **nothing runtime/participant**: no members (the caller becomes sole GM), no
+ * locations/arrivals/rations/trips/scheduled-events, no winner, no timestamps. The new game
+ * starts in `setup` with fresh CSPRNG codes. GM-only (caller must be a GM of the source).
+ */
+export const cloneGame = functions.https.onCall(async (data, context) => {
+  const uid = requireAuth(context);
+  const sourceId = String(data?.sourceGameId ?? '').trim();
+  const displayName = cleanName(data?.displayName);
+  const fcmToken = typeof data?.fcmToken === 'string' && data.fcmToken ? data.fcmToken : undefined;
+
+  if (!sourceId) {
+    throw new functions.https.HttpsError('invalid-argument', 'A source game id is required.');
+  }
+  if (!displayName) {
+    throw new functions.https.HttpsError('invalid-argument', 'A display name is required.');
+  }
+
+  const db = admin.firestore();
+  const srcRef = db.collection('games').doc(sourceId);
+
+  // Verify the source exists and the caller is one of its GMs.
+  const [srcSnap, srcMemberSnap] = await Promise.all([
+    srcRef.get(),
+    srcRef.collection('members').doc(uid).get(),
+  ]);
+  if (!srcSnap.exists) {
+    throw new functions.https.HttpsError('not-found', 'That game no longer exists.');
+  }
+  if (!srcMemberSnap.exists || srcMemberSnap.data()?.role !== 'gm') {
+    throw new functions.https.HttpsError('permission-denied', 'Only a Game Master can clone this game.');
+  }
+
+  const src = srcSnap.data() ?? {};
+  // New name: explicit override, else "<source> (copy)".
+  const name = cleanName(data?.name) || `${cleanName(src.name) || 'Game'} (copy)`;
+
+  // Read the source's setup sub-collections.
+  const [cpSnap, runbookSnap] = await Promise.all([
+    srcRef.collection('checkpoints').get(),
+    srcRef.collection('runbook').get(),
+  ]);
+
+  const { playerCode, gmCode } = await generateUniqueCodes(db);
+  const now = admin.firestore.FieldValue.serverTimestamp();
+  const newRef = db.collection('games').doc();
+
+  // New game doc: copy setup only; reset all runtime/participant state.
+  const game: Record<string, unknown> = {
+    name,
+    playerCode,
+    gmCode,
+    creatorId: uid,
+    status: 'active',
+    phase: 'setup',
+    startedAt: null,
+    endedAt: null,
+    createdAt: now,
+  };
+  if (src.boundary !== undefined) game.boundary = src.boundary;
+  if (src.rules !== undefined) game.rules = src.rules;
+  if (src.config !== undefined) game.config = src.config;
+
+  const member: Record<string, unknown> = {
+    userId: uid,
+    role: 'gm',
+    displayName,
+    email: context.auth?.token.email ?? '',
+    joinedAt: now,
+  };
+  if (fcmToken) member.fcmToken = fcmToken;
+
+  const batch = db.batch();
+  batch.set(newRef, game);
+  batch.set(newRef.collection('members').doc(uid), member);
+
+  // Checkpoints → new ids, dropping reveal-runtime fields. Build old→new id map for the runbook.
+  const idMap = new Map<string, string>();
+  for (const d of cpSnap.docs) {
+    const data = d.data();
+    delete data.revealedAt;
+    delete data.revealedTo;
+    const cpRef = newRef.collection('checkpoints').doc();
+    idMap.set(d.id, cpRef.id);
+    batch.set(cpRef, data);
+  }
+
+  // Runbook entries → re-keyed checkpointId, fresh createdAt, dropping the gm-prompted firedAt latch.
+  for (const d of runbookSnap.docs) {
+    const data = d.data();
+    const newCheckpointId = idMap.get(data.checkpointId as string);
+    if (!newCheckpointId) continue; // orphaned entry (checkpoint gone) — skip
+    data.checkpointId = newCheckpointId;
+    delete data.firedAt;
+    data.createdAt = now;
+    batch.set(newRef.collection('runbook').doc(), data);
+  }
+
+  await batch.commit();
+  return { gameId: newRef.id };
+});
+
+/**
  * Join a game by code. The code is resolved server-side (clients can no longer
  * read game docs to discover codes), the role is derived from which code matched,
  * and email is taken from the verified auth token — not from client input.

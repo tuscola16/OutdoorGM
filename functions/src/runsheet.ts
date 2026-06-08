@@ -142,6 +142,7 @@ async function executeAction(
     kind,
     message,
     targetPlayerId: null,
+    pushed: true, // #69: pushed below, so onBroadcastCreate skips it
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
   });
   const tokens = await getLivingPlayerTokens(db, gameId);

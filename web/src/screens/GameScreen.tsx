@@ -265,6 +265,7 @@ export function GameScreen() {
           members={members}
           currentIndex={rationInterval(game, now)?.index ?? null}
           totalWindows={rationInterval(game, now)?.total ?? null}
+          windowOpen={rationInterval(game, now)?.isOpen ?? false}
           enforceUnique={gameConfig(game).enforceUniqueRationCards}
           onClose={() => setShowRations(false)}
         />
@@ -1297,6 +1298,7 @@ function ConfigModal({
   const [rationMinutes, setRationMinutes] = useState(String(initial.rationIntervalMinutes));
   const [rationWindow, setRationWindow] = useState(String(initial.rationWindowMinutes));
   const [uniqueCards, setUniqueCards] = useState(initial.enforceUniqueRationCards);
+  const [tripInterval, setTripInterval] = useState(String(initial.tripIntervalMinutes ?? 2)); // #67
   const [busy, setBusy] = useState(false);
 
   async function save() {
@@ -1307,6 +1309,8 @@ function ConfigModal({
       rationMins,
       Math.max(1, Math.round(Number(rationWindow) || initial.rationWindowMinutes))
     );
+    // #67: re-trip cadence — at least 1 minute; blank/0 falls back to the default (2).
+    const tripMins = Math.max(1, Math.round(Number(tripInterval) || (initial.tripIntervalMinutes ?? 2)));
     setBusy(true);
     try {
       await updateGameConfig(gameId, {
@@ -1320,6 +1324,7 @@ function ConfigModal({
           rationIntervalMinutes: rationMins,
           rationWindowMinutes: rationWindowMins,
           enforceUniqueRationCards: uniqueCards,
+          tripIntervalMinutes: tripMins,
         },
       });
       onClose();
@@ -1341,6 +1346,14 @@ function ConfigModal({
         <input className="input" type="date" value={gameDate} onChange={(e) => setGameDate(e.target.value)} />
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
           The day you're running this game. Sorts it in My Games; leave blank to use the created date.
+        </span>
+      </div>
+      <div className="field">
+        <label>Checkpoint re-trigger interval (minutes)</label>
+        <input className="input" type="number" value={tripInterval} onChange={(e) => setTripInterval(e.target.value)} />
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+          While a player lingers on a checkpoint, its runbook events are re-checked this often so a
+          newly-live event still triggers. Each event triggers a player at most once.
         </span>
       </div>
       <Toggle label="Auto player-count updates" checked={playerCount} onChange={setPlayerCount} />
@@ -1385,13 +1398,15 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
 // --- Ration review (GM-only; web mirrors the mobile review screen) ---
 
 function RationsModal({
-  gameId, rations, members, currentIndex, totalWindows, enforceUnique, onClose,
+  gameId, rations, members, currentIndex, totalWindows, windowOpen, enforceUnique, onClose,
 }: {
   gameId: string;
   rations: RationSubmission[];
   members: GameMember[];
   currentIndex: number | null;
   totalWindows: number | null;
+  /** #66: true only while the eat-window is actually open — before then nobody is "late". */
+  windowOpen: boolean;
   enforceUnique: boolean;
   onClose: () => void;
 }) {
@@ -1417,8 +1432,11 @@ function RationsModal({
       .filter((r) => currentIndex != null && r.intervalIndex === currentIndex && r.status !== 'rejected')
       .map((r) => r.playerId)
   );
+  // #66: only flag "not eaten" once the eat-window is actually open — before then no one is late.
   const notEaten =
-    currentIndex == null ? [] : members.filter((m) => m.role === 'player' && !m.out && !fed.has(m.userId));
+    currentIndex == null || !windowOpen
+      ? []
+      : members.filter((m) => m.role === 'player' && !m.out && !fed.has(m.userId));
 
   const pendingCount = rations.filter((r) => r.status === 'pending').length;
 
@@ -1438,6 +1456,7 @@ function RationsModal({
       <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: 14 }}>
         {pendingCount > 0 ? `${pendingCount} awaiting review` : 'All caught up'}
         {currentIndex != null ? ` · window ${currentIndex + 1}/${totalWindows ?? '—'}` : ''}
+        {currentIndex != null && !windowOpen ? ' · window not open yet' : ''}
       </p>
 
       {notEaten.length > 0 && (

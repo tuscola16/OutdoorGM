@@ -140,6 +140,13 @@ export interface GameConfig {
    * checkpoint they previously visited and was away at least this many minutes. Default 5.
    */
   reNotifyAwayCooldownMinutes?: number;
+  /**
+   * #67: while a player stays inside a checkpoint, its runbook entries are re-evaluated
+   * every this-many minutes, so an entry that becomes eligible later (a `timed` window
+   * opening) still trips without the player leaving and re-entering. Each entry trips at
+   * most once per player (tracked in `entryTrips`). Default 2.
+   */
+  tripIntervalMinutes?: number;
 
   // --- Auto-end (#56) ---
   /**
@@ -196,6 +203,25 @@ export interface CheckpointTrip {
    * (#55). Used to re-notify only when the resolved effect changes.
    */
   lastNotifiedState?: string | null;
+  /** #67: this player's 0-based arrival ordinal at the checkpoint, latched on first entry
+   * so the periodic re-evaluation resolves fixed-order slots consistently. */
+  arrivalOrdinal?: number | null;
+  /** #67: last time the runbook entries were re-evaluated for this player while inside,
+   * gating the `tripIntervalMinutes` cadence. */
+  lastTripCheckAt?: FsTimestamp | null;
+}
+
+/**
+ * Per-player/per-runbook-entry trip latch (ROADMAP #67). Written only by Cloud Functions
+ * (admin SDK); never client-readable. Its mere existence means the player has already
+ * tripped that entry — each entry fires at most once per player, independent of other
+ * entries on the same checkpoint. Path: games/{gameId}/entryTrips/{playerId}_{entryId}.
+ */
+export interface EntryTrip {
+  playerId: string;
+  entryId: string;
+  checkpointId: string;
+  trippedAt: FsTimestamp;
 }
 
 /** Who a `notify` effect reaches. Only meaningful for `kind: 'notify'`. */
@@ -456,6 +482,12 @@ export interface Broadcast {
   audience?: 'gm-only';
   /** Display name of the GM who sent a co-GM message (#40), so the feed can attribute it. */
   senderName?: string;
+  /**
+   * #69: set by the server when the writing function already pushed FCM for this broadcast,
+   * so the `onBroadcastCreate` trigger doesn't double-push. Client-written broadcasts omit it
+   * and the trigger delivers the push.
+   */
+  pushed?: boolean;
   createdAt: FsTimestamp;
 }
 

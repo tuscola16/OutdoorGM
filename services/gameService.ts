@@ -83,6 +83,22 @@ export async function createGame(
   return { id: (res.data as { gameId: string }).gameId };
 }
 
+/**
+ * Clone a game's setup into a fresh game (#65) via the cloneGame Cloud Function. Copies the
+ * boundary, rules, config, checkpoints, and runbook entries; resets everything
+ * runtime/participant. The caller becomes sole GM and the new game starts in `setup`.
+ */
+export async function cloneGame(
+  sourceGameId: string,
+  displayName: string,
+  name?: string,
+  fcmToken?: string
+): Promise<{ id: string }> {
+  const callable = functions().httpsCallable('cloneGame');
+  const res = await callable({ sourceGameId, displayName, name: name ?? null, fcmToken: fcmToken ?? null });
+  return { id: (res.data as { gameId: string }).gameId };
+}
+
 /** Persist the GM's position in the Test Runner walkthrough (a resumable cursor). */
 export async function setTestStep(gameId: string, index: number): Promise<void> {
   await firestore().collection(Collections.GAMES).doc(gameId).update({ testStepIndex: index });

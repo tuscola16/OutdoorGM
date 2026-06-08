@@ -73,6 +73,7 @@ async function handleDeath(
     kind: 'death',
     message: `${name} has fallen — ${livingCount} ${livingCount === 1 ? 'tribute remains' : 'tributes remain'}.`,
     targetPlayerId: null,
+    pushed: true, // #69: pushed below, so onBroadcastCreate skips it
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
   });
   const livingTokens = livingNonGm.map((m) => m.fcmToken).filter((t): t is string => !!t);
@@ -113,6 +114,7 @@ async function handleDeath(
         kind: 'winner',
         message: `${living[0].displayName ?? 'The last tribute'} is the winner! 🏆`,
         targetPlayerId: null,
+        pushed: true, // #69: winner stays in-app (preserve prior no-push behavior)
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     } else {
@@ -121,6 +123,7 @@ async function handleDeath(
         kind: 'winner',
         message: 'All tributes have fallen — there is no winner.',
         targetPlayerId: null,
+        pushed: true, // #69: winner stays in-app (preserve prior no-push behavior)
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     }

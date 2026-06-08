@@ -27,6 +27,7 @@ export default function RationsScreen() {
   const cfg = gameConfig(game);
   const interval = rationInterval(game, now);
   const currentIndex = interval?.index ?? null;
+  const windowOpen = interval?.isOpen ?? false; // #66
 
   // Card numbers in use (valid or pending) — for the uniqueness flag (Rule 6).
   // Manual enforcement: the GM sees the dupe and rejects it.
@@ -49,16 +50,17 @@ export default function RationsScreen() {
     );
   }, [rations]);
 
-  // Alive players with no valid/pending submission for the current window.
+  // Alive players with no valid/pending submission for the current window. #66: only once
+  // the eat-window is actually open — before then nobody is late, so the list stays empty.
   const notEaten = useMemo(() => {
-    if (currentIndex == null) return [];
+    if (currentIndex == null || !windowOpen) return [];
     const fed = new Set(
       rations
         .filter((r) => r.intervalIndex === currentIndex && r.status !== 'rejected')
         .map((r) => r.playerId)
     );
     return members.filter((m) => m.role === 'player' && !m.out && !fed.has(m.userId));
-  }, [rations, members, currentIndex]);
+  }, [rations, members, currentIndex, windowOpen]);
 
   async function review(r: RationSubmission, status: 'valid' | 'rejected') {
     if (!gameId) return;

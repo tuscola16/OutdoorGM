@@ -604,7 +604,7 @@ export default function PlayerGameScreen() {
         {phase === 'play' && renderPlay()}
         {phase === 'results' && renderResults()}
 
-        {gameId && phase !== 'results' && <AlertOverlay />}
+        {gameId && phase !== 'results' && <AlertOverlay gameId={gameId} />}
         <Tutorial visible={showTutorial} onDone={dismissTutorial} rules={rules} />
       </SafeAreaView>
     </BroadcastsProvider>

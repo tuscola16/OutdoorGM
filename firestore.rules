@@ -176,6 +176,13 @@ service cloud.firestore {
         allow read, write: if false;
       }
 
+      // Per-player/per-runbook-entry trip latch (#67). Written only by Cloud Functions
+      // (admin SDK); never readable or writable by clients. Existence = the player has
+      // already tripped that entry, so each entry fires at most once per player.
+      match /entryTrips/{entryTripId} {
+        allow read, write: if false;
+      }
+
       // Revealed checkpoint markers (#48) — the player-readable projection of a
       // checkpoint's label + location once it's visible. The `checkpoints` collection
       // stays GM-only (it holds coords + the secret event payload); this is the only

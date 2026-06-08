@@ -267,7 +267,7 @@ GMs assign players to themselves; the geofence/arrival push routes only to the o
 GM map/roster views filter to `teamGmId === me`. Unassigned/legacy players fall back to all-GMs
 (today's behavior). Deferred per the 2026-06-07 field test.
 
-## 65. Clone a game *(setup only)*
+## 65. Clone a game *(setup only)* — **BUILT (2026-06-07)**
 
 A `cloneGame(sourceGameId, displayName)` callable (server-side, mirroring `createGame` so the GM
 role + codes are never client-assigned). It reads the source and writes a **new** game doc plus
@@ -285,7 +285,7 @@ Implementation notes: build an **old→new checkpointId map** first, then rewrit
 mobile games list). **Open decision:** rules/config travel with the clone by default (the ask is to
 re-run the same setup); flip to opt-out checkboxes if testers want a bare clone.
 
-## 67. Per-runbook-event tripping + periodic re-trip
+## 67. Per-runbook-event tripping + periodic re-trip — **BUILT (2026-06-07)**
 
 Today's latch is per **player × checkpoint** (`checkpointTrips/{playerId}_{checkpointId}`) and one
 effect is delivered per crossing. Move dedup to per **player × runbook entry** and re-evaluate on a
@@ -325,7 +325,7 @@ non-rejected `rations/*` doc in the same game, returning a typed error
 `rations/{playerId}_{intervalIndex}` id stays (idempotent re-submit of the *same* card by the same
 player is fine; a *different* player reusing a number is blocked). GM "reused" flag stays as backstop.
 
-## 69. Broadcast push (onBroadcastCreate)
+## 69. Broadcast push (onBroadcastCreate) — **BUILT (2026-06-07)**
 
 No new field. Add a Firestore-trigger Cloud Function on `games/{gameId}/broadcasts/{id}` that pushes
 FCM on the `broadcasts` channel:
@@ -337,7 +337,7 @@ FCM on the `broadcasts` channel:
 - send a **notification** message (title/body), not data-only, so it shows on a backgrounded/closed
   phone. Reuses `sendPushToTokens`.
 
-## 70 & 71. Player notification ack / dismiss model
+## 70 & 71. Player notification ack / dismiss model — **#70 BUILT (2026-06-07)** (local); #71 deferred
 
 Players need (70) the in-app event modal to survive a dismissed OS push, and (71) a way to clear
 notifications in their list. Shared per-player ack state:
@@ -358,6 +358,13 @@ export interface Broadcast {
   so one player's dismiss doesn't affect others. (Alt: a player-doc `dismissedBroadcastIds` set if we
   don't want players writing broadcast docs — pick during build; the rules-narrow `arrayUnion` is
   simpler.)
+
+> **Built (2026-06-07) — #70 only, local approach:** shipped with a **device-local** dismissed set
+> (`AsyncStorage` key `acked_broadcasts_{gameId}`) in `components/AlertOverlay.tsx`, not the server
+> `Broadcast.dismissedBy` field — no rules change, no extra writes, and it solves the single-device
+> closed-phone case: unacked broadcasts re-pop on reopen; dismissals (tap or auto) persist; the first
+> open on a device seeds the backlog as handled so history isn't replayed. **#71** (an in-list dismiss
+> control) and the cross-device server `dismissedBy` field remain deferred (P2).
 
 ## 72. Reliable ration-window-open notification
 
@@ -401,6 +408,6 @@ These items are pure logic, rules, client architecture, or ops — no new fields
 - **44** Voucher-site preset — a one-tap scaffold of open/close/announce run-sheet rows on a time-windowed checkpoint.
 - **47** Maps-key restriction — Cloud Console ops task.
 - **62** `/demo` parity audit — content/UI only; walk `web/src/screens/DemoScreen.tsx` against the live app (#60 runbook, terminal rations) and refresh the mocks. No schema.
-- **66** Ration-review-before-window-open — logic only; gate the "Not eaten this window" list (web `RationsModal`, mobile `rations.tsx`) on the actual window-open time, not the interval index. `rationInterval()` already exposes `windowStartsAt`/`windowEndsAt`; treat the window as not-yet-open until `now ≥ windowStartsAt`.
+- **66** Ration-review-before-window-open — **built (2026-06-07)**: the "Not eaten this window" list (web `RationsModal`, mobile `rations.tsx`) now gates on `rationInterval().isOpen`, so it's empty until the eat-window actually opens; the web header shows "window not open yet".
 - **63** Numeric validation — logic/UI only; add `> 0` + ordering checks (window ≤ interval ≤ game length; radius ≥ 10) in the web `ConfigModal`/editors and mobile equivalents, plus a shared validator. No new fields (the numbers already exist in `GameConfig`/`Checkpoint`).
 - **64** Boundary-constrained checkpoints — logic only; reuse the geofence `pointInBoundary` (polygon ≥3 verts else bbox) client-side on placement/edit in web + mobile. No schema.

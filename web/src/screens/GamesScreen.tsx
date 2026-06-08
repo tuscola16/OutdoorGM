@@ -5,6 +5,7 @@ import {
   getMyGames,
   gamePhase,
   createGame,
+  cloneGame,
   joinGameByCode,
   deleteGame,
   setGameArchived,
@@ -69,6 +70,19 @@ export function GamesScreen() {
       );
       setError(friendlyError(err));
     } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleClone(entry: GameEntry) {
+    if (!user) return;
+    const gmName = profile?.displayName?.trim() || 'GM';
+    setBusyId(entry.game.id);
+    try {
+      const { id } = await cloneGame(entry.game.id, gmName);
+      navigate(`/games/${id}`);
+    } catch (err) {
+      setError(friendlyError(err));
       setBusyId(null);
     }
   }
@@ -199,6 +213,15 @@ export function GamesScreen() {
                         </span>
                       </span>
                       <span style={{ color: 'var(--text-muted)' }}>›</span>
+                    </button>
+                    <button
+                      className="btn btn--ghost"
+                      style={{ padding: '6px 12px', fontSize: 13 }}
+                      disabled={busy}
+                      title="Create a new game with this game's boundary and checkpoints"
+                      onClick={() => handleClone(entry)}
+                    >
+                      Clone
                     </button>
                     {canArchive && (
                       <button

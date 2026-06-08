@@ -100,6 +100,7 @@ export const fireRunbookEntry = functions.https.onCall(async (data, context) => 
         eventKind: effect.kind,
         message: body,
         targetPlayerId: null,
+        pushed: true, // #69: pushed below, so onBroadcastCreate skips it
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       })
     );
@@ -116,6 +117,7 @@ export const fireRunbookEntry = functions.https.onCall(async (data, context) => 
           eventKind: effect.kind,
           message: body,
           targetPlayerId: m.id,
+          pushed: true, // #69: pushed below, so onBroadcastCreate skips it
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         })
       );

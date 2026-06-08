@@ -106,6 +106,21 @@ export async function createGame(name: string, displayName: string): Promise<{ i
 }
 
 /**
+ * Clone a game's setup into a fresh game (#65) via the cloneGame Cloud Function. Copies the
+ * boundary, rules, config, checkpoints, and their runbook entries; resets everything
+ * runtime/participant. The caller becomes sole GM and the new game starts in `setup`.
+ */
+export async function cloneGame(
+  sourceGameId: string,
+  displayName: string,
+  name?: string
+): Promise<{ id: string }> {
+  const callable = httpsCallable(functions, 'cloneGame');
+  const res = await callable({ sourceGameId, displayName, name: name ?? null, fcmToken: null });
+  return { id: (res.data as { gameId: string }).gameId };
+}
+
+/**
  * Join a game by code via the joinGameByCode Cloud Function. The code is resolved
  * server-side and the role is derived from which code matched. A GM joins a web
  * dashboard with the GM code.

@@ -114,12 +114,18 @@ locations, arrivals, rations, `checkpointTrips`, scheduled-event `firedAt`, winn
 New game starts in `setup` with fresh player/GM codes and the cloner as sole GM. (Open decision noted
 in the data model: whether rules/config travel with the clone — default **yes**, since the ask is to
 re-run the same setup.)
+> **Built (2026-06-07):** `cloneGame` callable (`functions/src/games.ts`) copies boundary + rules +
+> config + checkpoints (new ids) + runbook (re-keyed); resets all runtime/participant state; fresh
+> codes; cloner = sole GM; starts in `setup`. `gameDate` is **not** carried (a clone is a new event).
+> "Clone" action wired into the web games list and the mobile games action sheet.
 
 **66. Ration review shows no players before the window opens.** *(P0)* The GM ration feed's "Not
 eaten this window" list (web `RationsModal`, mobile `rations.tsx`) populates for the *whole interval*,
 but the capture **window** only opens in the last `rationWindowMinutes`. Before the window opens,
 nobody is late — the list must be empty (and the header should read "window opens in …"), gated on
 the actual open time, not just the interval index.
+> **Built (2026-06-07):** "Not eaten this window" now gates on `rationInterval().isOpen` (web
+> `RationsModal` + mobile `rations.tsx`); the web header shows "window not open yet" until it opens.
 
 **67. Treat each runbook event independently, with a periodic re-trip cadence.** *(P0)* Today the
 geofence latches per **player × checkpoint** (`checkpointTrips`) and delivers a single highest-priority
@@ -129,6 +135,12 @@ given entry at most once); while a player is inside a checkpoint, re-evaluate el
 **GM-managed cadence (`tripIntervalMinutes`, default 2)** so a newly-live timed/queued entry gets
 tripped on the next tick even without leaving and re-entering. Preserves pass-through, fix-quality,
 district suppression, and reveal behavior. See data model for the per-entry latch + config.
+> **Built (2026-06-07):** geofence now fires **each** eligible, not-yet-tripped entry (latched once
+> per player in `entryTrips/{playerId}_{entryId}`) instead of one per crossing; lingering players are
+> re-evaluated every `GameConfig.tripIntervalMinutes` (default 2, GM-set in the web Game settings),
+> with the arrival ordinal latched on `checkpointTrips` for consistent fixed-order slots. Pass-through
+> / fix-quality / district suppression / reveal preserved; `entryTrips` is admin-only in the rules and
+> purged on game end.
 
 **68. Server-enforce unique ration card numbers.** *(P1)* With `enforceUniqueRationCards` on, the
 player can still submit an already-used card number (the GM only sees a "reused" flag after the fact).
@@ -142,12 +154,20 @@ in-app — a closed phone gets nothing. Add an `onBroadcastCreate` Firestore tri
 `sendBroadcast` through a callable) that sends FCM to living players' tokens on the `broadcasts`
 channel, honoring `targetPlayerId` (single recipient) and skipping `audience: 'gm-only'` co-GM
 messages. Ensure the payload shows when backgrounded (notification, not data-only).
+> **Built (2026-06-07):** `onBroadcastCreate` (`functions/src/broadcasts.ts`) pushes player-facing
+> broadcasts (all living players, or `targetPlayerId`); skips co-GM (`gm-only`) and server-written
+> docs (those are stamped `pushed: true` in geofence/runbook/run-sheet/death so there's no double-push).
 
 **70. Checkpoint-event modal must survive a dismissed push.** *(P0)* If a player dismisses a
 checkpoint/event push while outside the app, opening the app should still surface the relevant modal.
 Drive the in-app modal from **unacknowledged** `broadcasts`/event docs (a per-player `ackedAt` /
 seen-set), not from the push tap — so dismissing the OS notification never loses the event. Ties to
 #71 (the player ack/dismiss model).
+> **Built (2026-06-07):** `AlertOverlay` now persists dismissals per game (AsyncStorage
+> `acked_broadcasts_{gameId}`); unacked broadcasts re-pop when the app reopens (so a closed-phone
+> event still shows), and the first open on a device seeds the existing backlog as handled so history
+> isn't replayed. Local-only — no `Broadcast.dismissedBy` server field needed; the cross-device server
+> ack model is deferred to #71.
 
 **71. Players can dismiss notifications from the in-app list.** *(P2)* Give players a way to clear
 items in their notification/broadcast list (per-player dismissed set or `ackedBroadcasts`), so the
@@ -309,9 +329,9 @@ its bundle ID / SHA-1 and the Maps SDK in Cloud Console before wide release. Con
 
 ## Suggested order
 
-0. **Field-test batch 2 P0s** (66, 67, 69, 70) — ration-review false positives, per-runbook-event
-   tripping, and broadcast/checkpoint push reliability — land first; they break a live game. Then the
-   batch-2 P1s (63, 64, 65, 68, 72) before the next APK build.
+0. **Field-test batch 2:** the P0s (**66, 67, 69, 70**) and **65** (clone) are **built** (2026-06-07)
+   — pending a deploy + APK build to reach the field. Remaining before the next build: P1s **63, 64,
+   68, 72** and P2s **62, 71**.
 1. **Tier 4** (11–12) completes the ration loop; **Tier 14** (61) restores timed announcements in
    the Runbook (the web run-sheet UI was removed alongside #60).
 2. **Tier 6** (16) trims the last geofence read cost; **Tier 7** (20–28) — integrity invariants —
