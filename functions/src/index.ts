@@ -9,6 +9,7 @@ export { cleanupRationPhotosOnGameEnd } from './cleanup';
 export { runScheduledEvents } from './runsheet';
 export { submitRation } from './rations';
 export { rationPings } from './rationPings';
+export { starvationSweep } from './starvation';
 export { fireRunbookEntry } from './runbook';
 export { rearmCheckpoint } from './rearm';
 export { onGameStartProjectMarkers } from './markers';

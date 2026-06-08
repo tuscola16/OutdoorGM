@@ -58,6 +58,7 @@ export default function GMGameScreen() {
   const [cfgRationInterval, setCfgRationInterval] = useState('');
   const [cfgRationWindow, setCfgRationWindow] = useState('');
   const [cfgUniqueCards, setCfgUniqueCards] = useState(true);
+  const [cfgAutoStarve, setCfgAutoStarve] = useState(false); // #11: starvationMode === 'auto'
   const [cfgErrors, setCfgErrors] = useState<Record<string, string>>({});
   const [newAlertCount, setNewAlertCount] = useState(0);
   const [lastSeenArrivals, setLastSeenArrivals] = useState(0);
@@ -249,6 +250,7 @@ export default function GMGameScreen() {
     setCfgRationInterval(String(cfg.rationIntervalMinutes));
     setCfgRationWindow(String(cfg.rationWindowMinutes));
     setCfgUniqueCards(cfg.enforceUniqueRationCards);
+    setCfgAutoStarve(cfg.starvationMode === 'auto');
     setCfgErrors({});
     setShowConfig(true);
   }
@@ -282,6 +284,7 @@ export default function GMGameScreen() {
           rationIntervalMinutes: rationMins,
           rationWindowMinutes: rationWindowMins,
           enforceUniqueRationCards: cfgUniqueCards,
+          starvationMode: cfgAutoStarve ? 'auto' : 'gm-confirmed',
         },
       })
     );
@@ -748,6 +751,16 @@ export default function GMGameScreen() {
                   hint="Flag a card number that's been used before so you can reject it"
                   value={cfgUniqueCards}
                   onValueChange={setCfgUniqueCards}
+                />
+                <ConfigToggle
+                  label="Auto-eliminate on missed ration"
+                  hint={
+                    cfgAutoStarve
+                      ? '⚠ Players who miss a window are eliminated automatically at the interval boundary — no confirmation.'
+                      : 'Off: you eliminate missed players by hand from the Players list.'
+                  }
+                  value={cfgAutoStarve}
+                  onValueChange={setCfgAutoStarve}
                 />
               </>
             )}

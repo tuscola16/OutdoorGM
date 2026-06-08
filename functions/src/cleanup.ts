@@ -45,6 +45,8 @@ export const cleanupRationPhotosOnGameEnd = functions.firestore
       db.recursiveDelete(gameRef.collection('entryTrips')),
       // Per-window ration-open push latches (#72) — transient, tied to play.
       db.recursiveDelete(gameRef.collection('rationWindowPings')),
+      // Per-interval auto-starvation sweep latches (#11) — transient, tied to play.
+      db.recursiveDelete(gameRef.collection('starvationSweeps')),
     ]);
 
     functions.logger.info(

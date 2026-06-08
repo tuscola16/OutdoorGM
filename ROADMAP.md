@@ -7,14 +7,12 @@ implementation-ready schema/enforcement detail for the items below is in
 
 **Current focus: a beautifully functional APK for a limited, trusted user base** — not a public
 store launch. Items are grouped by tier, roughly in build order. Numbers are **stable and never
-reused**; when an item ships it moves to the **Built & removed** callout below (context preserved)
-rather than being renumbered. Recently shipped: the **#60 checkpoint & runbook overhaul** and the
-**2026-06-07/08 field-test batch** (#65–#70, #73, #76 — game cloning, ration-window gating,
-per-runbook-event tripping, broadcast push, persistent event modal, accurate GM feed) and the
-**P1 field-test batch #63/#64/#68/#72/#74** (numeric validation, boundary-constrained checkpoints,
-server-enforced unique ration cards, reliable ration-window push, GM-prompted notification fix). The
-outstanding field-test items (#62, #71, #75, #77) are in the section below; older
-tiers (run-sheet follow-on #61, ration loop, integrity invariants, polish) follow.
+reused**; when an item ships it moves to the **Built & removed** callout below (one-line summary;
+full detail in git + the README) rather than being renumbered. Recently shipped: the **#60 runbook
+overhaul**, the **2026-06-07/08 field-test batch** (#65–#70, #73, #76), the **P1 field-test
+batch** (#63/#64/#68/#72/#74), and the **2026-06-08 polish + ration-loop batch** (#62/#75/#71/#11/#61) —
+all in the callout below. **Outstanding field-test item #77** leads the next section; older tiers
+(integrity invariants, polish) follow.
 
 > **Built & removed** (retired numbers, never reused — see git history + the
 > [README](README.md#features)):
@@ -30,73 +28,58 @@ tiers (run-sheet follow-on #61, ration loop, integrity invariants, polish) follo
 > - **13–15** Tier 5 ration review/submit UX (terminal review action, viewport-fit photo review,
 >   state-driven `RationPanel`) · **30** single `shouldTrack`-keyed tracking controller ·
 >   **33** login loading reset — all found already shipped in the **2026-06-07 audit**.
-> - **48–52, 54 (backend), 55, 56** — the **2026-06-07 field-test batch**: **48** stale-marker
->   cleanup at Start + client `visibleFrom` gate; **49** server-side checkpoint **pass-through
->   detection** (path segment `change.before`→`change.after`, 400 m cap, secrecy-preserving);
->   **50** GPS fix-quality gate + N-consecutive-fix debounce; **51** web polygon commit-on-teardown;
->   **52** ration eat-window reminders hoisted to `useRationReminders` (fire regardless of active
->   tab); **54** declarative checkpoint `transitions[]` applied by the run-sheet sweep
->   (`currentState`) + geofence integration; **55** per-player/checkpoint trip latch
->   (`checkpointTrips`) with GM away-cooldown + player state-change re-notify; **56**
->   `autoEndThreshold` (one/zero/manual). Players keep the self mini-map (design decision, no code).
->   **#49 still wants an on-device locked-phone re-test.**
-> - **60** — **checkpoint & runbook overhaul** (Tier 14): a checkpoint is now identity +
->   visibility only (`name`/`icon`/geometry/`visibility` = `hidden`/`shown`/`shown-on-trigger`);
->   all behavior moved to a top-level GM-only **`runbook`** collection of priority-ranked
->   entries (`fixed-order`/`always-on`/`timed`/`gm-prompted`, kinds `hazard`/`boon`/`notify`/
->   `gm-notify`). The geofence resolves the single highest-priority matching entry per crossing
->   (preserving pass-through/fix-quality/streak/district/reveal); a new `fireRunbookEntry`
->   callable powers GM-prompted firing with a target picker. Fully replaced `event`/`eventQueue`/
->   `opensAt`–`closesAt`/`initialState`/`transitions`/`currentState` and the run sheet's
->   open/close-site actions. Web gets a standalone **Runbook editor** (`/games/:id/runbook`);
->   mobile is web-first (placement + visibility + read-only entries + fire). A one-time converter
->   (`functions/scripts/migrateRunbook.js`) exists but was **not run** (fresh-start milestone).
-> - **59** — **player bounced to "My Games" every few seconds** (2026-06-07 field test, follow-on):
->   the player member-doc listener (`app/(app)/player/game.tsx`) treated *any* `snap.exists === false`
->   as a GM removal and `router.replace`d to the games list. On a weak connection RNFirebase delivers
->   cache-sourced snapshots that momentarily report the player's *own* member doc as absent, so a
->   flaky-signal player was kicked every ~3–5 s (tracking her reconnect cycle) while a well-connected
->   player was unaffected; she could always see her location on re-entry. Fixed by gating the removal
->   on a **server**-confirmed snapshot (`!snap.metadata.fromCache`). Client-only — no rules/functions
->   change. **Code-complete; needs an APK build to reach the field.** (Crashlytics sanity check found
->   no matching crash loop — only two low-volume, unrelated FATALs; see git/console.)
-> - **53, 54 (authoring UI)** — **checkpoint authoring redesign**: the map screen
->   (`gm/[gameId]/checkpoints.tsx`) now only *places* checkpoints (name + icon + radius); a new
->   full-screen behavior editor (`gm/[gameId]/checkpoint/[checkpointId].tsx`) owns event/queue,
->   visibility/reveal, the timed window, and the **#54** transition schedule ("Starts as" +
->   timed "changes over time"); the run sheet lists checkpoints as the behavior hub. Adds a
->   `Checkpoint.icon` picker (`constants/checkpointIcons.ts`), a shared `components/checkpointForm.tsx`,
->   and `gameService.stateEventFields` (makes a scheduled checkpoint's initial state effective at
->   start; the sweep handles later transitions).
-> - **65–70, 73, 76** — **2026-06-07/08 field-test batch** (built + deployed: rules/functions/web;
->   the mobile-only pieces — #66 mobile gating, #70, mobile Clone — await the next APK): **65**
->   `cloneGame` callable (copies boundary + checkpoints + runbook + config; fresh codes; `setup`
->   phase; no runtime/participant state) + web/mobile Clone, with **76** new-game naming; **66**
->   ration "not eaten" gates on `rationInterval().isOpen`; **67** per-**entry** trip latch
->   (`entryTrips/{playerId}_{entryId}`) firing **one entry per `tripIntervalMinutes` tick** (the
->   "2-minute rule"), arrival ordinal latched on `checkpointTrips`; **69** `onBroadcastCreate` pushes
->   GM broadcasts to closed phones (server paths stamp `pushed:true` to avoid double-push); **70**
->   `AlertOverlay` persists per-game dismissals so a closed-phone event re-pops on reopen; **73** GM
->   `NotificationFeed` derives events from `entryTrips` (accurate, deduped) + neutral arrivals
->   (replacing the old "label every arrival by `checkpointKind`" that mislabeled arrivals as hazards).
->   `entryTrips` is GM-readable in the rules and purged on game end.
-> - **63, 64, 68, 72, 74** — **P1 field-test batch (2026-06-08)**. Shared groundwork: a client
->   `pointInBoundary` (`common/geo.ts`) and a pure `validateGameConfig` (`common/gameConfigValidation.ts`),
->   both imported by web (`@shared/common/*`) and mobile (`@/common/*`). **63** numeric-field
->   validation + cross-field ordering (`window ≤ interval ≤ game length`, timed-reveal offset > 0) with
->   inline reasons replacing silent clamps in the web `ConfigModal`/`CheckpointBehaviorModal` and the
->   mobile config + checkpoint editor; **64** placement guard rejecting an out-of-boundary (or
->   no-boundary) checkpoint on web `SetupView.handleMapClick` + mobile `checkpoints` long-press; **68**
->   `submitRation` callable enforcing unique ration card numbers in a transaction (`already-exists`
->   rejection; client surfaces it + drops it from the offline retry queue) — **the `rations` create-rule
->   lock is deferred until the new APK ships** (the installed APK still writes directly); **72** new
->   `rationPings` scheduled function (per-minute) pushing the window-open alert authoritatively with an
->   idempotent `rationWindowPings/{intervalIndex}` latch (admin-only rule; purged on game end), the
->   local notification kept as fallback; **74** the GM-prompted "player saw nothing" case was a
->   `gm-notify` (GM-only) effect — added a clear warning in the web Runbook editor + mobile fire modal
->   (a targeted `notify`/`hazard`/`boon` already reaches the player). **Deployed: web + functions +
->   rules** (minus the #68 create-rule lock); **mobile halves (#63/#64/#74 + the #68 callable client +
->   ration-queue change) ride the next APK.**
+> - **53, 54** — **checkpoint authoring redesign**: the map screen only *places* checkpoints (name +
+>   icon + radius); a full-screen behavior editor (`gm/[gameId]/checkpoint/[checkpointId].tsx`) owns
+>   visibility/reveal, the timed window, and #54's declarative `transitions[]` (applied by the
+>   run-sheet sweep + geofence). Adds `Checkpoint.icon` (`constants/checkpointIcons.ts`) + a shared
+>   `components/checkpointForm.tsx`.
+> - **48–52, 55, 56** — **2026-06-07 field-test batch**: stale-marker cleanup at Start + `visibleFrom`
+>   gate (#48); server-side checkpoint **pass-through detection** (prev→curr segment, 400 m cap) (#49);
+>   GPS fix-quality gate + N-fix debounce (#50); web polygon commit-on-teardown (#51); eat-window
+>   reminders hoisted to `useRationReminders` (#52); per-player `checkpointTrips` latch with GM
+>   away-cooldown + player state-change re-notify (#55); `autoEndThreshold` one/zero/manual (#56).
+>   **#49 still wants an on-device locked-phone re-test** (now tracked as #77).
+> - **59** — **player bounced to "My Games" on a weak connection**: the player member-doc listener
+>   treated a cache-sourced `snap.exists === false` as a GM removal and kicked the player. Fixed by
+>   gating removal on a server-confirmed snapshot (`!snap.metadata.fromCache`). Client-only; **rides
+>   the next APK.**
+> - **60** — **checkpoint & runbook overhaul** (Tier 14): a checkpoint is now identity + visibility
+>   only; all behavior moved to a top-level GM-only **`runbook`** collection of priority-ranked entries
+>   (`fixed-order`/`always-on`/`timed`/`gm-prompted`; kinds `hazard`/`boon`/`notify`/`gm-notify`). The
+>   geofence resolves the highest-priority matching entry per crossing; a `fireRunbookEntry` callable
+>   powers GM-prompted firing. Web gets a standalone Runbook editor (`/games/:id/runbook`); mobile is
+>   web-first (place + visibility + read-only + fire). The one-time converter
+>   (`functions/scripts/migrateRunbook.js`) was **not run** (fresh-start).
+> - **65–70, 73, 76** — **2026-06-07/08 field-test batch** (rules/functions/web deployed; mobile-only
+>   pieces await the next APK): `cloneGame` callable + Clone UI with new-game naming (#65/#76); ration
+>   "not eaten" gated on `rationInterval().isOpen` (#66); per-**entry** trip latch
+>   `entryTrips/{playerId}_{entryId}` firing one entry per `tripIntervalMinutes` tick (#67);
+>   `onBroadcastCreate` pushes GM broadcasts to closed phones via `pushed:true` (#69); `AlertOverlay`
+>   persists per-game dismissals so a closed-phone event re-pops (#70); GM `NotificationFeed` derives
+>   events from `entryTrips` (#73). **Mobile pieces awaiting APK: #66 gating, #70, mobile Clone.**
+> - **63, 64, 68, 72, 74** — **P1 field-test batch (2026-06-08)** (web + functions + rules deployed;
+>   mobile halves await the next APK). Shared `common/` helpers — `pointInBoundary` (`geo.ts`) +
+>   `validateGameConfig` (`gameConfigValidation.ts`), imported by web (`@shared/common/*`) and mobile
+>   (`@/common/*`). #63 numeric validation + ordering (window ≤ interval ≤ game length; reveal offset
+>   > 0) replacing silent clamps; #64 placement guard rejecting out-of-boundary/no-boundary
+>   checkpoints; #68 `submitRation` callable enforcing unique card numbers (`already-exists`; client
+>   surfaces + de-queues) — **the `rations` create-rule lock is deferred until the new APK ships**; #72
+>   `rationPings` per-minute push with an idempotent `rationWindowPings/{i}` latch; #74 a gm-notify
+>   (GM-only) fire warning in the web Runbook editor + mobile fire modal. **Mobile halves: #63/#64/#74
+>   + the #68 callable client/ration-queue change.**
+> - **62, 75, 71, 11, 61** — **2026-06-08 polish + ration-loop batch** (web + functions + rules
+>   deployed; mobile halves await the next APK). **#62** refreshed the `/demo` mocks for the #60
+>   runbook model + a themed events-vs-arrivals GM feed. **#75** capped the Play-view Notifications
+>   sidebar to 4 (`NotificationFeed` `max` prop) with a "See all" header button opening the full,
+>   filterable feed in a modal. **#71** added `Broadcast.dismissedBy` + a player self-update rule
+>   (dismiss-only, own-uid via `arrayUnion`) + `dismissBroadcast` + an in-list ✕ on `BroadcastFeed`
+>   (mobile). **#11** `starvationSweep` — per-minute auto-elimination at each ration boundary, gated
+>   behind `starvationMode:'auto'` (default stays manual `gm-confirmed`), idempotent
+>   `starvationSweeps/{i}` latch (purged in `cleanup.ts`), letting `onMemberWrite` handle the death
+>   toll + winner; web + mobile config toggles. **#61** a web Runbook **"Scheduled announcements"**
+>   pane over the existing `scheduledEvents`/`runScheduledEvents` sweep (announcement / player-count /
+>   gear-drop / GM reminder, `offsetMinutes > 0` via shared `requirePositiveInt`). **Mobile halves
+>   awaiting APK: #71 in-list dismiss, #11 config toggle.**
 
 ---
 
@@ -106,23 +89,6 @@ Defects and gaps from testing the web dashboard and the app; the built items fro
 in the Built & removed callout above. Priority tags inline (P0 = before the next real game; P1 =
 before wider testing; P2 = polish). Schema detail is in
 [ROADMAP_DATA_MODEL.md](ROADMAP_DATA_MODEL.md) under the same numbers.
-
-**62. Audit the `/demo` screen for parity with recent releases.** *(P2)* The `/demo` screenshot
-mocks (`web/src/screens/DemoScreen.tsx`) drifted from shipped features — notably the **#60
-checkpoint/runbook overhaul** (checkpoints are now identity+visibility; behavior lives in the
-Runbook) and **terminal ration approval** (no GM undo; player "fed this window" state). Walk each
-mocked screen against the live app and refresh copy/controls/layout so store screenshots are honest.
-
-**71. Players can dismiss notifications from the in-app list.** *(P2)* Give players a way to clear
-items in their notification/broadcast list. #70 shipped a **device-local** dismissed set
-(`AlertOverlay`); this item adds an explicit in-list dismiss control and (optionally) a cross-device
-server model (`Broadcast.dismissedBy`) so a dismissal syncs across a player's devices.
-
-**75. GM notification feed: cap the sidebar, add a full notifications page.** *(P2)* With ~24 players
-the Play-view **Notifications** list (`NotificationFeed`, web `GameScreen` `PlayView`) gets crowded.
-Show only the **last 4** in the sidebar, and make the **"Notifications" header a button** that opens a
-full, scrollable notifications page/modal (all arrivals + runbook events, ideally filterable by
-player/checkpoint/kind). GM dashboard only; no schema change. (Builds on #73's `entryTrips`-driven feed.)
 
 **77. Closed-phone pass-through still unreliable.** *(P1 — #49 follow-up)* A player walked most of the
 way through a large (100 m radius) checkpoint with the phone locked and only got the alert when they
@@ -137,35 +103,10 @@ re-test (the #49 caveat).
 
 ## Tier 4 — Core ration loop
 
-**11. Auto-starvation sweep.** Scheduled function: at each interval boundary, mark any living
-player with no valid submission for the prior window as dead (death broadcast already built).
-Gated by `starvationMode`; default stays `gm-confirmed` (GM flips to `auto`) until the photo path
-is field-proven. Tester-confirmed wanted.
-
 **12. Auto per-interval "N remaining" broadcast.** A config toggle that seeds repeating
-player-count entries each ration interval, so the GM needn't add each run-sheet row by hand.
-Low priority — depends on #61 (timed actions are not yet authorable now that the run-sheet UI is gone).
-
----
-
-## Tier 14 — Runbook follow-ons
-
-**61. Timed, crossing-independent actions in the Runbook.** The web **run-sheet UI was removed**
-(the Runbook supersedes per-checkpoint behavior), but the run-sheet also carried **time-triggered
-actions that fire on a clock, with no player crossing** — which the Runbook's `timed` trigger does
-*not* cover (a `timed` runbook entry only gates a *crossing* effect to a window). The orphaned
-capabilities (still fired by the `runScheduledEvents` sweep over `games/{id}/scheduledEvents`, and
-still authorable on the **mobile** run-sheet) are:
-  - **Timed announcement** — a game-wide broadcast at `+Nm`.
-  - **Auto living-player-count broadcast** — the `player-count` template ("N tributes remain").
-  - **Gear-drop announcement** — a themed timed broadcast.
-  - **GM-only timed reminder** — a nudge to the GMs, players see nothing.
-
-  (Timed **checkpoint reveal** is *not* lost — it's covered by the checkpoint's own reveal config,
-  `reveal.trigger: 'timed'` + `offsetMinutes`.) Fold these into the Runbook editor — e.g. a timed
-  entry with no `checkpointId`, or a dedicated "Scheduled announcements" pane — so a GM keeps the
-  capability from the web dashboard, then retire the orphaned backend/mobile run-sheet (and revisit
-  #12, #44, which assume run-sheet rows).
+player-count entries each ration interval, so the GM needn't add each scheduled-announcement row by
+hand. Now trivial since #61 shipped the web "Scheduled announcements" authoring over
+`scheduledEvents` — this just auto-seeds a `player-count` row per interval. Low priority.
 
 ---
 
@@ -284,11 +225,11 @@ its bundle ID / SHA-1 and the Maps SDK in Cloud Console before wide release. Con
 ## Suggested order
 
 0. **Field-test follow-ups (outstanding):** P1 **77** (closed-phone pass-through — held for an
-   on-device locked-phone test) before the next APK build; P2s **62, 71, 75** as polish. (The built
-   batches — #65–#70, #73, #76 and #63/#64/#68/#72/#74 — are deployed; their mobile-only pieces ship
-   with the next APK.)
-1. **Tier 4** (11–12) completes the ration loop; **Tier 14** (61) restores timed announcements in
-   the Runbook (the web run-sheet UI was removed alongside #60).
+   on-device locked-phone test) before the next APK build. (The built batches — #65–#70, #73, #76,
+   #63/#64/#68/#72/#74, and #62/#75/#71/#11/#61 — are deployed; their mobile-only pieces ship with
+   the next APK.)
+1. **Tier 4** (12) — the auto per-interval count — is the small ration-loop follow-on now that #11
+   (auto-starvation) and #61 (scheduled announcements) have shipped.
 2. **Tier 6** (16) trims the last geofence read cost; **Tier 7** (20–28) — integrity invariants —
    land alongside the features they protect.
 3. **Tier 8** (29, 35) trails as robustness/polish.

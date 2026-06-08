@@ -273,6 +273,24 @@ export async function sendBroadcast(
 }
 
 /**
+ * Dismiss a broadcast from the current player's in-app list (#71). Appends the player's
+ * own uid to `dismissedBy` via `arrayUnion` (idempotent). firestore.rules lets a player
+ * update only `dismissedBy`, adding only their own uid — never another field or another
+ * player's uid. This governs the persistent {@link BroadcastFeed} list only; the heads-up
+ * {@link AlertOverlay} pop has its own device-local ack (#70).
+ */
+export async function dismissBroadcast(gameId: string, broadcastId: string): Promise<void> {
+  const uid = auth().currentUser?.uid;
+  if (!uid) return;
+  await firestore()
+    .collection(Collections.GAMES)
+    .doc(gameId)
+    .collection(Collections.BROADCASTS)
+    .doc(broadcastId)
+    .update({ dismissedBy: firestore.FieldValue.arrayUnion(uid) });
+}
+
+/**
  * Send a GM↔GM (co-GM) message (#40): a broadcast readable only by GMs. Uses the
  * `GM_BROADCAST_TARGET` sentinel so players' broadcast listeners never fetch it, plus
  * `audience: 'gm-only'` (enforced in firestore.rules). There is no player↔player channel

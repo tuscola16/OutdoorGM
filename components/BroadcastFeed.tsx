@@ -1,26 +1,39 @@
-import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import auth from '@react-native-firebase/auth';
 import { Colors } from '@/constants/colors';
 import { iconFor, colorFor } from '@/components/broadcastVisuals';
 import { useBroadcasts } from '@/context/BroadcastsContext';
+import { dismissBroadcast } from '@/services/gameService';
 
 /**
  * Player-facing feed of GM→player messages (Rule 24 player-count updates, checkpoint
  * events — hazards/boons/notifications, death/winner announcements). Reads from the shared
  * {@link BroadcastsProvider} subscription (#32) rather than opening its own listeners, so
  * the player screen holds a single broadcast subscription no matter how many feeds render.
+ *
+ * Each row carries an ✕ to dismiss it from this player's list (#71). Dismissal writes the
+ * player's uid to the broadcast's `dismissedBy`, so it stays gone on reopen and across the
+ * player's devices; other players are unaffected.
  */
 export function BroadcastFeed({
+  gameId,
   max = 30,
   scroll = true,
 }: {
+  /** The current game — needed to write a dismissal (#71). */
+  gameId: string;
   max?: number;
   /** When false, render the items inline (no internal ScrollView) so the feed can
    * live inside a parent ScrollView without nesting two vertical scrollers. */
   scroll?: boolean;
 }) {
-  // The provider already keeps these sorted newest-first; just cap to `max`.
-  const broadcasts = useBroadcasts().broadcasts.slice(0, max);
+  const uid = auth().currentUser?.uid;
+  // Hide broadcasts this player already dismissed (#71), then cap. The provider keeps
+  // them sorted newest-first.
+  const broadcasts = useBroadcasts()
+    .broadcasts.filter((b) => !(uid && b.dismissedBy?.includes(uid)))
+    .slice(0, max);
 
   if (broadcasts.length === 0) {
     return (
@@ -35,6 +48,14 @@ export function BroadcastFeed({
     <View key={b.id} style={[styles.item, b.targetPlayerId ? styles.targeted : null]}>
       <Ionicons name={iconFor(b)} size={16} color={colorFor(b)} style={{ marginTop: 1 }} />
       <Text style={styles.message}>{b.message}</Text>
+      <TouchableOpacity
+        onPress={() => dismissBroadcast(gameId, b.id).catch(() => {})}
+        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        style={styles.dismiss}
+        accessibilityLabel="Dismiss message"
+      >
+        <Ionicons name="close" size={16} color={Colors.textMuted} />
+      </TouchableOpacity>
     </View>
   ));
 
@@ -63,6 +84,7 @@ const styles = StyleSheet.create({
   },
   targeted: { borderColor: Colors.primary },
   message: { flex: 1, color: Colors.text, fontSize: 14, lineHeight: 20 },
+  dismiss: { marginTop: -2, marginRight: -2, padding: 2 },
   empty: {
     flexDirection: 'row',
     alignItems: 'center',

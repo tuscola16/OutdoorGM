@@ -139,7 +139,19 @@ service cloud.firestore {
               && resource.data.get('audience', null) != 'gm-only'
               && (resource.data.targetPlayerId == null
                   || resource.data.targetPlayerId == request.auth.uid));
-        allow create, update, delete: if isGameGM(gameId);
+        allow create, delete: if isGameGM(gameId);
+        // GMs may edit any field. A player may dismiss a broadcast they can see (#71):
+        // a self-update touching ONLY `dismissedBy`, adding ONLY their own uid (the new
+        // list must contain the old list and add nothing but request.auth.uid). They can't
+        // edit any other field, dismiss for someone else, or touch a co-GM message.
+        allow update: if isGameGM(gameId)
+          || (isSignedIn()
+              && resource.data.get('audience', null) != 'gm-only'
+              && (resource.data.targetPlayerId == null
+                  || resource.data.targetPlayerId == request.auth.uid)
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['dismissedBy'])
+              && request.resource.data.dismissedBy.hasAll(resource.data.get('dismissedBy', []))
+              && request.resource.data.dismissedBy.hasOnly(resource.data.get('dismissedBy', []).concat([request.auth.uid])));
       }
 
       // Run-sheet (#11) — GM-authored timed actions. GM read/write; players never
@@ -180,6 +192,13 @@ service cloud.firestore {
       // Function (admin SDK) to fire the "window open" push exactly once per interval;
       // never client-readable or writable.
       match /rationWindowPings/{intervalIndex} {
+        allow read, write: if false;
+      }
+
+      // Per-interval auto-starvation sweep latch (#11). Written only by the starvationSweep
+      // Cloud Function (admin SDK) to evaluate each ration interval exactly once; never
+      // client-readable or writable.
+      match /starvationSweeps/{intervalIndex} {
         allow read, write: if false;
       }
 

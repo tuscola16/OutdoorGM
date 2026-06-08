@@ -855,6 +855,8 @@ function PlayView({
   onOpenPlayers: () => void;
   onEnd: () => void;
 }) {
+  // #75: cap the sidebar feed; the header opens the full, filterable feed in a modal.
+  const [showAllNotifs, setShowAllNotifs] = useState(false);
   return (
     <div style={{ height: '100%', display: 'flex' }}>
       <div style={{ flex: 1 }}>
@@ -913,12 +915,31 @@ function PlayView({
           </button>
         )}
 
-        <h3 style={{ margin: '4px 0 0' }}>Notifications</h3>
+        <button
+          onClick={() => setShowAllNotifs(true)}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+            margin: '4px 0 0', padding: 0, background: 'none', border: 'none', cursor: 'pointer',
+            color: 'inherit', width: '100%', textAlign: 'left',
+          }}
+          title="See all notifications"
+        >
+          <h3 style={{ margin: 0 }}>Notifications</h3>
+          <span style={{ fontSize: 12, color: 'var(--primary)', fontWeight: 600 }}>See all →</span>
+        </button>
         <div style={{ flex: 1, minHeight: 0 }}>
-          <NotificationFeed arrivals={arrivals} entryTrips={entryTrips} members={members} />
+          <NotificationFeed arrivals={arrivals} entryTrips={entryTrips} members={members} max={4} />
         </div>
         <button className="btn btn--danger" onClick={onEnd} disabled={busy}>End Game</button>
       </aside>
+
+      {showAllNotifs && (
+        <Modal title="Notifications" onClose={() => setShowAllNotifs(false)}>
+          <div style={{ height: 'min(70vh, 560px)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <NotificationFeed arrivals={arrivals} entryTrips={entryTrips} members={members} />
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -1315,6 +1336,7 @@ function ConfigModal({
   const [rationMinutes, setRationMinutes] = useState(String(initial.rationIntervalMinutes));
   const [rationWindow, setRationWindow] = useState(String(initial.rationWindowMinutes));
   const [uniqueCards, setUniqueCards] = useState(initial.enforceUniqueRationCards);
+  const [autoStarve, setAutoStarve] = useState(initial.starvationMode === 'auto'); // #11
   const [tripInterval, setTripInterval] = useState(String(initial.tripIntervalMinutes ?? 2)); // #67
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -1347,6 +1369,7 @@ function ConfigModal({
           rationIntervalMinutes: rationMins,
           rationWindowMinutes: rationWindowMins,
           enforceUniqueRationCards: uniqueCards,
+          starvationMode: autoStarve ? 'auto' : 'gm-confirmed',
           tripIntervalMinutes: tripMins,
         },
       });
@@ -1408,6 +1431,14 @@ function ConfigModal({
                 </span>}
           </div>
           <Toggle label="Unique ration cards" checked={uniqueCards} onChange={setUniqueCards} />
+          <div className="field" style={{ gap: 4 }}>
+            <Toggle label="Auto-eliminate on missed ration" checked={autoStarve} onChange={setAutoStarve} />
+            <span style={{ fontSize: 12, color: autoStarve ? 'var(--danger)' : 'var(--text-muted)' }}>
+              {autoStarve
+                ? '⚠ Players who miss a ration window are eliminated automatically at the interval boundary — no GM confirmation.'
+                : 'Off: you eliminate missed players by hand from the Players list (recommended until the photo loop is field-proven).'}
+            </span>
+          </div>
         </>
       )}
       <div style={{ display: 'flex', gap: 12 }}>

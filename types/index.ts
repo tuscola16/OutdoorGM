@@ -497,6 +497,13 @@ export interface Broadcast {
    * and the trigger delivers the push.
    */
   pushed?: boolean;
+  /**
+   * #71: uids of players who dismissed this broadcast from their in-app list. A player
+   * appends only their own uid (firestore.rules enforces `dismissedBy`-only, self-only
+   * edits); the feed hides a broadcast once the current player's uid is present. Cross-device
+   * because it lives on the shared doc. Absent on legacy/never-dismissed broadcasts.
+   */
+  dismissedBy?: string[];
   createdAt: FsTimestamp;
 }
 

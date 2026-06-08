@@ -15,15 +15,17 @@ mobile app and `web/`.
 
 Only items with a real data-model/infra delta appear here; pure logic/UI/enforcement items are
 listed under [No schema change](#no-schema-change-enforcement--logic-only). Built items (1–10,
-13–15, 17, 18, 19, 30, 31, 32, 33, 34, 36–40, the **2026-06-07 field-test batch** 48–56, and the
-**2026-06-07/08 batch** 65–70, 73, 76) have shipped and been removed — their numbers are retired.
-The retired batch's data-model deltas (still live): `GameConfig.tripIntervalMinutes` + the
-server-only `entryTrips/{playerId}_{entryId}` latch — now denormalized (player/checkpoint names +
-delivered effect) and **GM-readable** for the notification feed (#67/#73); the `Broadcast.pushed`
-marker that gates `onBroadcastCreate` (#69); and the `cloneGame` callable (#65, no new fields).
-(#53/#54 cover the `Checkpoint.icon` field and the transition schema —
-`CheckpointState`/`CheckpointTransition`/`initialState`/`transitions`/`currentState` — plus their GM
-authoring UI; see [No schema change](#no-schema-change-enforcement--logic-only).)
+13–15, 17, 18, 19, 30, 31, 32, 33, 34, 36–40, the **2026-06-07 field-test batch** 48–56, the
+**2026-06-07/08 batch** 65–70, 73, 76, and the **P1 field-test batch** 63, 64, 68, 72, 74) have
+shipped and been removed — their numbers are retired. Live data-model/infra deltas from those
+batches: `GameConfig.tripIntervalMinutes` + the server-only `entryTrips/{playerId}_{entryId}` latch
+(denormalized + **GM-readable** for the notification feed, #67/#73); the `Broadcast.pushed` marker
+gating `onBroadcastCreate` (#69); the `cloneGame` callable (#65); the `submitRation` callable
+enforcing unique card numbers (#68); the `rationPings` scheduled function + admin-only
+`rationWindowPings/{intervalIndex}` latch (#72); and the shared `common/` helpers `pointInBoundary`
++ `validateGameConfig` (#63/#64). (#53/#54 cover the `Checkpoint.icon` field and the transition
+schema — `CheckpointState`/`CheckpointTransition`/`initialState`/`transitions`/`currentState` — plus
+their GM authoring UI; see [No schema change](#no-schema-change-enforcement--logic-only).)
 
 ---
 
@@ -174,14 +176,6 @@ resolution and global sidebar sort.
 
 ---
 
-## 11. Auto-starvation sweep *(function logic; no new schema)*
-
-Reuses the built `RationSubmission` (`rations/{playerId}_{intervalIndex}`), the interval math
-(`rationInterval(game, now)`), and `EliminationCause: 'starvation'`. Scheduled function: at each
-interval boundary, every living player lacking a non-rejected submission for the **prior** interval
-→ eliminate with `cause: 'starvation'` + death broadcast. Skipped when `rationsEnabled` is false or
-`starvationMode === 'gm-confirmed'` (then only flags for GM review). Must be idempotent (item 26).
-
 ## 35. Low-battery beacon
 
 ```ts
@@ -271,28 +265,6 @@ GMs assign players to themselves; the geofence/arrival push routes only to the o
 GM map/roster views filter to `teamGmId === me`. Unassigned/legacy players fall back to all-GMs
 (today's behavior). Deferred per the 2026-06-07 field test.
 
-## 71. Player notification dismiss model
-
-#70 shipped a **device-local** dismissed set (`AsyncStorage` `acked_broadcasts_{gameId}` in
-`AlertOverlay`), enough for the single-device closed-phone case. This item adds an explicit in-list
-dismiss control and (optionally) a **cross-device** server model so a dismissal syncs across a
-player's devices:
-
-```ts
-export interface Broadcast {
-  // ...existing...
-  /** Per-player handling: userIds who dismissed this broadcast in-app. */
-  dismissedBy?: string[];   // arrayUnion(uid) on dismiss; filter the player's list by it
-}
-```
-
-A dismiss control writes `dismissedBy: arrayUnion(uid)` (narrow `firestore.rules` clause: a player
-may update *only* `dismissedBy`, adding their own uid). Per-player, so one player's dismiss doesn't
-affect others. (Alt: a player-doc `dismissedBroadcastIds` set if we'd rather players not write
-broadcast docs.)
-
----
-
 ## No schema change — enforcement / logic only
 
 These items are pure logic, rules, client architecture, or ops — no new fields or collections:
@@ -307,7 +279,7 @@ These items are pure logic, rules, client architecture, or ops — no new fields
 - **55** Re-trigger / re-notification — **built**: `GameConfig.reNotifyAwayCooldownMinutes` + the server-only `checkpointTrips/{playerId}_{checkpointId}` latch (`inside`/`insideStreak`/`lastEnterAt`/`lastExitAt`/`lastNotifiedState`); GM re-notified past the cooldown, player only on state change.
 - **56** Auto-end threshold — **built**: `GameConfig.autoEndThreshold` (`one`/`zero`/`manual`; legacy `winnerDetection:false` ⇒ `manual`) gating the `onMemberWrite` end/winner transaction.
 - **58** Single-game test checklist — a doc plus an optional `seedTestGame` helper; no new fields.
-- **12** Auto per-interval count — wire the `playerCountBroadcast` toggle to actually seed repeating run-sheet rows each interval (existing `template:'player-count'`); today the toggle is stored but does nothing automatic.
+- **12** Auto per-interval count — wire the `playerCountBroadcast` toggle to auto-seed a repeating `template:'player-count'` scheduled-announcement row each interval (the #61 authoring + `runScheduledEvents` sweep already exist); today the toggle is stored but does nothing automatic.
 - **16** Geofence read cost — remaining work: cache phase/role per write (lobby short-circuit, zero-checkpoint skip, and checkpoint cache already shipped).
 - **20** No mid-game delete — deny member `delete` when `gamePhase(game) === 'play'` (`firestore.rules` + `removePlayer`).
 - **21** Reversible elimination — `revivePlayer()` clears `out`/`outAt`/`cause`, posts a correcting broadcast, and reverts `results → play` if needed.
@@ -322,6 +294,4 @@ These items are pure logic, rules, client architecture, or ops — no new fields
 - **42** Arena map overlay — a GM-uploaded image overlay (asset/storage + map layer; spec when prioritized).
 - **44** Voucher-site preset — a one-tap scaffold of open/close/announce run-sheet rows on a time-windowed checkpoint.
 - **47** Maps-key restriction — Cloud Console ops task.
-- **62** `/demo` parity audit — content/UI only; walk `web/src/screens/DemoScreen.tsx` against the live app (#60 runbook, terminal rations) and refresh the mocks. No schema.
-- **75** GM notifications page — UI only; builds on #73's `entryTrips`-driven feed: web `GameScreen` `PlayView` shows the last 4 in the sidebar and a clickable "Notifications" header opens a full scrollable page/modal. No schema.
 - **77** Closed-phone pass-through reliability — #49 follow-up; tuning of background-location cadence / `MAX_SEGMENT_METERS` / foreground-resume retro-test. No schema; needs an on-device locked-phone test.

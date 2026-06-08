@@ -4,13 +4,17 @@ import { deleteField } from 'firebase/firestore';
 import { useGame } from '@/context/GameContext';
 import {
   addRunbookEntry, updateRunbookEntry, deleteRunbookEntry, fireRunbookEntry,
+  addScheduledEvent, updateScheduledEvent, deleteScheduledEvent,
 } from '@/services/gameService';
 import {
   KIND_META, KIND_ORDER, TRIGGER_META, ordinalLabel,
 } from '@/services/checkpointKinds';
+import { Modal } from '@/components/Modal';
 import { friendlyError } from '@/services/errorUtils';
+import { requirePositiveInt } from '@shared/common/gameConfigValidation';
 import type {
   RunbookEntry, RunbookEffect, RunbookTriggerType, CheckpointKind, NotifyAudience, TimedBound,
+  ScheduledEvent, ScheduledActionType,
 } from '@shared/types';
 
 // Standalone full-page runbook editor (ROADMAP #60). Left sidebar lists entries in two
@@ -31,8 +35,14 @@ export function RunbookScreen() {
   const { gameId } = useParams<{ gameId: string }>();
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const { game, checkpoints, runbookEntries, members, loadGame, clearGame } = useGame();
+  const { game, checkpoints, runbookEntries, members, scheduledEvents, loadGame, clearGame } = useGame();
   const players = members.filter((m) => m.role === 'player');
+  const [showScheduled, setShowScheduled] = useState(false);
+
+  // #61: clock-triggered announcements (broadcasts, player-count, gear drops, GM reminders).
+  // Timed checkpoint *reveals* live on the checkpoint editor (stored as `reveal-checkpoint`
+  // scheduled events), so exclude them here.
+  const announcements = scheduledEvents.filter((e) => e.type !== 'reveal-checkpoint');
 
   useEffect(() => {
     if (gameId) loadGame(gameId, 'gm');
@@ -74,6 +84,9 @@ export function RunbookScreen() {
           <div style={{ fontSize: 18, fontWeight: 800 }}>Runbook</div>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{game?.name ?? '…'} · {runbookEntries.length} entr{runbookEntries.length === 1 ? 'y' : 'ies'}</div>
         </div>
+        <button className="btn btn--ghost" style={{ padding: '8px 12px' }} onClick={() => setShowScheduled(true)}>
+          ⏰ Scheduled{announcements.length ? ` (${announcements.length})` : ''}
+        </button>
       </header>
 
       <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
@@ -111,7 +124,166 @@ export function RunbookScreen() {
           )}
         </main>
       </div>
+
+      {showScheduled && (
+        <ScheduledAnnouncementsModal
+          gameId={gameId!}
+          events={announcements}
+          onClose={() => setShowScheduled(false)}
+        />
+      )}
     </div>
+  );
+}
+
+// --- Scheduled announcements (#61) ---
+
+/** UI rows; `player-count` is a templated `broadcast`, so the authoring key is richer than
+ * the stored `type`. Mirrors the mobile run-sheet's authoring affordances. */
+type ScheduledKey = 'broadcast' | 'player-count' | 'gear-drop' | 'gm-reminder';
+
+const SCHEDULED_ACTIONS: {
+  key: ScheduledKey;
+  type: ScheduledActionType;
+  template?: 'player-count';
+  label: string;
+  emoji: string;
+  needsMessage: boolean;
+  hint: string;
+}[] = [
+  { key: 'broadcast', type: 'broadcast', label: 'Announcement', emoji: '📢', needsMessage: true, hint: 'A free-text message pushed to all players.' },
+  { key: 'player-count', type: 'broadcast', template: 'player-count', label: 'Player count', emoji: '👥', needsMessage: false, hint: 'Auto-fills the living-tribute count (e.g. “7 tributes remain”) and pushes it to all players.' },
+  { key: 'gear-drop', type: 'gear-drop', label: 'Gear drop', emoji: '🎁', needsMessage: true, hint: 'Announce a supply-drop location to all players.' },
+  { key: 'gm-reminder', type: 'gm-reminder', label: 'GM reminder', emoji: '⏰', needsMessage: true, hint: 'Only you (the GM) are notified — players see nothing.' },
+];
+
+const scheduledActionFor = (key: ScheduledKey) => SCHEDULED_ACTIONS.find((a) => a.key === key)!;
+const keyForScheduled = (ev: ScheduledEvent): ScheduledKey =>
+  ev.template === 'player-count' ? 'player-count' : (ev.type as ScheduledKey);
+
+function ScheduledAnnouncementsModal({
+  gameId, events, onClose,
+}: {
+  gameId: string;
+  events: ScheduledEvent[];
+  onClose: () => void;
+}) {
+  const [editId, setEditId] = useState<string | null>(null);
+  const [actionKey, setActionKey] = useState<ScheduledKey>('broadcast');
+  const [offset, setOffset] = useState('5');
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const action = scheduledActionFor(actionKey);
+  const sorted = [...events].sort((a, b) => (a.offsetMinutes ?? Infinity) - (b.offsetMinutes ?? Infinity));
+
+  function reset() {
+    setEditId(null);
+    setActionKey('broadcast');
+    setOffset('5');
+    setMessage('');
+  }
+
+  function editExisting(ev: ScheduledEvent) {
+    setEditId(ev.id);
+    setActionKey(keyForScheduled(ev));
+    setOffset(ev.offsetMinutes != null ? String(ev.offsetMinutes) : '5');
+    setMessage(ev.message ?? '');
+  }
+
+  async function save() {
+    const offsetMinutes = Math.round(Number(offset));
+    // #63: reuse the shared positive-int validator instead of silently clamping.
+    const offsetErr = requirePositiveInt(offsetMinutes, 'Minutes after start');
+    if (offsetErr) { window.alert(offsetErr); return; }
+    if (action.needsMessage && !message.trim()) { window.alert('Enter a message for this announcement.'); return; }
+
+    const data = {
+      type: action.type,
+      offsetMinutes,
+      template: action.template ?? null,
+      message: action.needsMessage ? message.trim() : '',
+    };
+    setBusy(true);
+    try {
+      if (editId) await updateScheduledEvent(gameId, editId, data);
+      else await addScheduledEvent(gameId, data);
+      reset();
+    } catch (err) { window.alert(friendlyError(err)); }
+    finally { setBusy(false); }
+  }
+
+  async function remove(ev: ScheduledEvent) {
+    if (!window.confirm('Delete this scheduled announcement?')) return;
+    try {
+      await deleteScheduledEvent(gameId, ev.id);
+      if (editId === ev.id) reset();
+    } catch (err) { window.alert(friendlyError(err)); }
+  }
+
+  function summary(ev: ScheduledEvent): string {
+    const a = scheduledActionFor(keyForScheduled(ev));
+    if (a.key === 'player-count') return 'Pushes the living-tribute count to all players';
+    return ev.message || a.label;
+  }
+
+  return (
+    <Modal title="Scheduled announcements" onClose={onClose}>
+      <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: 14 }}>
+        Clock-triggered actions, measured from when you Start the game. They fire automatically
+        while the game is in play — no checkpoint crossing needed.
+      </p>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {sorted.length === 0 && <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>None yet. Add one below.</p>}
+        {sorted.map((ev) => {
+          const a = scheduledActionFor(keyForScheduled(ev));
+          const fired = ev.firedAt != null;
+          return (
+            <div key={ev.id} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', opacity: fired ? 0.6 : 1 }}>
+              <span style={{ fontSize: 16 }}>{a.emoji}</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 13 }}>
+                  +{ev.offsetMinutes ?? 0} min · {a.label}{fired ? ' · fired' : ''}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{summary(ev)}</div>
+              </div>
+              <button className="btn btn--ghost" style={{ padding: '4px 8px', fontSize: 12 }} onClick={() => editExisting(ev)}>Edit</button>
+              <button className="btn btn--ghost" style={{ padding: '4px 8px', fontSize: 12, color: 'var(--danger)' }} onClick={() => remove(ev)}>Delete</button>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <span style={labelStyle}>{editId ? 'Edit announcement' : 'New announcement'}</span>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {SCHEDULED_ACTIONS.map((a) => (
+            <button key={a.key} type="button" className={a.key === actionKey ? 'btn' : 'btn btn--ghost'} style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => setActionKey(a.key)}>
+              {a.emoji} {a.label}
+            </button>
+          ))}
+        </div>
+        <div className="field">
+          <label>Minutes after start</label>
+          <input className="input" type="number" value={offset} onChange={(e) => setOffset(e.target.value)} placeholder="e.g. 30" />
+        </div>
+        {action.needsMessage ? (
+          <div className="field">
+            <label>Message</label>
+            <textarea className="input" rows={2} value={message} onChange={(e) => setMessage(e.target.value)}
+              placeholder={action.key === 'gm-reminder' ? 'e.g. Send Aaron to The Dock now' : action.key === 'gear-drop' ? 'e.g. A supply drop is at Trestle Bridge' : 'e.g. The storm is closing in — head for high ground'}
+              style={{ resize: 'vertical' }} />
+          </div>
+        ) : (
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{action.hint}</span>
+        )}
+        <div style={{ display: 'flex', gap: 12 }}>
+          {editId && <button className="btn btn--ghost" style={{ flex: 1 }} onClick={reset} disabled={busy}>Cancel edit</button>}
+          <button className="btn" style={{ flex: 1 }} onClick={save} disabled={busy}>{editId ? 'Save' : 'Add'}</button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

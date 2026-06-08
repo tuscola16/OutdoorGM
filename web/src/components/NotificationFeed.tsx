@@ -53,13 +53,19 @@ function formatTime(ms: number): string {
  *  - 🆘 safety alerts (member.sos) and ☠️ eliminations (member.out + cause).
  */
 export function NotificationFeed({
-  arrivals, entryTrips = [], members,
+  arrivals, entryTrips = [], members, max,
 }: {
   arrivals: Arrival[];
   entryTrips?: EntryTrip[];
   members: GameMember[];
+  /**
+   * #75: cap the feed to the latest `max` rows and hide the filter chips — for the compact
+   * Play-view sidebar. Omit for the full, filterable view (the "see all" modal).
+   */
+  max?: number;
 }) {
   const [filter, setFilter] = useState<'all' | Category>('all');
+  const capped = max != null;
 
   const notifs = useMemo<Notif[]>(() => {
     const items: Notif[] = [];
@@ -115,12 +121,15 @@ export function NotificationFeed({
     return items.sort((a, b) => b.time - a.time);
   }, [arrivals, entryTrips, members]);
 
-  const shown = notifs.filter((n) =>
+  const filtered = notifs.filter((n) =>
     filter === 'all' ? true : filter === 'sos' ? (n.category === 'sos' || n.category === 'death') : n.category === filter
   );
+  // Capped sidebar shows only the latest `max` (no filtering — chips are hidden there).
+  const shown = capped ? notifs.slice(0, max) : filtered;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minHeight: 0, height: '100%' }}>
+      {!capped && (
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {FILTERS.map((f) => {
           const active = filter === f.key;
@@ -141,6 +150,7 @@ export function NotificationFeed({
           );
         })}
       </div>
+      )}
 
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
         {shown.length === 0 ? (

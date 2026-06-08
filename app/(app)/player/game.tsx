@@ -399,7 +399,7 @@ export default function PlayerGameScreen() {
         {phase === 'lobby' && <LobbyPermissions rationsEnabled={config.rationsEnabled} />}
         {gameId ? (
           <View style={styles.waitFeed}>
-            <BroadcastFeed max={10} scroll={false} />
+            <BroadcastFeed gameId={gameId} max={10} scroll={false} />
           </View>
         ) : null}
       </ScrollView>
@@ -535,7 +535,7 @@ export default function PlayerGameScreen() {
               )}
 
               <Text style={styles.feedHeading}>Messages</Text>
-              <BroadcastFeed scroll={false} />
+              <BroadcastFeed gameId={gameId!} scroll={false} />
             </ScrollView>
           )}
         </View>

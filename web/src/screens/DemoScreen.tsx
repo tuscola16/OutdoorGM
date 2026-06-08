@@ -161,13 +161,25 @@ const CHECKPOINTS = [
   { id: 'c3', name: 'Supply Cache', x: 318, y: 208, color: C.secondary, revealed: true  },
 ];
 
-const ARRIVALS = [
-  { id: 'a1', player: 'Katniss E.', sub: 'reached Cornucopia',          time: '10:22' },
-  { id: 'a2', player: 'Glimmer',    sub: 'found a boon at Supply Cache', time: '09:48' },
-  { id: 'a3', player: 'Peeta M.',   sub: 'hit a hazard at The Lake',     time: '09:15' },
-  { id: 'a4', player: 'Thresh',     sub: 'reached Cornucopia',          time: '08:50' },
-  { id: 'a5', player: 'Finnick O.', sub: 'hit a hazard at The Lake',     time: '07:10' },
+// The GM notification feed (#73) distinguishes runbook *events* that actually fired —
+// themed by their effect kind — from neutral *arrivals* ("reached X"). The behavior lives
+// in the Runbook (#60), not on the checkpoint, so an event row carries the delivered kind.
+type FeedKind = 'hazard' | 'boon' | 'arrival';
+
+const ARRIVALS: { id: string; player: string; sub: string; time: string; kind: FeedKind }[] = [
+  { id: 'a1', player: 'Katniss E.', sub: 'reached Cornucopia',          time: '10:22', kind: 'arrival' },
+  { id: 'a2', player: 'Glimmer',    sub: 'A hidden cache! Claim it.',   time: '09:48', kind: 'boon' },
+  { id: 'a3', player: 'Peeta M.',   sub: 'A beast attacks! Defend or flee.', time: '09:15', kind: 'hazard' },
+  { id: 'a4', player: 'Thresh',     sub: 'reached Cornucopia',          time: '08:50', kind: 'arrival' },
+  { id: 'a5', player: 'Finnick O.', sub: 'A beast attacks! Defend or flee.', time: '07:10', kind: 'hazard' },
 ];
+
+// Per-kind presentation mirroring web checkpointKinds.ts KIND_META + the GM feed.
+const FEED_KIND: Record<FeedKind, { icon: string; color: string; label: string }> = {
+  hazard:  { icon: 'warning',          color: C.danger,    label: 'Hazard' },
+  boon:    { icon: 'shield-checkmark', color: C.secondary, label: 'Boon' },
+  arrival: { icon: 'location',         color: C.textSec,   label: '' },
+};
 
 const BROADCASTS = [
   { id: 'b1', message: 'The storm is closing in from the north — head south.', time: '10:18' },
@@ -388,7 +400,7 @@ function GMSetupView() {
           Set up your game. When you're ready, open it so players can join.
         </p>
         <ChecklistRow icon="scan-outline" title="Set the boundary" sub="Boundary set — tap to adjust" done />
-        <ChecklistRow icon="location-outline" title="Manage checkpoints" sub="3 checkpoints — tap to edit" done />
+        <ChecklistRow icon="location-outline" title="Checkpoints & Runbook" sub="3 checkpoints · behavior set in the Runbook" done />
         <ChecklistRow icon="document-text-outline" title="Rules" sub="Rules written" done />
         <ChecklistRow icon="settings-outline" title="Game settings" sub="3.5h game · tap to adjust" done={false} />
       </div>
@@ -748,24 +760,29 @@ function GMAlertsFeedView() {
       <GMTabBar active="alerts" />
 
       <div style={{ flex: 1, margin: '0 16px', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, overflowY: 'auto' }}>
-        {ARRIVALS.map((al) => (
-          <div key={al.id} style={{
-            display: 'flex', alignItems: 'center', padding: '10px 12px', marginBottom: 6,
-            background: C.elevated, borderRadius: 10, borderLeft: `3px solid ${C.primary}`,
-          }}>
-            <div style={{
-              width: 32, height: 32, borderRadius: 16, background: C.surface, marginRight: 10,
-              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+        {ARRIVALS.map((al) => {
+          const k = FEED_KIND[al.kind];
+          return (
+            <div key={al.id} style={{
+              display: 'flex', alignItems: 'center', padding: '10px 12px', marginBottom: 6,
+              background: C.elevated, borderRadius: 10, borderLeft: `3px solid ${k.color}`,
             }}>
-              <Icon name="location" size={18} color={C.primary} />
+              <div style={{
+                width: 32, height: 32, borderRadius: 16, background: C.surface, marginRight: 10,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              }}>
+                <Icon name={k.icon} size={18} color={k.color} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ color: C.text, fontWeight: 700, fontSize: 14 }}>
+                  {al.player}{k.label ? ` · ${k.label}` : ''}
+                </div>
+                <div style={{ color: C.textSec, fontSize: 12, marginTop: 1 }}>{al.sub}</div>
+              </div>
+              <span style={{ color: C.textMute, fontSize: 11 }}>{al.time}</span>
             </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ color: C.text, fontWeight: 700, fontSize: 14 }}>{al.player}</div>
-              <div style={{ color: C.textSec, fontSize: 12, marginTop: 1 }}>{al.sub}</div>
-            </div>
-            <span style={{ color: C.textMute, fontSize: 11 }}>{al.time}</span>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <div style={{ padding: '12px 16px 36px', display: 'flex', justifyContent: 'center' }}>
