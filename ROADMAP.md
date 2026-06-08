@@ -21,7 +21,11 @@ priority-ranked entries (see the Built callout). Its follow-on **61** retires th
 cover — clock-triggered actions with no player crossing. A second feedback pass (web + play
 testing) added **62–72** — see the dated **Field-test findings — 2026-06-07 (batch 2)** section
 below (P0 defects: ration-review false positives, per-runbook-event tripping, broadcast/checkpoint
-push reliability; plus validation, boundary-constrained checkpoints, and game cloning).
+push reliability; plus validation, boundary-constrained checkpoints, and game cloning). After
+deploying that batch, post-deploy testing added **73–77** (**Field-test findings — 2026-06-08, batch
+3**): a P0 regression where a runbook entry tripped more than once, GM-prompted notifications missing
+from the player feed, a GM notifications page for large games, naming a cloned game, and lingering
+closed-phone pass-through flakiness.
 
 > **Built & removed** (retired numbers, never reused — see git history + the
 > [README](README.md#features)):
@@ -183,6 +187,50 @@ source of truth instead of (or alongside) the on-device local notification.
 
 ---
 
+## Field-test findings — 2026-06-08 (batch 3, post-deploy testing)
+
+From testing the deployed #65–#70 batch. Priority tags inline.
+
+**73. A runbook entry tripped more than once.** *(P0 — regression)* A single runbook entry fired
+**3×** for one player, but #67's contract is *each entry trips at most once per player* (the
+`entryTrips/{playerId}_{entryId}` latch, created atomically). Re-test post-deploy (the report may
+straddle the 2026-06-07 functions deploy), and if it reproduces, audit every path that delivers an
+effect for one that bypasses the `entryTrips.create()` dedup — e.g. the confirmed-crossing vs.
+re-eval paths both firing, concurrent `onLocationUpdate` invocations racing before the latch commits,
+or an effect dispatched without a corresponding `entryTrips` create. The latch is the single source
+of truth; nothing should push a player effect without first winning the `create`.
+
+**74. GM-prompted player notification doesn't appear in the player's notification list.** *(P1)*
+Firing a `gm-prompted` runbook entry at a player pushes/broadcasts, but the message isn't showing in
+the player's in-app notification feed (it should). `fireRunbookEntry` writes a `kind:'checkpoint-event'`
+broadcast with `targetPlayerId` (or null) + `pushed:true`; the player's `BroadcastsContext` subscribes
+to `targetPlayerId == null || == uid`, so it *should* surface. Investigate: confirm the broadcast doc
+is written for the targeted case, that `BroadcastFeed`/`broadcastVisuals` render `checkpoint-event`
+(not just hazard/boon/death), and that a `gm-notify`-kind entry (GM-only, no player broadcast) isn't
+being conflated with a player-facing one in the test.
+
+**75. GM notification feed: cap the sidebar, add a full notifications page.** *(P2)* With ~24 players
+the Play-view **Notifications** list (`NotificationFeed`, web `GameScreen` `PlayView`) gets crowded.
+Show only the **last 4** in the sidebar, and make the **"Notifications" header a button** that opens a
+full, scrollable notifications page/modal (all arrivals + runbook events, ideally filterable by
+player/checkpoint/kind). GM dashboard only; no schema change.
+
+**76. Name the cloned game.** *(P2 — extends #65)* Cloning currently auto-names the new game
+`"<source> (copy)"`. Let the GM enter the new game's name before cloning — a small prompt/modal (web
+`GamesScreen`, mobile games action sheet) feeding the existing `cloneGame({ name })` argument, which
+the callable already accepts.
+
+**77. Closed-phone pass-through still unreliable.** *(P1 — #49 follow-up)* A player walked most of the
+way through a large (100 m radius) checkpoint with the phone locked and only got the alert when they
+**opened the phone**. Server-side pass-through (#49) tests the prev→curr segment against each radius,
+but a locked phone may emit **no** background fix across the whole transit (OS throttling), so there's
+no segment to test until the app foregrounds. Investigate: background-location cadence/`deferred`
+settings on a locked device, whether a larger `MAX_SEGMENT_METERS` or distance-filter tuning helps,
+and whether the foreground-resume fix should retro-test the gap. Needs an on-device locked-phone
+re-test (the #49 caveat).
+
+---
+
 ## Tier 4 — Core ration loop
 
 **11. Auto-starvation sweep.** Scheduled function: at each interval boundary, mark any living
@@ -331,9 +379,12 @@ its bundle ID / SHA-1 and the Maps SDK in Cloud Console before wide release. Con
 
 ## Suggested order
 
-0. **Field-test batch 2:** the P0s (**66, 67, 69, 70**) and **65** (clone) are **built** (2026-06-07)
-   — pending a deploy + APK build to reach the field. Remaining before the next build: P1s **63, 64,
-   68, 72** and P2s **62, 71**.
+0. **Field-test batch 2:** the P0s (**66, 67, 69, 70**) and **65** (clone) are **built + deployed**
+   (rules/web/functions, 2026-06-08); mobile-side pieces (#66 mobile, #70, mobile clone) await the
+   next APK. Remaining batch-2: P1s **63, 64, 68, 72** and P2s **62, 71**.
+0b. **Field-test batch 3** (post-deploy): fix **73** first (P0 — a runbook entry trips more than
+   once), then **74** (GM-prompted not in player feed) and **77** (closed-phone pass-through); **75**,
+   **76** are P2 dashboard/clone polish.
 1. **Tier 4** (11–12) completes the ration loop; **Tier 14** (61) restores timed announcements in
    the Runbook (the web run-sheet UI was removed alongside #60).
 2. **Tier 6** (16) trims the last geofence read cost; **Tier 7** (20–28) — integrity invariants —
