@@ -176,6 +176,13 @@ service cloud.firestore {
         allow read, write: if false;
       }
 
+      // Per-window ration-open push latch (#72). Written only by the rationPings Cloud
+      // Function (admin SDK) to fire the "window open" push exactly once per interval;
+      // never client-readable or writable.
+      match /rationWindowPings/{intervalIndex} {
+        allow read, write: if false;
+      }
+
       // Per-player/per-runbook-entry trip latch (#67). Written only by Cloud Functions
       // (admin SDK). GMs may READ it — it's the authoritative "what actually fired for whom"
       // that powers the GM notification feed (#73); players never read it.

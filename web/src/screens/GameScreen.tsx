@@ -21,6 +21,8 @@ import {
   KIND_META, checkpointKind, VIS_META, VIS_ORDER,
   behaviorSummary, CHECKPOINT_ICON_EMOJIS, DEFAULT_CHECKPOINT_ICON, checkpointIconEmoji,
 } from '@/services/checkpointKinds';
+import { validateGameConfig, requireMinInt } from '@shared/common/gameConfigValidation';
+import { pointInBoundary } from '@shared/common/geo';
 import { deleteField } from 'firebase/firestore';
 import type {
   Arrival, Checkpoint, RunbookEntry, GameMember, MapBoundary, PlayerLocation, RationSubmission,
@@ -306,6 +308,15 @@ function SetupView({
   const [showRules, setShowRules] = useState(false);
 
   function handleMapClick(coord: { latitude: number; longitude: number }) {
+    // #64: a checkpoint must sit inside the play area, or the geofence can never fire it.
+    if (!game?.boundary) {
+      window.alert('Draw the play boundary first — checkpoints must sit inside it.');
+      return;
+    }
+    if (!pointInBoundary(coord.latitude, coord.longitude, game.boundary)) {
+      window.alert('That spot is outside the play area. Place the checkpoint inside the boundary.');
+      return;
+    }
     setNewCpCoord(coord);
   }
 
@@ -591,9 +602,13 @@ function CheckpointBehaviorModal({
       window.alert('Pick at least one player for a sponsor drop, or choose "All players".');
       return;
     }
-    const revealOffsetMins = visibility === 'shown-on-trigger' && revealTrigger === 'timed'
-      ? Math.max(0, Math.round(Number(revealOffset) || 0))
-      : null;
+    const isTimedReveal = visibility === 'shown-on-trigger' && revealTrigger === 'timed';
+    if (isTimedReveal) {
+      // #63: a timed reveal at +0 (or blank/negative) min makes no sense — require > 0.
+      const offsetErr = requireMinInt(Math.round(Number(revealOffset)), 1, 'Reveal time (minutes after start)');
+      if (offsetErr) { window.alert(offsetErr); return; }
+    }
+    const revealOffsetMins = isTimedReveal ? Math.round(Number(revealOffset)) : null;
 
     const updates: Record<string, unknown> = {
       name: name.trim(),
@@ -1301,18 +1316,24 @@ function ConfigModal({
   const [rationWindow, setRationWindow] = useState(String(initial.rationWindowMinutes));
   const [uniqueCards, setUniqueCards] = useState(initial.enforceUniqueRationCards);
   const [tripInterval, setTripInterval] = useState(String(initial.tripIntervalMinutes ?? 2)); // #67
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
 
   async function save() {
-    const minutes = Math.max(5, Math.round(Number(duration) || initial.durationMinutes));
-    const rationMins = Math.max(1, Math.round(Number(rationMinutes) || initial.rationIntervalMinutes));
-    // Open window can't exceed the interval (clamped); blank/0 falls back to the default.
-    const rationWindowMins = Math.min(
-      rationMins,
-      Math.max(1, Math.round(Number(rationWindow) || initial.rationWindowMinutes))
-    );
-    // #67: re-trip cadence — at least 1 minute; blank/0 falls back to the default (2).
-    const tripMins = Math.max(1, Math.round(Number(tripInterval) || (initial.tripIntervalMinutes ?? 2)));
+    // #63: validate + show inline reasons instead of silently clamping.
+    const minutes = Math.round(Number(duration));
+    const rationMins = Math.round(Number(rationMinutes));
+    const rationWindowMins = Math.round(Number(rationWindow));
+    const tripMins = Math.round(Number(tripInterval));
+    const errs = validateGameConfig({
+      durationMinutes: minutes,
+      rationsEnabled: rations,
+      rationIntervalMinutes: rationMins,
+      rationWindowMinutes: rationWindowMins,
+      tripIntervalMinutes: tripMins,
+    });
+    if (Object.keys(errs).length > 0) { setErrors(errs); return; }
+    setErrors({});
     setBusy(true);
     try {
       await updateGameConfig(gameId, {
@@ -1341,7 +1362,9 @@ function ConfigModal({
       <div className="field">
         <label>Game length (minutes)</label>
         <input className="input" type="number" value={duration} onChange={(e) => setDuration(e.target.value)} />
-        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>210 = 3.5 hours</span>
+        {errors.durationMinutes
+          ? <span style={{ fontSize: 12, color: 'var(--danger)' }}>{errors.durationMinutes}</span>
+          : <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>210 = 3.5 hours</span>}
       </div>
       <div className="field">
         <label>Event date (optional)</label>
@@ -1353,6 +1376,9 @@ function ConfigModal({
       <div className="field">
         <label>Checkpoint re-trigger interval (minutes)</label>
         <input className="input" type="number" value={tripInterval} onChange={(e) => setTripInterval(e.target.value)} />
+        {errors.tripIntervalMinutes && (
+          <span style={{ fontSize: 12, color: 'var(--danger)' }}>{errors.tripIntervalMinutes}</span>
+        )}
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
           While a player lingers on a checkpoint, its runbook events are re-checked this often so a
           newly-live event still triggers. Each event triggers a player at most once.
@@ -1367,15 +1393,19 @@ function ConfigModal({
           <div className="field">
             <label>Ration interval (minutes)</label>
             <input className="input" type="number" value={rationMinutes} onChange={(e) => setRationMinutes(e.target.value)} />
-            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>How often players must submit a ration card</span>
+            {errors.rationIntervalMinutes
+              ? <span style={{ fontSize: 12, color: 'var(--danger)' }}>{errors.rationIntervalMinutes}</span>
+              : <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>How often players must submit a ration card</span>}
           </div>
           <div className="field">
             <label>Open window (minutes)</label>
             <input className="input" type="number" value={rationWindow} onChange={(e) => setRationWindow(e.target.value)} />
-            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-              How long the card window stays open before each interval ends — players are alerted when
-              it opens. Capped at the interval length.
-            </span>
+            {errors.rationWindowMinutes
+              ? <span style={{ fontSize: 12, color: 'var(--danger)' }}>{errors.rationWindowMinutes}</span>
+              : <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  How long the card window stays open before each interval ends — players are alerted when
+                  it opens. Must not exceed the interval length.
+                </span>}
           </div>
           <Toggle label="Unique ration cards" checked={uniqueCards} onChange={setUniqueCards} />
         </>

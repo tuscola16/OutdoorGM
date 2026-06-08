@@ -5,7 +5,7 @@ import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firest
 import { Collections } from '@/services/firebase';
 import { submitRation, rationInterval } from '@/services/gameService';
 import { uploadRationPhoto } from '@/services/storage';
-import { enqueueRation, flushRationQueue } from '@/services/rationQueue';
+import { enqueueRation, flushRationQueue, isPermanentRationError } from '@/services/rationQueue';
 import { friendlyError } from '@/services/errorUtils';
 import { useNow } from '@/hooks/useNow';
 import { formatDuration } from '@/hooks/useElapsed';
@@ -158,6 +158,16 @@ export function RationPanel({
       setOfflineForInterval(null);
       setCamDebug('submitted ✓');
     } catch (err) {
+      // #68: a server-side rejection (e.g. a duplicate card number with enforcement on) is
+      // permanent — surface it and let the player fix the card number, never queue it for
+      // retry (which would loop forever). Keep the typed card so they can edit it.
+      if (isPermanentRationError(err)) {
+        const msg = (err as { message?: string })?.message || friendlyError(err);
+        setCamDebug(`rejected: ${msg}`);
+        Alert.alert('Ration not submitted', msg);
+        setBusy(false);
+        return;
+      }
       // Offline / poor signal (#4): the Storage upload isn't SDK-queued, so persist the
       // capture durably and flush on reconnect/foreground — a dead zone shouldn't cost
       // the player a ration (= wrongful starvation).

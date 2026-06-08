@@ -18,6 +18,7 @@ import { Colors } from '@/constants/colors';
 import { onForegroundMessage } from '@/services/notificationService';
 import { endGame, openLobby, reopenSetup, startGame, updateGameConfig, deleteGame, setGameArchived, sendBroadcast, sendGmMessage, subscribeGmMessages, gameConfig, parseEventDate, formatEventDate } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
+import { validateGameConfig } from '@/common/gameConfigValidation';
 import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
 import { useNow } from '@/hooks/useNow';
 import { STALE_MS, unaccountedPlayers, unaccountedReasonText } from '@/services/locationStatus';
@@ -57,6 +58,7 @@ export default function GMGameScreen() {
   const [cfgRationInterval, setCfgRationInterval] = useState('');
   const [cfgRationWindow, setCfgRationWindow] = useState('');
   const [cfgUniqueCards, setCfgUniqueCards] = useState(true);
+  const [cfgErrors, setCfgErrors] = useState<Record<string, string>>({});
   const [newAlertCount, setNewAlertCount] = useState(0);
   const [lastSeenArrivals, setLastSeenArrivals] = useState(0);
   const [copiedCode, setCopiedCode] = useState<'player' | 'gm' | null>(null);
@@ -247,17 +249,26 @@ export default function GMGameScreen() {
     setCfgRationInterval(String(cfg.rationIntervalMinutes));
     setCfgRationWindow(String(cfg.rationWindowMinutes));
     setCfgUniqueCards(cfg.enforceUniqueRationCards);
+    setCfgErrors({});
     setShowConfig(true);
   }
 
   async function saveConfig() {
-    const minutes = Math.max(5, Math.round(Number(cfgDuration) || gameConfig(game).durationMinutes));
-    const rationMins = Math.max(1, Math.round(Number(cfgRationInterval) || gameConfig(game).rationIntervalMinutes));
-    // Open window can't exceed the interval (clamped) — a 0/blank value falls back to the default.
-    const rationWindowMins = Math.min(
-      rationMins,
-      Math.max(1, Math.round(Number(cfgRationWindow) || gameConfig(game).rationWindowMinutes))
-    );
+    // #63: validate + show inline reasons instead of silently clamping.
+    const minutes = Math.round(Number(cfgDuration));
+    const rationMins = Math.round(Number(cfgRationInterval));
+    const rationWindowMins = Math.round(Number(cfgRationWindow));
+    const errs = validateGameConfig({
+      durationMinutes: minutes,
+      rationsEnabled: cfgRations,
+      rationIntervalMinutes: rationMins,
+      rationWindowMinutes: rationWindowMins,
+      // The mobile config screen doesn't edit the trip interval — keep the saved value
+      // (resolved here) so it never fails validation for a field the GM can't see.
+      tripIntervalMinutes: gameConfig(game).tripIntervalMinutes ?? 2,
+    });
+    if (Object.keys(errs).length > 0) { setCfgErrors(errs); return; }
+    setCfgErrors({});
     await runPhaseAction(() =>
       updateGameConfig(gameId!, {
         // Event date (#36): a parsed timestamp when valid, else null to clear it.
@@ -661,7 +672,9 @@ export default function GMGameScreen() {
               placeholder="210"
               placeholderTextColor={Colors.textMuted}
             />
-            <Text style={styles.settingHint}>210 = 3.5 hours</Text>
+            {cfgErrors.durationMinutes
+              ? <Text style={styles.settingError}>{cfgErrors.durationMinutes}</Text>
+              : <Text style={styles.settingHint}>210 = 3.5 hours</Text>}
 
             <Text style={styles.codeLabel}>EVENT DATE (OPTIONAL)</Text>
             <TextInput
@@ -712,7 +725,9 @@ export default function GMGameScreen() {
                   placeholder="30"
                   placeholderTextColor={Colors.textMuted}
                 />
-                <Text style={styles.settingHint}>How often players must submit a ration card</Text>
+                {cfgErrors.rationIntervalMinutes
+                  ? <Text style={styles.settingError}>{cfgErrors.rationIntervalMinutes}</Text>
+                  : <Text style={styles.settingHint}>How often players must submit a ration card</Text>}
                 <Text style={styles.codeLabel}>OPEN WINDOW (MINUTES)</Text>
                 <TextInput
                   style={styles.durationInput}
@@ -722,10 +737,12 @@ export default function GMGameScreen() {
                   placeholder="10"
                   placeholderTextColor={Colors.textMuted}
                 />
-                <Text style={styles.settingHint}>
-                  How long the card window stays open before each interval ends. Players are alerted
-                  when it opens; the panel is hidden until then. Capped at the interval length.
-                </Text>
+                {cfgErrors.rationWindowMinutes
+                  ? <Text style={styles.settingError}>{cfgErrors.rationWindowMinutes}</Text>
+                  : <Text style={styles.settingHint}>
+                      How long the card window stays open before each interval ends. Players are alerted
+                      when it opens; the panel is hidden until then. Must not exceed the interval length.
+                    </Text>}
                 <ConfigToggle
                   label="Unique ration cards"
                   hint="Flag a card number that's been used before so you can reject it"
@@ -1179,6 +1196,7 @@ const styles = StyleSheet.create({
     color: Colors.text, fontSize: 18, fontWeight: '700', padding: 14, marginTop: 6,
   },
   settingHint: { fontSize: 12, color: Colors.textMuted, marginTop: 6, marginBottom: 8 },
+  settingError: { fontSize: 12, color: Colors.danger, fontWeight: '600', marginTop: 6, marginBottom: 8 },
   toggleRow: {
     flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12,
     borderTopWidth: 1, borderTopColor: Colors.border,

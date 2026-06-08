@@ -271,15 +271,6 @@ GMs assign players to themselves; the geofence/arrival push routes only to the o
 GM map/roster views filter to `teamGmId === me`. Unassigned/legacy players fall back to all-GMs
 (today's behavior). Deferred per the 2026-06-07 field test.
 
-## 68. Server-enforced unique ration card numbers
-
-No new field — enforce the existing `enforceUniqueRationCards` at write time. Route `submitRation`
-through a callable (or a Firestore rule + transaction) that rejects a `cardNumber` already used by a
-non-rejected `rations/*` doc in the same game, returning a typed error
-(`failed-precondition: 'card-in-use'`) the client shows inline. The deterministic
-`rations/{playerId}_{intervalIndex}` id stays (idempotent re-submit of the *same* card by the same
-player is fine; a *different* player reusing a number is blocked). GM "reused" flag stays as backstop.
-
 ## 71. Player notification dismiss model
 
 #70 shipped a **device-local** dismissed set (`AsyncStorage` `acked_broadcasts_{gameId}` in
@@ -299,16 +290,6 @@ A dismiss control writes `dismissedBy: arrayUnion(uid)` (narrow `firestore.rules
 may update *only* `dismissedBy`, adding their own uid). Per-player, so one player's dismiss doesn't
 affect others. (Alt: a player-doc `dismissedBroadcastIds` set if we'd rather players not write
 broadcast docs.)
-
-## 72. Reliable ration-window-open notification
-
-No new game-doc field necessarily. Two-pronged: (a) harden the on-device schedule
-(`useRationReminders`) — reschedule on config/`startedAt` change, schedule the *exact* next
-`windowStartsAt`, and don't rely on a single long timer; (b) add a **server** push as source of
-truth: a scheduled function (sibling to `runScheduledEvents`) that, each minute, finds games whose
-ration window just opened and pushes living players once (dedupe via a per-interval
-`rationWindowPings/{gameId}_{intervalIndex}` latch, idempotent — item 26). Prefer the server push as
-authoritative; keep the local notification as a fast-path fallback.
 
 ---
 
@@ -342,8 +323,5 @@ These items are pure logic, rules, client architecture, or ops — no new fields
 - **44** Voucher-site preset — a one-tap scaffold of open/close/announce run-sheet rows on a time-windowed checkpoint.
 - **47** Maps-key restriction — Cloud Console ops task.
 - **62** `/demo` parity audit — content/UI only; walk `web/src/screens/DemoScreen.tsx` against the live app (#60 runbook, terminal rations) and refresh the mocks. No schema.
-- **63** Numeric validation — logic/UI only; add `> 0` + ordering checks (window ≤ interval ≤ game length; radius ≥ 10) in the web `ConfigModal`/editors and mobile equivalents, plus a shared validator. No new fields (the numbers already exist in `GameConfig`/`Checkpoint`).
-- **64** Boundary-constrained checkpoints — logic only; reuse the geofence `pointInBoundary` (polygon ≥3 verts else bbox) client-side on placement/edit in web + mobile. No schema.
-- **74** GM-prompted notification missing from the player feed — logic only; `fireRunbookEntry` already writes a `checkpoint-event` broadcast (`targetPlayerId`/null, `pushed:true`). Verify the player `BroadcastsContext` query + `BroadcastFeed`/`broadcastVisuals` render it; ensure `gm-notify`-kind (GM-only) isn't conflated with a player-facing fire. No schema.
 - **75** GM notifications page — UI only; builds on #73's `entryTrips`-driven feed: web `GameScreen` `PlayView` shows the last 4 in the sidebar and a clickable "Notifications" header opens a full scrollable page/modal. No schema.
 - **77** Closed-phone pass-through reliability — #49 follow-up; tuning of background-location cadence / `MAX_SEGMENT_METERS` / foreground-resume retro-test. No schema; needs an on-device locked-phone test.

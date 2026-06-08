@@ -14,6 +14,7 @@ import {
   updateCheckpoint, deleteCheckpoint, setRevealSchedule, revealCheckpointNow, fireRunbookEntry,
 } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
+import { requireMinInt } from '@/common/gameConfigValidation';
 import {
   KIND_META, VIS_META, VIS_ORDER, TRIGGER_META, hexToRgba,
 } from '@/components/checkpointForm';
@@ -102,6 +103,13 @@ export default function CheckpointEditorScreen() {
       return;
     }
 
+    const isTimedReveal = cpVisibility === 'shown-on-trigger' && cpRevealTrigger === 'timed';
+    if (isTimedReveal) {
+      // #63: a timed reveal at +0 (or blank/negative) min makes no sense — require > 0.
+      const offsetErr = requireMinInt(Math.round(Number(cpRevealOffset)), 1, 'Reveal time (minutes after start)');
+      if (offsetErr) { Alert.alert('Invalid reveal time', offsetErr); return; }
+    }
+
     const updates: Record<string, unknown> = {
       name: name.trim(),
       radius: rad,
@@ -111,9 +119,7 @@ export default function CheckpointEditorScreen() {
     };
 
     // A timed reveal pairs to a deterministic run-sheet row (#60).
-    const revealOffset = cpVisibility === 'shown-on-trigger' && cpRevealTrigger === 'timed'
-      ? Math.max(0, Math.round(Number(cpRevealOffset) || 0))
-      : null;
+    const revealOffset = isTimedReveal ? Math.round(Number(cpRevealOffset)) : null;
 
     setSaving(true);
     try {
@@ -356,6 +362,13 @@ export default function CheckpointEditorScreen() {
           <View style={styles.modalSheet}>
             <View style={styles.modalContent}>
               <Text style={styles.modalTitle}>Fire “{fireEntry?.name}”</Text>
+              {fireEntry?.effect?.kind === 'gm-notify' && (
+                // #74: gm-notify is GM-only by design, so firing it shows the player nothing.
+                <Text style={styles.gmOnlyWarning}>
+                  ⚠ This effect is “GM only” — players see nothing when you fire it. Edit the entry
+                  on the web dashboard and pick Hazard, Boon, or Notify to reach the player.
+                </Text>
+              )}
               <Text style={styles.hintSmall}>
                 Leave everyone unchecked to send to all living players, or pick specific recipients.
               </Text>
@@ -425,6 +438,7 @@ const styles = StyleSheet.create({
   },
   chipText: { color: Colors.textSecondary, fontSize: 13, fontWeight: '600' },
   hintSmall: { color: Colors.textMuted, fontSize: 12, lineHeight: 17 },
+  gmOnlyWarning: { color: Colors.danger, fontSize: 12, fontWeight: '600', lineHeight: 17 },
   entryRow: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: Colors.surfaceElevated, borderRadius: 12, padding: 12, borderWidth: 1, borderColor: Colors.border },
   entryIcon: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, backgroundColor: Colors.surface },
   entryName: { color: Colors.text, fontSize: 14, fontWeight: '700' },

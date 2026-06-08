@@ -7,6 +7,8 @@ export { createGame, cloneGame, joinGameByCode, deleteGame } from './games';
 export { onBroadcastCreate } from './broadcasts';
 export { cleanupRationPhotosOnGameEnd } from './cleanup';
 export { runScheduledEvents } from './runsheet';
+export { submitRation } from './rations';
+export { rationPings } from './rationPings';
 export { fireRunbookEntry } from './runbook';
 export { rearmCheckpoint } from './rearm';
 export { onGameStartProjectMarkers } from './markers';

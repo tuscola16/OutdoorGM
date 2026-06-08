@@ -33,6 +33,20 @@ export interface PendingRation {
 /** Stable identity of a queued item — one per (game, player, interval) window. */
 const keyOf = (p: PendingRation) => `${p.gameId}|${p.userId}|${p.intervalIndex}`;
 
+/**
+ * Is this a *permanent* submission failure (a server rejection) rather than a transient
+ * offline/network one? The `submitRation` callable (#68) throws these for a duplicate card
+ * number, a non-member, or a game not in play — retrying can never succeed, so the queue
+ * must drop them instead of looping forever, and the live UI must surface them rather than
+ * silently queueing. Transient errors (offline, Storage unreachable) are NOT in this set, so
+ * they stay queued for the next flush.
+ */
+export function isPermanentRationError(err: unknown): boolean {
+  const code = String((err as { code?: unknown })?.code ?? '').toLowerCase();
+  return ['already-exists', 'permission-denied', 'failed-precondition', 'invalid-argument', 'unauthenticated']
+    .some((c) => code.includes(c));
+}
+
 async function readQueue(): Promise<PendingRation[]> {
   try {
     const raw = await AsyncStorage.getItem(QUEUE_KEY);
@@ -78,6 +92,7 @@ export async function flushRationQueue(): Promise<number> {
     const q = await readQueue();
     if (q.length === 0) return 0;
     const succeeded = new Set<string>();
+    const dropped = new Set<string>(); // permanently rejected — remove without counting as flushed
     for (const item of q) {
       try {
         const url = await uploadRationPhoto(item.gameId, item.userId, item.intervalIndex, item.localUri);
@@ -89,13 +104,15 @@ export async function flushRationQueue(): Promise<number> {
           item.cardNumber
         );
         succeeded.add(keyOf(item));
-      } catch {
-        // Still failing (offline / Storage unreachable) — leave it queued.
+      } catch (err) {
+        // #68: a permanent server rejection (e.g. duplicate card) can never succeed on retry —
+        // drop it. Transient offline/Storage errors stay queued for the next flush.
+        if (isPermanentRationError(err)) dropped.add(keyOf(item));
       }
     }
     // Merge against the current queue so a capture enqueued during the flush survives.
     const current = await readQueue();
-    await writeQueue(current.filter((p) => !succeeded.has(keyOf(p))));
+    await writeQueue(current.filter((p) => !succeeded.has(keyOf(p)) && !dropped.has(keyOf(p))));
     return succeeded.size;
   } finally {
     flushing = false;

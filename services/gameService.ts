@@ -320,10 +320,12 @@ export function subscribeGmMessages(
 }
 
 /**
- * Submit a ration-card photo for the current eat window (Rules 6–9). The photo
- * must already be uploaded (returns a download URL); this writes the submission
- * record. The doc id is deterministic (`${playerId}_${intervalIndex}`) so a
- * re-submit within the same window overwrites rather than duplicates.
+ * Submit a ration-card photo for the current eat window (Rules 6–9). The photo must already
+ * be uploaded (this takes its download URL). Goes through the `submitRation` Cloud Function
+ * (#68) so the server can enforce unique card numbers at write time — a duplicate card (with
+ * enforcement on) throws `already-exists` and never lands. The doc id is deterministic
+ * (`${playerId}_${intervalIndex}`) so the same player re-submitting the same window is
+ * idempotent.
  */
 export async function submitRation(
   gameId: string,
@@ -332,20 +334,14 @@ export async function submitRation(
   photoUrl: string,
   cardNumber?: string
 ): Promise<void> {
-  await firestore()
-    .collection(Collections.GAMES)
-    .doc(gameId)
-    .collection(Collections.RATIONS)
-    .doc(`${player.userId}_${intervalIndex}`)
-    .set({
-      playerId: player.userId,
-      playerName: player.displayName,
-      intervalIndex,
-      photoUrl,
-      cardNumber: cardNumber ?? null,
-      status: 'pending',
-      submittedAt: firestore.FieldValue.serverTimestamp(),
-    });
+  const callable = functions().httpsCallable('submitRation');
+  await callable({
+    gameId,
+    displayName: player.displayName,
+    intervalIndex,
+    photoUrl,
+    cardNumber: cardNumber ?? null,
+  });
 }
 
 /** GM marks a submitted ration valid or rejected. */

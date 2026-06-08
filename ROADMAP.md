@@ -10,8 +10,10 @@ store launch. Items are grouped by tier, roughly in build order. Numbers are **s
 reused**; when an item ships it moves to the **Built & removed** callout below (context preserved)
 rather than being renumbered. Recently shipped: the **#60 checkpoint & runbook overhaul** and the
 **2026-06-07/08 field-test batch** (#65–#70, #73, #76 — game cloning, ration-window gating,
-per-runbook-event tripping, broadcast push, persistent event modal, accurate GM feed). The
-outstanding field-test items (#62–#64, #68, #71, #72, #74, #75, #77) are in the section below; older
+per-runbook-event tripping, broadcast push, persistent event modal, accurate GM feed) and the
+**P1 field-test batch #63/#64/#68/#72/#74** (numeric validation, boundary-constrained checkpoints,
+server-enforced unique ration cards, reliable ration-window push, GM-prompted notification fix). The
+outstanding field-test items (#62, #71, #75, #77) are in the section below; older
 tiers (run-sheet follow-on #61, ration loop, integrity invariants, polish) follow.
 
 > **Built & removed** (retired numbers, never reused — see git history + the
@@ -78,6 +80,23 @@ tiers (run-sheet follow-on #61, ration loop, integrity invariants, polish) follo
 >   `NotificationFeed` derives events from `entryTrips` (accurate, deduped) + neutral arrivals
 >   (replacing the old "label every arrival by `checkpointKind`" that mislabeled arrivals as hazards).
 >   `entryTrips` is GM-readable in the rules and purged on game end.
+> - **63, 64, 68, 72, 74** — **P1 field-test batch (2026-06-08)**. Shared groundwork: a client
+>   `pointInBoundary` (`common/geo.ts`) and a pure `validateGameConfig` (`common/gameConfigValidation.ts`),
+>   both imported by web (`@shared/common/*`) and mobile (`@/common/*`). **63** numeric-field
+>   validation + cross-field ordering (`window ≤ interval ≤ game length`, timed-reveal offset > 0) with
+>   inline reasons replacing silent clamps in the web `ConfigModal`/`CheckpointBehaviorModal` and the
+>   mobile config + checkpoint editor; **64** placement guard rejecting an out-of-boundary (or
+>   no-boundary) checkpoint on web `SetupView.handleMapClick` + mobile `checkpoints` long-press; **68**
+>   `submitRation` callable enforcing unique ration card numbers in a transaction (`already-exists`
+>   rejection; client surfaces it + drops it from the offline retry queue) — **the `rations` create-rule
+>   lock is deferred until the new APK ships** (the installed APK still writes directly); **72** new
+>   `rationPings` scheduled function (per-minute) pushing the window-open alert authoritatively with an
+>   idempotent `rationWindowPings/{intervalIndex}` latch (admin-only rule; purged on game end), the
+>   local notification kept as fallback; **74** the GM-prompted "player saw nothing" case was a
+>   `gm-notify` (GM-only) effect — added a clear warning in the web Runbook editor + mobile fire modal
+>   (a targeted `notify`/`hazard`/`boon` already reaches the player). **Deployed: web + functions +
+>   rules** (minus the #68 create-rule lock); **mobile halves (#63/#64/#74 + the #68 callable client +
+>   ration-queue change) ride the next APK.**
 
 ---
 
@@ -94,48 +113,10 @@ checkpoint/runbook overhaul** (checkpoints are now identity+visibility; behavior
 Runbook) and **terminal ration approval** (no GM undo; player "fed this window" state). Walk each
 mocked screen against the live app and refresh copy/controls/layout so store screenshots are honest.
 
-**63. Numeric-field validation + cross-field sane bounds.** *(P1)* No number field should accept `0`
-(or negative), and dependent fields must stay ordered. Concretely:
-  - **ration window ≤ ration interval ≤ total game length** (today the window is clamped to the
-    interval, but the interval isn't bounded by game length, and several fields accept 0).
-  - Checkpoint **radius ≥ 10 m** (already enforced on create — extend everywhere, incl. edit).
-  - Game **duration**, **ration interval**, **ration window**, **geofence confirm-fixes**,
-    **re-notify cooldown**, **trip interval (#67)**, **reveal offset minutes** — all `> 0` with
-    sensible minimums, validated in *both* the web `ConfigModal`/editors and the mobile equivalents,
-    with inline reasons (not just silent clamping). Audit `types/index.ts` numeric config + every
-    `<input type="number">` for the same gaps.
-
-**64. Constrain checkpoints to the play boundary.** *(P1)* A GM must not be able to place (or
-drag) a checkpoint outside the set boundary. On map-click placement and on edit, reject/snap-back a
-coordinate that fails the point-in-boundary test (reuse the geofence `pointInBoundary`: polygon when
-≥3 verts, else bbox), with a clear "outside the play area" message. If no boundary is set yet,
-either require one first or warn. Applies to both web and mobile placement flows.
-
-**68. Server-enforce unique ration card numbers.** *(P1)* With `enforceUniqueRationCards` on, the
-player can still submit an already-used card number (the GM only sees a "reused" flag after the fact).
-Block it at submission: reject a duplicate (valid/pending) card number for the game server-side
-(callable or `submitRation` guard / Firestore rule), with a clear player-facing error, so the dupe
-never lands. Keep the GM flag as a backstop.
-
 **71. Players can dismiss notifications from the in-app list.** *(P2)* Give players a way to clear
 items in their notification/broadcast list. #70 shipped a **device-local** dismissed set
 (`AlertOverlay`); this item adds an explicit in-list dismiss control and (optionally) a cross-device
 server model (`Broadcast.dismissedBy`) so a dismissal syncs across a player's devices.
-
-**72. Make the ration-window-open notification reliable.** *(P1)* The "window is open" alert
-(scheduled local notification, `useRationReminders`) often fires **2–3 minutes late**, risking
-wrongful starvation. Investigate OS scheduling drift / re-scheduling on config change; consider a
-**server push** at the window boundary (a scheduled function, like `runScheduledEvents`) as the
-source of truth instead of (or alongside) the on-device local notification.
-
-**74. GM-prompted player notification doesn't appear in the player's notification list.** *(P1)*
-Firing a `gm-prompted` runbook entry at a player pushes/broadcasts, but the message isn't showing in
-the player's in-app notification feed (it should). `fireRunbookEntry` writes a `kind:'checkpoint-event'`
-broadcast with `targetPlayerId` (or null) + `pushed:true`; the player's `BroadcastsContext` subscribes
-to `targetPlayerId == null || == uid`, so it *should* surface. Investigate: confirm the broadcast doc
-is written for the targeted case, that `BroadcastFeed`/`broadcastVisuals` render `checkpoint-event`
-(not just hazard/boon/death), and that a `gm-notify`-kind entry (GM-only, no player broadcast) isn't
-being conflated with a player-facing one in the test.
 
 **75. GM notification feed: cap the sidebar, add a full notifications page.** *(P2)* With ~24 players
 the Play-view **Notifications** list (`NotificationFeed`, web `GameScreen` `PlayView`) gets crowded.
@@ -302,9 +283,10 @@ its bundle ID / SHA-1 and the Maps SDK in Cloud Console before wide release. Con
 
 ## Suggested order
 
-0. **Field-test follow-ups (outstanding):** P1s **63, 64, 68, 72, 74, 77** before the next APK build;
-   P2s **62, 71, 75** as polish. (The built batch — #65–#70, #73, #76 — is deployed; its mobile-only
-   pieces ship with the next APK.)
+0. **Field-test follow-ups (outstanding):** P1 **77** (closed-phone pass-through — held for an
+   on-device locked-phone test) before the next APK build; P2s **62, 71, 75** as polish. (The built
+   batches — #65–#70, #73, #76 and #63/#64/#68/#72/#74 — are deployed; their mobile-only pieces ship
+   with the next APK.)
 1. **Tier 4** (11–12) completes the ration loop; **Tier 14** (61) restores timed announcements in
    the Runbook (the web run-sheet UI was removed alongside #60).
 2. **Tier 6** (16) trims the last geofence read cost; **Tier 7** (20–28) — integrity invariants —

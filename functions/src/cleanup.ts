@@ -43,6 +43,8 @@ export const cleanupRationPhotosOnGameEnd = functions.firestore
       // Per-player crossing/entry latches (#50/#55/#67) — transient, tied to play.
       db.recursiveDelete(gameRef.collection('checkpointTrips')),
       db.recursiveDelete(gameRef.collection('entryTrips')),
+      // Per-window ration-open push latches (#72) — transient, tied to play.
+      db.recursiveDelete(gameRef.collection('rationWindowPings')),
     ]);
 
     functions.logger.info(

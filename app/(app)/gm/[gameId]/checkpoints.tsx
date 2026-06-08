@@ -14,6 +14,7 @@ import { Colors } from '@/constants/colors';
 import { TOPO_TILE_URL, TOPO_TILE_SIZE, TOPO_MAX_ZOOM, TOPO_MAX_NATIVE_ZOOM } from '@/constants/map';
 import { addCheckpoint, updateCheckpoint, deleteCheckpoint } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
+import { pointInBoundary } from '@/common/geo';
 import { KIND_META, checkpointKind, hexToRgba } from '@/components/checkpointForm';
 import { CHECKPOINT_ICONS, checkpointIcon, DEFAULT_CHECKPOINT_ICON } from '@/constants/checkpointIcons';
 import type { MapBoundary, Checkpoint, RunbookEntry } from '@/types';
@@ -141,6 +142,15 @@ export default function CheckpointsScreen() {
   }, [boundary, showRegion]);
 
   function openAddCheckpoint(coord: { latitude: number; longitude: number }) {
+    // #64: a checkpoint must sit inside the play area, or the geofence can never fire it.
+    if (!boundary) {
+      Alert.alert('Set the boundary first', 'Frame the play area before placing checkpoints — they must sit inside it.');
+      return;
+    }
+    if (!pointInBoundary(coord.latitude, coord.longitude, boundary)) {
+      Alert.alert('Outside the play area', 'That spot is outside the boundary. Long-press inside the play area to place a checkpoint.');
+      return;
+    }
     setPendingCoord(coord);
     setEditTarget(null);
     setCpName(`Checkpoint ${checkpoints.length + 1}`);

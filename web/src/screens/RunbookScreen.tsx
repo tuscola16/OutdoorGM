@@ -417,6 +417,14 @@ function EntryEditor({
       {trigger === 'gm-prompted' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, border: '1px solid var(--border)', borderRadius: 10, padding: 12 }}>
           <span style={labelStyle}>Fire now</span>
+          {effect.kind === 'gm-notify' && (
+            // #74: a gm-notify effect is GM-only by design, so firing it shows the player
+            // nothing — the #1 reason a "GM-prompted message didn't reach the player".
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--danger)' }}>
+              ⚠ This effect is “GM only” — players see nothing when you fire it. Pick Hazard,
+              Boon, or Message above to reach the player.
+            </span>
+          )}
           {!entry ? (
             <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Save the entry first, then fire it from here.</span>
           ) : (
