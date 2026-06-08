@@ -191,14 +191,19 @@ source of truth instead of (or alongside) the on-device local notification.
 
 From testing the deployed #65–#70 batch. Priority tags inline.
 
-**73. A runbook entry tripped more than once.** *(P0 — regression)* A single runbook entry fired
-**3×** for one player, but #67's contract is *each entry trips at most once per player* (the
-`entryTrips/{playerId}_{entryId}` latch, created atomically). Re-test post-deploy (the report may
-straddle the 2026-06-07 functions deploy), and if it reproduces, audit every path that delivers an
-effect for one that bypasses the `entryTrips.create()` dedup — e.g. the confirmed-crossing vs.
-re-eval paths both firing, concurrent `onLocationUpdate` invocations racing before the latch commits,
-or an effect dispatched without a corresponding `entryTrips` create. The latch is the single source
-of truth; nothing should push a player effect without first winning the `create`.
+**73. A runbook entry tripped more than once.** *(P0)* A single runbook entry showed **3×** for one
+player in the **GM web notification feed**.
+> **Root cause (diagnosed via live data 2026-06-08):** the server was correct — `entryTrips`/
+> `broadcasts` were empty, one `arrivals` doc, and the timed hazard was correctly withheld before its
+> +3 min window. The bug was the **web `NotificationFeed`**: it built one row per `arrivals` doc and
+> labeled each with `checkpointKind` (the checkpoint's *headline* entry kind), so a plain arrival at a
+> hazard-headlined checkpoint rendered as "hit the hazard" even when nothing fired, and re-crossings
+> showed multiple such rows.
+> **Built (2026-06-08):** the GM feed now derives **event** rows from `entryTrips` (what actually
+> fired — accurate kind/message/time, one per player×entry, naturally deduped) and shows **arrivals**
+> neutrally ("reached X", deduped to latest per player×checkpoint). `entryTrips` is denormalized
+> (player/checkpoint names + delivered effect) and made **GM-readable** in the rules; the web
+> `GameContext` subscribes to it. Needs functions + rules + hosting deploy.
 
 **74. GM-prompted player notification doesn't appear in the player's notification list.** *(P1)*
 Firing a `gm-prompted` runbook entry at a player pushes/broadcasts, but the message isn't showing in

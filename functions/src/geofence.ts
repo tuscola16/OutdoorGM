@@ -378,10 +378,17 @@ export const onLocationUpdate = functions
         const effect = eligibleEffect(e, ordinal, nowMs, startedMs);
         if (!effect) continue;
         try {
+          // Denormalized so the GM notification feed (#73) reads it directly — one row per
+          // entry that *actually* fired, with the delivered effect's kind/message.
           await entryTripsCol.doc(`${userId}_${e.id}`).create({
             playerId: userId,
+            playerName: location.displayName,
             entryId: e.id,
+            entryName: e.name ?? null,
             checkpointId: cpId,
+            checkpointName: cpName,
+            effectKind: effect.kind,
+            message: effect.message ?? null,
             trippedAt: admin.firestore.FieldValue.serverTimestamp(),
           });
         } catch {

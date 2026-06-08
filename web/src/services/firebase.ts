@@ -43,4 +43,5 @@ export const Collections = {
   RATIONS: 'rations',
   SCHEDULED_EVENTS: 'scheduledEvents',
   MARKERS: 'markers',
+  ENTRY_TRIPS: 'entryTrips',
 } as const;

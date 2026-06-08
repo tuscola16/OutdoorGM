@@ -177,10 +177,11 @@ service cloud.firestore {
       }
 
       // Per-player/per-runbook-entry trip latch (#67). Written only by Cloud Functions
-      // (admin SDK); never readable or writable by clients. Existence = the player has
-      // already tripped that entry, so each entry fires at most once per player.
+      // (admin SDK). GMs may READ it — it's the authoritative "what actually fired for whom"
+      // that powers the GM notification feed (#73); players never read it.
       match /entryTrips/{entryTripId} {
-        allow read, write: if false;
+        allow read: if isGameGM(gameId);
+        allow write: if false;
       }
 
       // Revealed checkpoint markers (#48) — the player-readable projection of a

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
-import type { Arrival, RunbookEntry, GameMember, EliminationCause } from '@shared/types';
-import { KIND_META, checkpointKind } from '@/services/checkpointKinds';
+import type { Arrival, EntryTrip, GameMember, EliminationCause, CheckpointKind } from '@shared/types';
+import { KIND_META } from '@/services/checkpointKinds';
 
 type Category = 'event' | 'arrival' | 'sos' | 'death';
 
@@ -31,6 +31,7 @@ const FILTERS: { key: 'all' | Category; label: string }[] = [
   { key: 'sos', label: 'Safety' },
 ];
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function toMillis(ts: any): number {
   return ts?.toMillis?.() ?? (ts ? new Date(ts).getTime() : 0);
 }
@@ -41,46 +42,58 @@ function formatTime(ms: number): string {
 }
 
 /**
- * Unified GM notification feed. Derives a chronological, color-coded stream from the
- * data the GM already subscribes to — no extra Firestore listener:
- *  - checkpoint crossings (joined to their checkpoint to surface hazard/boon/notify kind)
- *  - 🆘 safety alerts (member.sos)
- *  - ☠️ eliminations (member.out + cause)
+ * Unified GM notification feed. Derives a chronological, color-coded stream from data the GM
+ * already subscribes to — no extra listener beyond `entryTrips`:
+ *  - ⚡ **Events** — runbook entries that *actually fired*, from `entryTrips` (#73). One row per
+ *    real trip (a player trips each entry at most once), carrying the delivered effect's kind +
+ *    message. This replaces the old "label every arrival by the checkpoint's headline kind"
+ *    behavior, which mislabeled plain arrivals as hazards and showed a row per arrival doc.
+ *  - 📍 **Arrivals** — a neutral "reached <checkpoint>" ping, deduped to the latest per
+ *    player×checkpoint so re-crossings don't spam the feed.
+ *  - 🆘 safety alerts (member.sos) and ☠️ eliminations (member.out + cause).
  */
 export function NotificationFeed({
-  arrivals, runbookEntries = [], members,
+  arrivals, entryTrips = [], members,
 }: {
   arrivals: Arrival[];
-  runbookEntries?: RunbookEntry[];
+  entryTrips?: EntryTrip[];
   members: GameMember[];
 }) {
   const [filter, setFilter] = useState<'all' | Category>('all');
 
   const notifs = useMemo<Notif[]>(() => {
-    const entriesByCp = new Map<string, RunbookEntry[]>();
-    for (const e of runbookEntries) {
-      const list = entriesByCp.get(e.checkpointId) ?? [];
-      list.push(e);
-      entriesByCp.set(e.checkpointId, list);
-    }
     const items: Notif[] = [];
 
-    for (const a of arrivals) {
-      const kind = checkpointKind(entriesByCp.get(a.checkpointId) ?? []);
+    // Events — only entries that actually fired.
+    for (const t of entryTrips) {
+      const kind: CheckpointKind = t.effectKind ?? 'gm-notify';
       const meta = KIND_META[kind];
-      if (kind === 'gm-notify') {
-        items.push({
-          id: `arr-${a.id}`, time: toMillis(a.timestamp), icon: '📍', color: meta.color,
-          title: a.playerName, subtitle: `reached ${a.checkpointName}`, category: 'arrival',
-        });
-      } else {
-        items.push({
-          id: `arr-${a.id}`, time: toMillis(a.timestamp), icon: meta.emoji, color: meta.color,
-          title: `${a.playerName} · ${meta.label}`,
-          subtitle: `${meta.label} at ${a.checkpointName}`,
-          category: 'event',
-        });
-      }
+      const isGm = kind === 'gm-notify';
+      const player = t.playerName ?? 'A player';
+      const cp = t.checkpointName ?? 'a checkpoint';
+      items.push({
+        id: `trip-${t.id ?? `${t.playerId}_${t.entryId}`}`,
+        time: toMillis(t.trippedAt),
+        icon: isGm ? '📍' : meta.emoji,
+        color: meta.color,
+        title: isGm ? player : `${player} · ${meta.label}`,
+        subtitle: t.message || (isGm ? `reached ${cp}` : `${meta.label} at ${cp}`),
+        category: 'event',
+      });
+    }
+
+    // Arrivals — neutral, deduped to the latest per player×checkpoint.
+    const latestArrival = new Map<string, Arrival>();
+    for (const a of arrivals) {
+      const key = `${a.playerId}_${a.checkpointId}`;
+      const prev = latestArrival.get(key);
+      if (!prev || toMillis(a.timestamp) > toMillis(prev.timestamp)) latestArrival.set(key, a);
+    }
+    for (const a of latestArrival.values()) {
+      items.push({
+        id: `arr-${a.id}`, time: toMillis(a.timestamp), icon: '📍', color: 'var(--text-secondary)',
+        title: a.playerName, subtitle: `reached ${a.checkpointName}`, category: 'arrival',
+      });
     }
 
     for (const m of members) {
@@ -100,7 +113,7 @@ export function NotificationFeed({
     }
 
     return items.sort((a, b) => b.time - a.time);
-  }, [arrivals, runbookEntries, members]);
+  }, [arrivals, entryTrips, members]);
 
   const shown = notifs.filter((n) =>
     filter === 'all' ? true : filter === 'sos' ? (n.category === 'sos' || n.category === 'death') : n.category === filter

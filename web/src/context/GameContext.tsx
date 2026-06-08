@@ -9,7 +9,7 @@ import {
 } from 'firebase/firestore';
 import { db, Collections } from '@/services/firebase';
 import { gamePhase } from '@/services/gameService';
-import type { Game, Checkpoint, RunbookEntry, GameMember, PlayerLocation, Arrival, GamePhase, RationSubmission, ScheduledEvent } from '@shared/types';
+import type { Game, Checkpoint, RunbookEntry, GameMember, PlayerLocation, Arrival, GamePhase, RationSubmission, ScheduledEvent, EntryTrip } from '@shared/types';
 
 interface GameContextValue {
   game: Game | null;
@@ -25,6 +25,8 @@ interface GameContextValue {
   rations: RationSubmission[];
   /** Run-sheet timed actions (GM only, #11). */
   scheduledEvents: ScheduledEvent[];
+  /** Runbook entries that have actually fired, per player (GM only, #67/#73). */
+  entryTrips: EntryTrip[];
   loadGame: (gameId: string, role: 'player' | 'gm') => void;
   clearGame: () => void;
 }
@@ -42,6 +44,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   const [arrivals, setArrivals] = useState<Arrival[]>([]);
   const [rations, setRations] = useState<RationSubmission[]>([]);
   const [scheduledEvents, setScheduledEvents] = useState<ScheduledEvent[]>([]);
+  const [entryTrips, setEntryTrips] = useState<EntryTrip[]>([]);
 
   const loadGame = useCallback((id: string, role: 'player' | 'gm') => {
     setGameId(id);
@@ -160,9 +163,24 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     return () => { unsub(); setScheduledEvents([]); };
   }, [gameId, myRole]);
 
+  // Entry trips (GM only, #67/#73) — the authoritative log of runbook entries that fired.
+  useEffect(() => {
+    if (!gameId || myRole !== 'gm') return;
+    const unsub = onSnapshot(
+      query(
+        collection(db, Collections.GAMES, gameId, Collections.ENTRY_TRIPS),
+        orderBy('trippedAt', 'desc'),
+        limit(100)
+      ),
+      (snap) => setEntryTrips(snap.docs.map((d) => ({ id: d.id, ...d.data() } as EntryTrip))),
+      (err) => console.error('[GameContext] entryTrips listener error', err)
+    );
+    return () => { unsub(); setEntryTrips([]); };
+  }, [gameId, myRole]);
+
   return (
     <GameContext.Provider
-      value={{ game, phase: gamePhase(game), myRole, checkpoints, runbookEntries, members, playerLocations, arrivals, rations, scheduledEvents, loadGame, clearGame }}
+      value={{ game, phase: gamePhase(game), myRole, checkpoints, runbookEntries, members, playerLocations, arrivals, rations, scheduledEvents, entryTrips, loadGame, clearGame }}
     >
       {children}
     </GameContext.Provider>

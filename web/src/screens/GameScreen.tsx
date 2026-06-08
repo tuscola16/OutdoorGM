@@ -24,7 +24,7 @@ import {
 import { deleteField } from 'firebase/firestore';
 import type {
   Arrival, Checkpoint, RunbookEntry, GameMember, MapBoundary, PlayerLocation, RationSubmission,
-  CheckpointVisibility, RevealTrigger, RevealAudience, CheckpointReveal, FsTimestamp, Broadcast,
+  CheckpointVisibility, RevealTrigger, RevealAudience, CheckpointReveal, FsTimestamp, Broadcast, EntryTrip,
 } from '@shared/types';
 
 const PHASE_LABEL: Record<string, string> = {
@@ -34,7 +34,7 @@ const PHASE_LABEL: Record<string, string> = {
 export function GameScreen() {
   const { gameId } = useParams<{ gameId: string }>();
   const navigate = useNavigate();
-  const { game, phase, checkpoints, runbookEntries, members, playerLocations, arrivals, rations, loadGame, clearGame } = useGame();
+  const { game, phase, checkpoints, runbookEntries, members, playerLocations, arrivals, rations, entryTrips, loadGame, clearGame } = useGame();
   const { user } = useAuth();
   const [busy, setBusy] = useState(false);
   const [showCodes, setShowCodes] = useState(false);
@@ -184,6 +184,7 @@ export function GameScreen() {
             deathMarkers={deathMarkers}
             boundary={game?.boundary}
             arrivals={arrivals}
+            entryTrips={entryTrips}
             members={players}
             busy={busy}
             rationsEnabled={rationsEnabled}
@@ -811,7 +812,7 @@ function LobbyView({
 
 function PlayView({
   remaining, aliveCount, activeCount, arrivalsCount, notReporting, sosPlayers,
-  checkpoints, runbookEntries, playerLocations, deathMarkers, boundary, arrivals, members, busy,
+  checkpoints, runbookEntries, playerLocations, deathMarkers, boundary, arrivals, entryTrips, members, busy,
   rationsEnabled, pendingRations, onOpenRations,
   onBroadcast, onAckSos, onClearSos, onOpenPlayers, onEnd,
 }: {
@@ -827,6 +828,7 @@ function PlayView({
   deathMarkers: DeathMarker[];
   boundary?: MapBoundary | null;
   arrivals: Arrival[];
+  entryTrips: EntryTrip[];
   members: GameMember[];
   busy: boolean;
   rationsEnabled: boolean;
@@ -898,7 +900,7 @@ function PlayView({
 
         <h3 style={{ margin: '4px 0 0' }}>Notifications</h3>
         <div style={{ flex: 1, minHeight: 0 }}>
-          <NotificationFeed arrivals={arrivals} runbookEntries={runbookEntries} members={members} />
+          <NotificationFeed arrivals={arrivals} entryTrips={entryTrips} members={members} />
         </div>
         <button className="btn btn--danger" onClick={onEnd} disabled={busy}>End Game</button>
       </aside>

@@ -218,10 +218,19 @@ export interface CheckpointTrip {
  * entries on the same checkpoint. Path: games/{gameId}/entryTrips/{playerId}_{entryId}.
  */
 export interface EntryTrip {
+  /** Doc id (`${playerId}_${entryId}`); present when read client-side. */
+  id?: string;
   playerId: string;
   entryId: string;
   checkpointId: string;
   trippedAt: FsTimestamp;
+  // Denormalized snapshot of the fired effect (#73), so the GM feed renders one accurate row
+  // per actual trip without re-joining the runbook. Written by the geofence on the crossing.
+  playerName?: string;
+  entryName?: string | null;
+  checkpointName?: string;
+  effectKind?: CheckpointKind;
+  message?: string | null;
 }
 
 /** Who a `notify` effect reaches. Only meaningful for `kind: 'notify'`. */
