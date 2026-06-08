@@ -360,10 +360,13 @@ export const onLocationUpdate = functions
     }> = [];
 
     /**
-     * #67: fire every eligible runbook entry this player hasn't tripped yet. Each entry is
-     * latched once in `entryTrips/{userId}_{entryId}` via an atomic create — so an entry fires
-     * at most once per player, independent of the others on the checkpoint. Returns how many
-     * fired (so the caller knows whether to send a bare GM arrival ping instead).
+     * #67: fire at most ONE runbook entry per evaluation — the highest-priority eligible entry
+     * this player hasn't tripped yet (ties → earliest createdAt). The rest wait for the next
+     * tick: a lingering player is re-evaluated every `tripIntervalMinutes`, so a stack of events
+     * on one checkpoint is doled out over time (the "2-minute rule") rather than all at once.
+     * Each entry is latched once in `entryTrips/{userId}_{entryId}` via an atomic create, so it
+     * never fires twice. Returns 1 if an entry fired, else 0 (so the caller can fall back to a
+     * bare GM arrival ping).
      */
     async function fireEligibleEntries(
       entries: RunbookEntry[],
@@ -371,7 +374,6 @@ export const onLocationUpdate = functions
       cpId: string,
       cpName: string
     ): Promise<number> {
-      let fired = 0;
       for (const e of [...entries].sort(byPriorityThenAge)) {
         const effect = eligibleEffect(e, ordinal, nowMs, startedMs);
         if (!effect) continue;
@@ -383,12 +385,12 @@ export const onLocationUpdate = functions
             trippedAt: admin.firestore.FieldValue.serverTimestamp(),
           });
         } catch {
-          continue; // ALREADY_EXISTS → player already tripped this entry
+          continue; // already tripped this entry — try the next-highest priority
         }
         newArrivals.push({ checkpointName: cpName, playerName: location.displayName, event: effect });
-        fired++;
+        return 1; // one per tick — the next eligible entry fires on the next re-eval
       }
-      return fired;
+      return 0;
     }
 
     // In-invocation dedup: if the same checkpoint somehow appears twice, skip it.

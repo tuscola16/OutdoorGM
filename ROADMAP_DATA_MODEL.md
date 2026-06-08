@@ -308,13 +308,13 @@ games/{gameId}/entryTrips/{playerId}_{entryId}
   trippedAt: FsTimestamp           // set once — a player trips a given entry at most once
 ```
 
-`onLocationUpdate` change: keep `checkpointTrips` for presence/streak/pass-through, but resolve
-**every** eligible entry for the checkpoint (not just the top priority), and for each, fire only if
-`entryTrips/{playerId}_{entryId}` doesn't exist (then create it). Gate re-evaluation while still
-inside on `now − lastTripCheckAt ≥ tripIntervalMinutes` (store `lastTripCheckAt` on the
-`checkpointTrips` latch). Effect ordering/priority still decides what a *single* tick delivers if
-multiple new entries become eligible at once (or deliver each — decide during build; default: one
-per tick, highest priority, so a burst doesn't spam). Idempotent (item 26).
+`onLocationUpdate` change (as built): keep `checkpointTrips` for presence/streak/pass-through, and on
+each evaluation fire the **single highest-priority** eligible entry the player hasn't tripped — fire
+only if `entryTrips/{playerId}_{entryId}` doesn't exist (atomic `create`), else fall through to the
+next-highest. Re-evaluation while still inside is gated on `now − lastTripCheckAt ≥ tripIntervalMinutes`
+(`lastTripCheckAt` stored on the `checkpointTrips` latch), so a stack of events is doled out **one per
+tick** (the "2-minute rule") rather than all at once. The arrival ordinal is latched on the trip doc so
+fixed-order slots resolve consistently across ticks. Idempotent (item 26).
 
 ## 68. Server-enforced unique ration card numbers
 

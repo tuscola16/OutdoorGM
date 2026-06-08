@@ -135,11 +135,13 @@ given entry at most once); while a player is inside a checkpoint, re-evaluate el
 **GM-managed cadence (`tripIntervalMinutes`, default 2)** so a newly-live timed/queued entry gets
 tripped on the next tick even without leaving and re-entering. Preserves pass-through, fix-quality,
 district suppression, and reveal behavior. See data model for the per-entry latch + config.
-> **Built (2026-06-07):** geofence now fires **each** eligible, not-yet-tripped entry (latched once
-> per player in `entryTrips/{playerId}_{entryId}`) instead of one per crossing; lingering players are
-> re-evaluated every `GameConfig.tripIntervalMinutes` (default 2, GM-set in the web Game settings),
-> with the arrival ordinal latched on `checkpointTrips` for consistent fixed-order slots. Pass-through
-> / fix-quality / district suppression / reveal preserved; `entryTrips` is admin-only in the rules and
+> **Built (2026-06-07):** geofence now dedups per **player × runbook entry** (latched once in
+> `entryTrips/{playerId}_{entryId}`) and fires **one entry per tick** — the highest-priority eligible
+> entry the player hasn't tripped. The rest dole out over time: a lingering player is re-evaluated
+> every `GameConfig.tripIntervalMinutes` (default 2, GM-set in the web Game settings — the "2-minute
+> rule"), so a stack of events on one checkpoint is delivered one per tick rather than all at once.
+> Arrival ordinal is latched on `checkpointTrips` for consistent fixed-order slots. Pass-through /
+> fix-quality / district suppression / reveal preserved; `entryTrips` is admin-only in the rules and
 > purged on game end.
 
 **68. Server-enforce unique ration card numbers.** *(P1)* With `enforceUniqueRationCards` on, the
