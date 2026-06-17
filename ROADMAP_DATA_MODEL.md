@@ -4,175 +4,26 @@ Implementation-ready detail for the **outstanding** [ROADMAP.md](ROADMAP.md) ite
 same item numbers. Everything here extends the existing types in
 [types/index.ts](types/index.ts) and the `Collections` map in
 [services/firebase.ts](services/firebase.ts); the built foundation (`GameConfig`, `Broadcast`,
-`RationSubmission`, `CheckpointEvent`/`eventQueue`, `ScheduledEvent`, member elimination/`district`/
+`RationSubmission`, the #60 `RunbookEntry`/runbook model, `ScheduledEvent`, member elimination/`district`/
 `sos`/`sosAckAt`/`outOfBounds`, `Game.gameDate`, the `markers`/reveal model) is already in those
 files and is the baseline below.
 
-New fields stay **optional** so legacy games keep working — the **one exception is the now-shipped
-[§60](#60-checkpoint--runbook-overhaul)** overhaul, which removed fields (and chose a fresh start over
-running its migration). Timestamps use the platform-neutral `FsTimestamp` so types compile in both the
-mobile app and `web/`.
+New fields stay **optional** so legacy games keep working — the **one exception was the shipped #60
+runbook overhaul**, which removed fields (and chose a fresh start over running its migration); its
+canonical schema now lives in [types/index.ts](types/index.ts). Timestamps use the platform-neutral
+`FsTimestamp` so types compile in both the mobile app and `web/`.
 
 Only items with a real data-model/infra delta appear here; pure logic/UI/enforcement items are
-listed under [No schema change](#no-schema-change-enforcement--logic-only). Built items (1–10,
-13–15, 17, 18, 19, 30, 31, 32, 33, 34, 36–40, the **2026-06-07 field-test batch** 48–56, the
-**2026-06-07/08 batch** 65–70, 73, 76, and the **P1 field-test batch** 63, 64, 68, 72, 74) have
-shipped and been removed — their numbers are retired. Live data-model/infra deltas from those
-batches: `GameConfig.tripIntervalMinutes` + the server-only `entryTrips/{playerId}_{entryId}` latch
-(denormalized + **GM-readable** for the notification feed, #67/#73); the `Broadcast.pushed` marker
-gating `onBroadcastCreate` (#69); the `cloneGame` callable (#65); the `submitRation` callable
-enforcing unique card numbers (#68); the `rationPings` scheduled function + admin-only
-`rationWindowPings/{intervalIndex}` latch (#72); and the shared `common/` helpers `pointInBoundary`
-+ `validateGameConfig` (#63/#64). (#53/#54 cover the `Checkpoint.icon` field and the transition
-schema — `CheckpointState`/`CheckpointTransition`/`initialState`/`transitions`/`currentState` — plus
-their GM authoring UI; see [No schema change](#no-schema-change-enforcement--logic-only).)
-
----
-
-## 60. Checkpoint & runbook overhaul — **BUILT**
-
-> Shipped. The canonical schema now lives in [types/index.ts](types/index.ts)
-> (`Checkpoint`, `RunbookEntry`, `RunbookEffect`, `TimedBound`, `CheckpointVisibility`,
-> `RevealTrigger`, `CheckpointKind`) and the `RUNBOOK` collection in both `services/firebase.ts`
-> files. The detail below is retained as the design record. A one-time converter
-> (`functions/scripts/migrateRunbook.js`) exists but was **not run** (fresh-start milestone).
-
-**Full replacement** of the per-checkpoint behavior model. A checkpoint shrinks to identity +
-visibility; all behavior moves to a `runbook` collection of priority-ranked entries. This is the
-one place in this file that **removed** existing fields rather than adding optional ones.
-
-### 60.A `Checkpoint` — slimmed to identity + visibility
-
-```ts
-export type CheckpointVisibility = 'hidden' | 'shown' | 'shown-on-trigger';
-export type RevealTrigger = 'player' | 'gm' | 'timed'; // only when shown-on-trigger
-export type RevealAudience = 'all' | 'specific-players' | 'triggerer';
-
-export interface CheckpointReveal {
-  trigger: RevealTrigger;
-  audience: RevealAudience;
-  atMinute?: number | null;          // 'timed' trigger: minutes after startedAt
-  revealAt?: FsTimestamp | null;     // 'timed' trigger: absolute (reserved)
-  recipientPlayerIds?: string[];     // 'specific-players' audience
-}
-
-export interface Checkpoint {
-  id: string;
-  name: string;
-  icon?: string;
-  latitude: number;
-  longitude: number;
-  radius: number;                    // meters — intrinsic geofence geometry, stays
-  order?: number;
-  visibility: CheckpointVisibility;  // default 'hidden' (legacy gm-only)
-  reveal?: CheckpointReveal;         // when visibility === 'shown-on-trigger'
-  revealedAt?: FsTimestamp | null;   // reveal latch (unchanged)
-  revealedTo?: string[];             // targeted-reveal latch (unchanged)
-}
-```
-
-**Removed from `Checkpoint`:** `event`, `eventQueue`, `opensAt`, `closesAt`, `initialState`,
-`transitions`, `currentState`, `description`. **Renamed in place:** `gm-only → hidden`,
-`always → shown`, `on-reveal → shown-on-trigger`; reveal trigger `on-crossing → player`,
-`gm-manual → gm`, `game-time → timed`. Visibility (the marker) stays **orthogonal** to the runbook
-(the effect): a `shown` checkpoint can still carry a secret hazard; a `hidden` one can still fire boons.
-
-### 60.B `RunbookEntry` — the behavior unit
-
-New collection `games/{gameId}/runbook/{entryId}` — **top-level** (not a checkpoint subcollection) so
-the GM dashboard groups/sorts all entries with one listener; **GM-only** read/write in
-`firestore.rules` (same posture as `checkpoints`; it holds the secret payloads). The geofence reads it
-via the admin SDK.
-
-```ts
-export type RunbookTriggerType = 'fixed-order' | 'always-on' | 'timed' | 'gm-prompted';
-export type CheckpointKind = 'hazard' | 'boon' | 'gm-notify' | 'notify';
-
-/** What a player receives. A fixed-order slot can carry its own kind+message. */
-export interface RunbookEffect {
-  kind: CheckpointKind;
-  message?: string;
-}
-
-export type TimedBound =
-  | { kind: 'game-start' } | { kind: 'game-end' }
-  | { kind: 'time'; atMinute?: number; fireAt?: FsTimestamp }; // minutes after startedAt (primary)
-
-export interface RunbookEntry {
-  id: string;
-  checkpointId: string;
-  name: string;
-  priority: number;                  // higher wins per crossing; also drives sidebar sort
-  trigger: RunbookTriggerType;
-  effect: RunbookEffect;             // entry's type+message; also the fixed-order default
-
-  // trigger: 'fixed-order' (keyed by ARRIVAL ORDER, not player identity)
-  queueSlots?: (RunbookEffect | null)[]; // position N → its own effect, or null = "nothing fires";
-                                          // positions past the array fall back to `effect`
-  defaultNone?: boolean;                  // true → the default position (past the slots, and revisits)
-                                          // fires nothing instead of `effect`; entry-level mirror of a
-                                          // null slot. `effect` is still stored (drives pin color).
-
-  // trigger: 'timed'
-  startAt?: TimedBound;              // default { kind: 'game-start' }
-  endAt?: TimedBound;               // default { kind: 'game-end' }
-
-  // trigger: 'gm-prompted' — no schedule; GM taps to fire and picks target player(s).
-  firedAt?: FsTimestamp | null;     // latch for idempotency / results view (open sub-point)
-
-  createdAt: FsTimestamp;
-}
-```
-
-**Triggers:**
-- **fixed-order** — the Nth distinct arriver (0-based, counted via the `checkpointTrips` latch) gets
-  `queueSlots[N]`, falling back to the default (`effect`, or **nothing** when `defaultNone` is set);
-  a `null` slot fires nothing for that arriver. Replaces `eventQueue`.
-- **always-on** — fires `effect` for every crossing. Replaces the single `event`.
-- **timed** — eligible only while `now ∈ [startAt, endAt]`. Replaces `opensAt`/`closesAt` **and** the
-  `transitions`/`currentState` schedule.
-- **gm-prompted** — fired manually during play; the GM picks the target player(s), writing a targeted
-  broadcast.
-
-### 60.C Resolution
-
-On each crossing (`onLocationUpdate`, `functions/src/geofence.ts`): gather every entry for that
-checkpoint that currently matches (always-on always; timed if in window; fixed-order if this arriver's
-slot is non-null; gm-prompted only when fired), then deliver **exactly one — the highest `priority`**.
-Tie-break: earliest eligibility, then `createdAt`. The GM-only arrival ping fires independently
-(the GM always sees arrivals). Reuses the `checkpointTrips` latch for arrival-order counting and the
-existing re-notify / away-cooldown logic. Must be idempotent (item 26).
-
-### 60.D Web editor
-
-Full page (`web/`): a left sidebar of runbook **entries** in two groups — **Always-on** (priority
-desc) and **Timed** (priority desc, then start time asc; earlier higher) — each row labeled with its
-checkpoint; an entry with both kinds of triggers can't exist (one trigger per entry), but a checkpoint
-with mixed entries appears in both groups. The right pane edits the selected entry (name, checkpoint,
-type, priority, trigger-specific fields: queue-slot table / timed start–end / gm-prompted target
-rules). Checkpoint placement (name + icon + visibility + radius) stays on the map screen.
-
-### 60.E Migration *(full replacement)*
-
-- New `runbook` collection + slimmed `Checkpoint`; old behavior fields dropped from `types/index.ts`
-  and the authoring UIs (`components/checkpointForm.tsx`,
-  `app/(app)/gm/[gameId]/checkpoint/[checkpointId].tsx`, web equivalents).
-- One-time migration over existing games: `event → always-on entry`, `eventQueue → fixed-order entry`
-  (each item → a `queueSlots` slot), `opensAt/closesAt`+`transitions → timed entries`, visibility/reveal
-  renamed in place. Per the trusted-APK milestone, migrate-in-place or reset stale games rather than
-  carry dual code paths.
-- The run sheet (`ScheduledEvent`: timed broadcasts, GM reminders, player-count) stays a **separate**
-  schedule tool — only checkpoint *effects* move to the runbook. Its `open-site`/`close-site`/
-  `reveal-checkpoint` action types are superseded by timed entries + the reveal model and can be retired.
-  **Update (web run-sheet UI removed):** the web GM dashboard's run-sheet pane has now been deleted —
-  the remaining clock-triggered, crossing-independent actions (timed announcement, player-count,
-  gear-drop, GM reminder) are tracked by **[§61](#61)** to fold into the Runbook; the
-  `runScheduledEvents` sweep + `scheduledEvents` collection + mobile run-sheet still drive them meanwhile.
-- `firestore.rules`: add `runbook` (GM-only); the geofence/sweep functions read it via admin SDK.
-
-**Open sub-points (don't block):** per-slot effect overrides are in (above); whether `gm-prompted`
-latches recipients for a results view; priority is a single number serving both per-checkpoint
-resolution and global sidebar sort.
+listed under [No schema change](#no-schema-change-enforcement--logic-only). Everything through Tier 7
+has **shipped and been removed** — its numbers are retired (full list in the [ROADMAP.md](ROADMAP.md)
+Built & removed callout + git). Live data-model/infra deltas left behind by those batches:
+`GameConfig.tripIntervalMinutes`/`minFixAccuracyMeters`/`geofenceConfirmFixes`/`reNotifyAwayCooldownMinutes`/
+`autoEndThreshold`/`starvationMode`; the `Checkpoint.icon` field + the #60 runbook model (`RunbookEntry`
+collection); the server-only `checkpointTrips`, `entryTrips` (GM-readable, #67/#73), `rationWindowPings`
+(#72), and `starvationSweeps` (#11) latches; `Broadcast.pushed` (#69) + `Broadcast.dismissedBy` (#71);
+`RevealedMarker.visibleFrom` (#48); the `cloneGame`/`submitRation`/`fireRunbookEntry`/`rationPings`/
+`starvationSweep` callables/functions; and the shared `common/` helpers `pointInBoundary`,
+`validateGameConfig`, `startPreflight` (#63/#64/#23). Tier 7 (#20–28) added **no** new schema.
 
 ---
 
@@ -267,23 +118,15 @@ GM map/roster views filter to `teamGmId === me`. Unassigned/legacy players fall 
 
 ## No schema change — enforcement / logic only
 
-These items are pure logic, rules, client architecture, or ops — no new fields or collections:
+These **outstanding** items are pure logic, rules, client architecture, or ops — no new fields or
+collections. (Shipped no-schema items — 20–28, 48–56, 58's prerequisites, etc. — are retired; see the
+[ROADMAP.md](ROADMAP.md) Built & removed callout and git history.)
 
-- **48** Early checkpoint reveal — **built**: `onGameStartProjectMarkers` deletes stale non-`always` marker docs at Start, the player map filters markers by an optional `RevealedMarker.visibleFrom`, and #54's `closed` state gates geofence firing. (Schema delta: `RevealedMarker.visibleFrom`.)
-- **49** Background notification reliability — **built**: server-side pass-through detection in `onLocationUpdate` (segment `change.before`→`change.after` vs. each checkpoint, capped at 400 m), so a locked-phone crossing between sparse fixes still fires. No schema change. Remaining: on-device locked-phone re-test.
-- **50** GPS fix-quality filtering — **built**: `GameConfig.minFixAccuracyMeters` (reject worse fixes from geofence eval) + `geofenceConfirmFixes` (N consecutive in-radius fixes debounce), enforced in `onLocationUpdate` via the `checkpointTrips` latch.
-- **51** Web polygon save — **built**: `GameMap` teardown commits the current polygon (`emitPolygonFromDraw`) before removing the draw control, so Done persists it.
-- **52** Ration window notification — **built**: eat-window reminders moved out of `RationPanel` into a `useRationReminders` hook mounted unconditionally during play, so they fire even when the player stays on the Map tab.
-- **53** Checkpoint authoring redesign — **built**: map screen places checkpoints (name + icon + radius) only; full-screen behavior editor (`app/(app)/gm/[gameId]/checkpoint/[checkpointId].tsx`) owns event/queue, visibility/reveal, timed window, and transitions; run sheet lists checkpoints as the hub. Uses `Checkpoint.icon`, a shared `components/checkpointForm.tsx`, and `constants/checkpointIcons.ts`.
-- **54** Transition authoring — **built**: the editor's "Changes over time" mode authors `initialState` + `transitions[]`; `gameService.stateEventFields` makes the initial state effective at game start while the run-sheet sweep applies later transitions.
-- **55** Re-trigger / re-notification — **built**: `GameConfig.reNotifyAwayCooldownMinutes` + the server-only `checkpointTrips/{playerId}_{checkpointId}` latch (`inside`/`insideStreak`/`lastEnterAt`/`lastExitAt`/`lastNotifiedState`); GM re-notified past the cooldown, player only on state change.
-- **56** Auto-end threshold — **built**: `GameConfig.autoEndThreshold` (`one`/`zero`/`manual`; legacy `winnerDetection:false` ⇒ `manual`) gating the `onMemberWrite` end/winner transaction.
-- **58** Single-game test checklist — a doc plus an optional `seedTestGame` helper; no new fields.
 - **12** Auto per-interval count — wire the `playerCountBroadcast` toggle to auto-seed a repeating `template:'player-count'` scheduled-announcement row each interval (the #61 authoring + `runScheduledEvents` sweep already exist); today the toggle is stored but does nothing automatic.
-- **16** Geofence read cost — remaining work: cache phase/role per write (lobby short-circuit, zero-checkpoint skip, and checkpoint cache already shipped). NB: #20/#24's rules now add a game-doc `get()` on some member/game writes.
-- **20–28** Tier 7 integrity invariants — **built** (enforcement/logic only): #27 late-join lock (`joinGameByCode` refuses a new *player* join once phase ≠ `lobby`); #20 member delete-lock in `play` (rules `gamePhase()` resolver + UI + `deleteAccount` scrub-and-eliminate); #26 deterministic `broadcasts/{userId}_death` toll; #23 shared `common/startPreflight.ts`; #24 interval-trio freeze (client disable + scoped rules guard); #21 `revivePlayer()` (+ `results → play` reopen); #22 guarded monotonic phase helpers; #25 dangling-reveal warning on checkpoint delete; #28 End Game two-step confirm + audit log lines.
-- **29** `deleteAccount` — remaining work: sole-GM transfer or server-side end (chunked ≤450-write batches already shipped; #20's carve-out now scrubs-and-eliminates a live game's member). Maybe a small `transferGm`/`deleteGameForce` callable.
+- **16** Geofence read cost — cache phase/role per write (lobby short-circuit, zero-checkpoint skip, and checkpoint cache already shipped). NB: #20/#24's rules now add a game-doc `get()` on some member/game writes.
+- **29** `deleteAccount` — sole-GM transfer or server-side end (chunked ≤450-write batches already shipped; #20's carve-out now scrubs-and-eliminates a live game's member). Maybe a small `transferGm`/`deleteGameForce` callable.
 - **42** Arena map overlay — a GM-uploaded image overlay (asset/storage + map layer; spec when prioritized).
 - **44** Voucher-site preset — a one-tap scaffold of open/close/announce run-sheet rows on a time-windowed checkpoint.
 - **47** Maps-key restriction — Cloud Console ops task.
+- **58** Single-game test checklist — a doc plus an optional `seedTestGame` helper; no new fields.
 - **77** Closed-phone pass-through reliability — #49 follow-up; tuning of background-location cadence / `MAX_SEGMENT_METERS` / foreground-resume retro-test. No schema; needs an on-device locked-phone test.
