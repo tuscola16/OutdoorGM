@@ -334,27 +334,44 @@ export const joinGameByCode = functions.https.onCall(async (data, context) => {
   // Resolve the code to a game + role.
   let role: 'player' | 'gm' | null = null;
   let gameId: string | null = null;
+  let gameData: admin.firestore.DocumentData | null = null;
 
   const playerSnap = await db.collection('games')
     .where('playerCode', '==', code).where('status', '==', 'active').limit(1).get();
   if (!playerSnap.empty) {
     role = 'player';
     gameId = playerSnap.docs[0].id;
+    gameData = playerSnap.docs[0].data();
   } else {
     const gmSnap = await db.collection('games')
       .where('gmCode', '==', code).where('status', '==', 'active').limit(1).get();
     if (!gmSnap.empty) {
       role = 'gm';
       gameId = gmSnap.docs[0].id;
+      gameData = gmSnap.docs[0].data();
     }
   }
 
-  if (!role || !gameId) {
+  if (!role || !gameId || !gameData) {
     throw new functions.https.HttpsError('not-found', 'No active game found with that code.');
   }
 
   const memberRef = db.collection('games').doc(gameId).collection('members').doc(uid);
   const existing = await memberRef.get();
+
+  // #27 Late-join lock: once a game has left the lobby, a brand-new *player* join is
+  // refused — an eliminated player can't slip back under a fresh name, and a stranger
+  // can't wander into a live game. Two carve-outs preserved: co-GMs (role 'gm' via the
+  // gmCode) may join in any phase, and an existing member reconnecting is always allowed.
+  if (role === 'player' && !existing.exists) {
+    const phase = gameData.phase ?? (gameData.status === 'ended' ? 'results' : 'play');
+    if (phase !== 'lobby') {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'This game has already started — joins are closed.'
+      );
+    }
+  }
 
   const member: Record<string, unknown> = {
     userId: uid,

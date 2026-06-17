@@ -12,16 +12,17 @@ import { stalenessLevel, stalenessColor, formatAgo, STALE_MS, unaccountedPlayers
 import {
   openLobby, reopenSetup, startGame, endGame, updateGameConfig, gameConfig,
   addCheckpoint, updateCheckpoint, deleteCheckpoint,
-  updateMemberRole, removePlayer, eliminatePlayer, clearSos, ackSos, sendBroadcast,
+  updateMemberRole, removePlayer, eliminatePlayer, revivePlayer, clearSos, ackSos, sendBroadcast,
   deleteGame, setGameArchived, reviewRation, rationInterval, setMemberDistrict,
   revealCheckpointNow, setRevealSchedule, parseEventDate, formatEventDate,
-  sendGmMessage, subscribeGmMessages,
+  sendGmMessage, subscribeGmMessages, deleteScheduledEvent,
 } from '@/services/gameService';
 import {
   KIND_META, checkpointKind, VIS_META, VIS_ORDER,
   behaviorSummary, CHECKPOINT_ICON_EMOJIS, DEFAULT_CHECKPOINT_ICON, checkpointIconEmoji,
 } from '@/services/checkpointKinds';
 import { validateGameConfig, requireMinInt } from '@shared/common/gameConfigValidation';
+import { startGamePreflight } from '@shared/common/startPreflight';
 import { pointInBoundary } from '@shared/common/geo';
 import { deleteField } from 'firebase/firestore';
 import type {
@@ -113,6 +114,26 @@ export function GameScreen() {
     await run(() => sendBroadcast(gameId!, message, targetPlayerId));
   }
 
+  // Full Start-Game preflight (#23): hard-block the four preconditions that make a game
+  // unplayable, then keep the #16 unlocated-players advisory as a confirm-past warning.
+  function confirmStart() {
+    const located = players.filter((p) => lastFixByUser.has(p.userId)).length;
+    const gmHasToken = members.some((m) => m.role === 'gm' && !!m.fcmToken);
+    const { blockers, warnings } = startGamePreflight({
+      hasBoundary: !!game?.boundary,
+      checkpointCount: checkpoints.length,
+      playerCount: players.length,
+      gmHasToken,
+      unlocatedPlayerCount: players.length - located,
+    });
+    if (blockers.length > 0) {
+      window.alert(`Can’t start yet. Resolve these first:\n\n${blockers.map((b) => `• ${b}`).join('\n')}`);
+      return;
+    }
+    if (warnings.length > 0 && !window.confirm(`${warnings.join('\n\n')}\n\nStart anyway?`)) return;
+    run(() => startGame(gameId!));
+  }
+
   const rationsEnabled = gameConfig(game).rationsEnabled;
   const pendingRations = rations.filter((r) => r.status === 'pending').length;
 
@@ -167,7 +188,7 @@ export function GameScreen() {
             players={players}
             playerCode={game?.playerCode ?? '…'}
             busy={busy}
-            onStart={() => run(() => startGame(gameId!))}
+            onStart={confirmStart}
             onBack={() => run(() => reopenSetup(gameId!))}
             onDelete={confirmDelete}
           />
@@ -259,7 +280,7 @@ export function GameScreen() {
         />
       )}
       {showConfig && (
-        <ConfigModal gameId={gameId!} initial={gameConfig(game)} gameDateInitial={game?.gameDate ?? null} onClose={() => setShowConfig(false)} />
+        <ConfigModal gameId={gameId!} initial={gameConfig(game)} gameDateInitial={game?.gameDate ?? null} phase={phase} onClose={() => setShowConfig(false)} />
       )}
       {showRations && (
         <RationsModal
@@ -560,7 +581,7 @@ function CheckpointBehaviorModal({
   cp: Checkpoint;
   onClose: () => void;
 }) {
-  const { checkpoints: liveCheckpoints, members, runbookEntries } = useGame();
+  const { checkpoints: liveCheckpoints, members, runbookEntries, scheduledEvents } = useGame();
   const navigate = useNavigate();
   const liveCp = liveCheckpoints.find((c) => c.id === cp.id) ?? cp;
   const players = members.filter((m) => m.role === 'player');
@@ -627,9 +648,23 @@ function CheckpointBehaviorModal({
   }
 
   async function remove() {
-    if (!window.confirm(`Delete "${liveCp.name}"? This also deletes its runbook entries. This cannot be undone.`)) return;
+    // #25: warn if a separately-authored, still-pending reveal-checkpoint event points at
+    // this checkpoint — it'll be left dangling (never fire) after deletion. The checkpoint's
+    // own paired timed reveal (`reveal_<id>`) is auto-cleaned by deleteCheckpoint, so exclude it.
+    const dangling = scheduledEvents.filter(
+      (e) => e.type === 'reveal-checkpoint' && e.checkpointId === cp.id && e.firedAt == null && e.id !== `reveal_${cp.id}`
+    );
+    const danglingWarning = dangling.length > 0
+      ? `\n\n⚠ A scheduled reveal still points at this checkpoint — it won't fire after deletion.`
+      : '';
+    if (!window.confirm(`Delete "${liveCp.name}"? This also deletes its runbook entries.${danglingWarning} This cannot be undone.`)) return;
     setBusy(true);
-    try { await deleteCheckpoint(gameId, cp.id); onClose(); }
+    try {
+      await deleteCheckpoint(gameId, cp.id);
+      // Clean up the now-orphaned reveal rows too, so the run-sheet doesn't carry dead pointers.
+      for (const e of dangling) await deleteScheduledEvent(gameId, e.id).catch(() => {});
+      onClose();
+    }
     catch (err) { window.alert(friendlyError(err)); setBusy(false); }
   }
 
@@ -1097,6 +1132,11 @@ function PlayersModal({
     try { await eliminatePlayer(gameId, m.userId, 'gm-other'); }
     catch (err) { window.alert(friendlyError(err)); }
   }
+  async function revive(m: GameMember) {
+    if (!window.confirm(`Bring ${m.displayName} back? If the game had already ended, it reopens.`)) return;
+    try { await revivePlayer(gameId, m.userId); }
+    catch (err) { window.alert(friendlyError(err)); }
+  }
   async function acknowledgeSos(m: GameMember) {
     try { await ackSos(gameId, m.userId); }
     catch (err) { window.alert(friendlyError(err)); }
@@ -1200,12 +1240,20 @@ function PlayersModal({
               {!isGM && !isOut && (
                 <button className="btn btn--danger" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => eliminate(m)}>Eliminate</button>
               )}
+              {/* Reverse an accidental kill (#21): clears out + reopens the game if that death ended it. */}
+              {!isGM && isOut && (
+                <button className="btn btn--ghost" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => revive(m)}>Revive</button>
+              )}
               <button className="btn btn--ghost" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => toggleRole(m)}>
                 {isGM ? 'Demote' : 'Promote'}
               </button>
-              <button className="btn btn--ghost" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => remove(m)}>
-                Remove
-              </button>
+              {/* Hard-remove only before the game starts (#20): once in play/results, member
+                  docs are delete-locked to preserve timing/death history — eliminate instead. */}
+              {(phase === 'setup' || phase === 'lobby') && (
+                <button className="btn btn--ghost" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => remove(m)}>
+                  Remove
+                </button>
+              )}
             </div>
           );
         })}
@@ -1320,13 +1368,18 @@ function GmMessagesModal({
 }
 
 function ConfigModal({
-  gameId, initial, gameDateInitial, onClose,
+  gameId, initial, gameDateInitial, phase, onClose,
 }: {
   gameId: string;
   initial: ReturnType<typeof gameConfig>;
   gameDateInitial: FsTimestamp | null;
+  phase: string;
   onClose: () => void;
 }) {
+  // #24: once play has begun, the interval-defining fields are frozen — changing them
+  // would rescramble the ration schedule (and could retroactively starve players).
+  // Disabled here with a reason; the rules enforce it server-side too.
+  const intervalLocked = phase === 'play' || phase === 'results';
   const [duration, setDuration] = useState(String(initial.durationMinutes));
   const [gameDate, setGameDate] = useState(formatEventDate(gameDateInitial)); // 'YYYY-MM-DD' (#36)
   const [playerCount, setPlayerCount] = useState(initial.playerCountBroadcast);
@@ -1384,10 +1437,12 @@ function ConfigModal({
       </p>
       <div className="field">
         <label>Game length (minutes)</label>
-        <input className="input" type="number" value={duration} onChange={(e) => setDuration(e.target.value)} />
+        <input className="input" type="number" value={duration} disabled={intervalLocked} onChange={(e) => setDuration(e.target.value)} />
         {errors.durationMinutes
           ? <span style={{ fontSize: 12, color: 'var(--danger)' }}>{errors.durationMinutes}</span>
-          : <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>210 = 3.5 hours</span>}
+          : intervalLocked
+            ? <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Locked during play — it defines the ration schedule.</span>
+            : <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>210 = 3.5 hours</span>}
       </div>
       <div className="field">
         <label>Event date (optional)</label>
@@ -1415,10 +1470,12 @@ function ConfigModal({
         <>
           <div className="field">
             <label>Ration interval (minutes)</label>
-            <input className="input" type="number" value={rationMinutes} onChange={(e) => setRationMinutes(e.target.value)} />
+            <input className="input" type="number" value={rationMinutes} disabled={intervalLocked} onChange={(e) => setRationMinutes(e.target.value)} />
             {errors.rationIntervalMinutes
               ? <span style={{ fontSize: 12, color: 'var(--danger)' }}>{errors.rationIntervalMinutes}</span>
-              : <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>How often players must submit a ration card</span>}
+              : intervalLocked
+                ? <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Locked during play — it defines the ration schedule.</span>
+                : <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>How often players must submit a ration card</span>}
           </div>
           <div className="field">
             <label>Open window (minutes)</label>

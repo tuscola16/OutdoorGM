@@ -118,18 +118,43 @@ export async function rearmCheckpoint(
 
 // --- Phase transitions ---
 
-/** Open a game to players (phase: setup → lobby). */
+/** Read a game's resolved phase (for the #22 monotonic-transition guards). */
+async function readPhase(gameId: string): Promise<GamePhase> {
+  const snap = await firestore().collection(Collections.GAMES).doc(gameId).get();
+  return gamePhase(snap.data() as { phase?: GamePhase; status?: GameStatus } | undefined);
+}
+
+/**
+ * Open a game to players (phase: setup → lobby). #22: guarded + monotonic — a no-op if
+ * already in the lobby, and refused from any later phase (a stale tap can't rewind play).
+ */
 export async function openLobby(gameId: string): Promise<void> {
+  const phase = await readPhase(gameId);
+  if (phase === 'lobby') return; // already open — no-op
+  if (phase !== 'setup') throw new Error('This game has already started.');
   await firestore().collection(Collections.GAMES).doc(gameId).update({ phase: 'lobby' });
 }
 
-/** Send a game back to setup (phase: lobby → setup). */
+/**
+ * Send a game back to setup (phase: lobby → setup) — the one sanctioned backward move.
+ * #22: only from the lobby; refused once play has begun.
+ */
 export async function reopenSetup(gameId: string): Promise<void> {
+  const phase = await readPhase(gameId);
+  if (phase === 'setup') return; // already there — no-op
+  if (phase !== 'lobby') throw new Error('Only a game waiting in the lobby can return to setup.');
   await firestore().collection(Collections.GAMES).doc(gameId).update({ phase: 'setup' });
 }
 
-/** Start play and stamp the start time (phase: lobby → play). */
+/**
+ * Start play and stamp the start time (phase: lobby → play). #22: a no-op if already in
+ * play (so a double-tap can't re-stamp `startedAt` and reset every timer), and refused
+ * from setup/results.
+ */
 export async function startGame(gameId: string): Promise<void> {
+  const phase = await readPhase(gameId);
+  if (phase === 'play') return; // already started — don't re-stamp startedAt
+  if (phase !== 'lobby') throw new Error('The game can only be started from the lobby.');
   await firestore().collection(Collections.GAMES).doc(gameId).update({
     phase: 'play',
     startedAt: firestore.FieldValue.serverTimestamp(),
@@ -190,6 +215,47 @@ export async function eliminatePlayer(
 /** Back-compat alias — the "I'm Out" button now reports an honor-system death. */
 export async function markPlayerOut(gameId: string, userId: string): Promise<void> {
   await eliminatePlayer(gameId, userId, 'self');
+}
+
+/**
+ * Reverse an accidental elimination (#21). Clears `out`/`outAt`/`cause`, posts a
+ * correcting broadcast, and — if that death had *ended the game* via winner detection —
+ * reopens `results → play`. GM-only.
+ *
+ * Idempotency: clearing `out` (true→false) does NOT re-trigger `handleDeath` — that gate
+ * fires only when `out` *rises* — so reviving never re-fires a death toll. We also delete
+ * the deterministic death-toll doc (`${userId}_death`, #26) so a later re-elimination of
+ * the same player can toll afresh.
+ */
+export async function revivePlayer(gameId: string, userId: string): Promise<void> {
+  const gameRef = firestore().collection(Collections.GAMES).doc(gameId);
+  const memberRef = gameRef.collection(Collections.MEMBERS).doc(userId);
+  const [memberSnap, gameSnap] = await Promise.all([memberRef.get(), gameRef.get()]);
+  const name = memberSnap.data()?.displayName ?? 'A tribute';
+  const game = gameSnap.data() as Game | undefined;
+
+  await memberRef.update({
+    out: false,
+    outAt: null,
+    cause: firestore.FieldValue.delete(),
+  });
+
+  // Drop the deterministic death toll so a future re-elimination tolls again (#26).
+  await gameRef.collection(Collections.BROADCASTS).doc(`${userId}_death`).delete().catch(() => {});
+
+  // Correcting broadcast so players see the reversal (the original toll already went out).
+  await gameRef.collection(Collections.BROADCASTS).add({
+    kind: 'gm-message',
+    message: `${name} is back in the game.`,
+    targetPlayerId: null,
+    createdAt: firestore.FieldValue.serverTimestamp(),
+  });
+
+  // If this death had ended the game, reopen play. (The stale winner broadcast is left
+  // as-is — the correcting broadcast covers it; don't try to retract it.)
+  if (gamePhase(game) === 'results' && game?.status === 'ended') {
+    await gameRef.update({ phase: 'play', status: 'active', endedAt: null });
+  }
 }
 
 /** Record where a dead player dropped their pack/weapons (Rules 19, 20). */
@@ -458,9 +524,15 @@ export async function setGameArchived(
     .update({ archived });
 }
 
-/** Stop play and move to results (phase: play → results). Keeps `status: 'ended'`
- * so existing "is this game over?" checks (and old clients) keep working. */
+/**
+ * Stop play and move to results (phase: play → results). Keeps `status: 'ended'`
+ * so existing "is this game over?" checks (and old clients) keep working. #22: a no-op
+ * if already in results (double-tap safe), and refused before play has started.
+ */
 export async function endGame(gameId: string): Promise<void> {
+  const phase = await readPhase(gameId);
+  if (phase === 'results') return; // already ended — no-op
+  if (phase !== 'play') throw new Error('Only a game in play can be ended.');
   await firestore().collection(Collections.GAMES).doc(gameId).update({
     status: 'ended',
     phase: 'results',
@@ -687,29 +759,66 @@ export async function deleteAccount(userId: string, password: string): Promise<v
     .where('userId', '==', userId)
     .get();
 
-  // Collect every doc to delete, then commit in chunks: a Firestore WriteBatch caps at
-  // 500 ops, so a user in many games would otherwise blow the limit (#34). Each member
-  // contributes its member doc + the game's location doc; plus the user profile doc.
-  const refs: FirebaseFirestoreTypes.DocumentReference[] = [];
+  // Resolve each game's phase first so we know which member docs we may hard-delete.
+  // Member docs are delete-locked during `play` (#20) to preserve elimination history —
+  // so for a live game we *scrub-and-eliminate* the member instead of deleting it.
+  const gameIds = Array.from(
+    new Set(memberSnap.docs.map((d) => d.ref.parent.parent?.id).filter((id): id is string => !!id))
+  );
+  const gameSnaps = await Promise.all(
+    gameIds.map((id) => firestore().collection(Collections.GAMES).doc(id).get())
+  );
+  const phaseByGame = new Map<string, GamePhase>();
+  gameSnaps.forEach((snap) => {
+    if (snap.exists) phaseByGame.set(snap.id, gamePhase(snap.data() as Game));
+  });
+
+  // A scrub op preserves the eliminated-member record while erasing the departing
+  // user's identity (no name/email/token retained), so live games keep accurate
+  // timing + death history without orphaning their roster.
+  type Op =
+    | { kind: 'delete'; ref: FirebaseFirestoreTypes.DocumentReference }
+    | { kind: 'scrub'; ref: FirebaseFirestoreTypes.DocumentReference };
+  const ops: Op[] = [];
   for (const memberDoc of memberSnap.docs) {
     const gameId = memberDoc.ref.parent.parent?.id;
-    refs.push(memberDoc.ref);
+    const phase = gameId ? phaseByGame.get(gameId) : undefined;
+    if (phase === 'play') {
+      // Live game: keep the member as an anonymized elimination instead of deleting.
+      ops.push({ kind: 'scrub', ref: memberDoc.ref });
+    } else {
+      ops.push({ kind: 'delete', ref: memberDoc.ref });
+    }
     if (gameId) {
-      refs.push(
-        firestore()
+      ops.push({
+        kind: 'delete',
+        ref: firestore()
           .collection(Collections.GAMES)
           .doc(gameId)
           .collection(Collections.LOCATIONS)
-          .doc(userId)
-      );
+          .doc(userId),
+      });
     }
   }
-  refs.push(firestore().collection(Collections.USERS).doc(userId));
+  ops.push({ kind: 'delete', ref: firestore().collection(Collections.USERS).doc(userId) });
 
   const CHUNK = 450; // safe margin under the 500-op batch limit
-  for (let i = 0; i < refs.length; i += CHUNK) {
+  for (let i = 0; i < ops.length; i += CHUNK) {
     const batch = firestore().batch();
-    for (const ref of refs.slice(i, i + CHUNK)) batch.delete(ref);
+    for (const op of ops.slice(i, i + CHUNK)) {
+      if (op.kind === 'delete') {
+        batch.delete(op.ref);
+      } else {
+        batch.update(op.ref, {
+          out: true,
+          outAt: firestore.FieldValue.serverTimestamp(),
+          cause: 'self',
+          email: '',
+          displayName: '(left)',
+          fcmToken: firestore.FieldValue.delete(),
+        });
+      }
+    }
     await batch.commit();
   }
 

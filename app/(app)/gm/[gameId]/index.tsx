@@ -19,6 +19,7 @@ import { onForegroundMessage } from '@/services/notificationService';
 import { endGame, openLobby, reopenSetup, startGame, updateGameConfig, deleteGame, setGameArchived, sendBroadcast, sendGmMessage, subscribeGmMessages, gameConfig, parseEventDate, formatEventDate } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
 import { validateGameConfig } from '@/common/gameConfigValidation';
+import { startGamePreflight } from '@/common/startPreflight';
 import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
 import { useNow } from '@/hooks/useNow';
 import { STALE_MS, unaccountedPlayers, unaccountedReasonText } from '@/services/locationStatus';
@@ -143,14 +144,32 @@ export default function GMGameScreen() {
   }
 
   function confirmStart() {
-    // Readiness check (#16): warn if some joined players aren't on the map yet, so the
-    // GM can choose to wait for stragglers' first fix rather than starting blind.
+    // Full Start-Game preflight (#23): hard-block the four preconditions that make a game
+    // unplayable (no boundary, no checkpoints, no players, no GM able to receive alerts),
+    // then keep the #16 unlocated-players advisory as a confirm-past warning.
     const roster = members.filter((m) => m.role === 'player');
     const located = roster.filter((p) => playerLocations.some((l) => l.userId === p.userId)).length;
-    const missing = roster.length - located;
+    const gmHasToken = members.some((m) => m.role === 'gm' && !!m.fcmToken);
+    const { blockers, warnings } = startGamePreflight({
+      hasBoundary: !!game?.boundary,
+      checkpointCount: checkpoints.length,
+      playerCount: roster.length,
+      gmHasToken,
+      unlocatedPlayerCount: roster.length - located,
+    });
+
+    if (blockers.length > 0) {
+      Alert.alert(
+        'Can’t start yet',
+        `Resolve these before starting:\n\n${blockers.map((b) => `• ${b}`).join('\n')}`,
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
     const message =
-      missing > 0
-        ? `Only ${located}/${roster.length} players are on your map — ${missing} ${missing === 1 ? "hasn't" : "haven't"} reported a location yet (they may need a moment, or to open the app). Start anyway?`
+      warnings.length > 0
+        ? `${warnings.join('\n\n')}\n\nStart anyway?`
         : 'Players will see their timer begin. You can end the game at any time.';
     Alert.alert('Start the game?', message, [
       { text: 'Cancel', style: 'cancel' },
@@ -328,6 +347,10 @@ export default function GMGameScreen() {
 
   const players = members.filter((m) => m.role === 'player');
   const pendingRations = rations.filter((r) => r.status === 'pending').length;
+  // #24: once play has begun, the interval-defining fields (game length + ration interval)
+  // are frozen — editing them rescrambles the ration schedule. Disabled with a reason here;
+  // the rules enforce it server-side too.
+  const intervalLocked = phase === 'play' || phase === 'results';
   // Players we already have a location fix for (lobby readiness, #16). Used to show the
   // GM "N/N located" so they can wait to start until everyone is on the map.
   const locatedIds = new Set(playerLocations.map((l) => l.userId));
@@ -668,16 +691,19 @@ export default function GMGameScreen() {
 
             <Text style={styles.codeLabel}>GAME LENGTH (MINUTES)</Text>
             <TextInput
-              style={styles.durationInput}
+              style={[styles.durationInput, intervalLocked && styles.inputDisabled]}
               value={cfgDuration}
               onChangeText={setCfgDuration}
+              editable={!intervalLocked}
               keyboardType="number-pad"
               placeholder="210"
               placeholderTextColor={Colors.textMuted}
             />
             {cfgErrors.durationMinutes
               ? <Text style={styles.settingError}>{cfgErrors.durationMinutes}</Text>
-              : <Text style={styles.settingHint}>210 = 3.5 hours</Text>}
+              : intervalLocked
+                ? <Text style={styles.settingHint}>Locked during play — it defines the ration schedule.</Text>
+                : <Text style={styles.settingHint}>210 = 3.5 hours</Text>}
 
             <Text style={styles.codeLabel}>EVENT DATE (OPTIONAL)</Text>
             <TextInput
@@ -721,16 +747,19 @@ export default function GMGameScreen() {
               <>
                 <Text style={styles.codeLabel}>RATION INTERVAL (MINUTES)</Text>
                 <TextInput
-                  style={styles.durationInput}
+                  style={[styles.durationInput, intervalLocked && styles.inputDisabled]}
                   value={cfgRationInterval}
                   onChangeText={setCfgRationInterval}
+                  editable={!intervalLocked}
                   keyboardType="number-pad"
                   placeholder="30"
                   placeholderTextColor={Colors.textMuted}
                 />
                 {cfgErrors.rationIntervalMinutes
                   ? <Text style={styles.settingError}>{cfgErrors.rationIntervalMinutes}</Text>
-                  : <Text style={styles.settingHint}>How often players must submit a ration card</Text>}
+                  : intervalLocked
+                    ? <Text style={styles.settingHint}>Locked during play — it defines the ration schedule.</Text>
+                    : <Text style={styles.settingHint}>How often players must submit a ration card</Text>}
                 <Text style={styles.codeLabel}>OPEN WINDOW (MINUTES)</Text>
                 <TextInput
                   style={styles.durationInput}
@@ -1208,6 +1237,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surfaceElevated, borderRadius: 12, borderWidth: 1, borderColor: Colors.border,
     color: Colors.text, fontSize: 18, fontWeight: '700', padding: 14, marginTop: 6,
   },
+  inputDisabled: { opacity: 0.5, color: Colors.textMuted },
   settingHint: { fontSize: 12, color: Colors.textMuted, marginTop: 6, marginBottom: 8 },
   settingError: { fontSize: 12, color: Colors.danger, fontWeight: '600', marginTop: 6, marginBottom: 8 },
   toggleRow: {

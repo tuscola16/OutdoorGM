@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Colors } from '@/constants/colors';
 import { TOPO_TILE_URL, TOPO_TILE_SIZE, TOPO_MAX_ZOOM, TOPO_MAX_NATIVE_ZOOM } from '@/constants/map';
-import { addCheckpoint, updateCheckpoint, deleteCheckpoint } from '@/services/gameService';
+import { addCheckpoint, updateCheckpoint, deleteCheckpoint, deleteScheduledEvent } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
 import { pointInBoundary } from '@/common/geo';
 import { KIND_META, checkpointKind, hexToRgba } from '@/components/checkpointForm';
@@ -43,7 +43,7 @@ function behaviorSummary(entries: RunbookEntry[]): string {
 
 export default function CheckpointsScreen() {
   const { gameId } = useLocalSearchParams<{ gameId: string }>();
-  const { game, checkpoints, runbookEntries, loadGame } = useGame();
+  const { game, checkpoints, runbookEntries, scheduledEvents, loadGame } = useGame();
   const router = useRouter();
   const boundary: MapBoundary | undefined = game?.boundary;
 
@@ -205,12 +205,26 @@ export default function CheckpointsScreen() {
 
   function confirmDeleteCheckpoint(cp: Checkpoint) {
     if (!gameId) return;
-    Alert.alert(`Delete "${cp.name}"?`, 'This cannot be undone.', [
+    // #25: warn if a separately-authored, still-pending reveal-checkpoint event points at
+    // this checkpoint — it'll be left dangling after deletion. The checkpoint's own paired
+    // timed reveal (`reveal_<id>`) is auto-cleaned by deleteCheckpoint, so exclude it.
+    const dangling = scheduledEvents.filter(
+      (e) => e.type === 'reveal-checkpoint' && e.checkpointId === cp.id && e.firedAt == null && e.id !== `reveal_${cp.id}`
+    );
+    const message = dangling.length > 0
+      ? 'A scheduled reveal still points at this checkpoint — it won’t fire after deletion. This cannot be undone.'
+      : 'This cannot be undone.';
+    Alert.alert(`Delete "${cp.name}"?`, message, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete', style: 'destructive',
         onPress: async () => {
-          try { await deleteCheckpoint(gameId, cp.id); setShowCpModal(false); }
+          try {
+            await deleteCheckpoint(gameId, cp.id);
+            // Clean up the now-orphaned reveal rows too, so the run-sheet doesn't carry dead pointers.
+            for (const e of dangling) await deleteScheduledEvent(gameId, e.id).catch(() => {});
+            setShowCpModal(false);
+          }
           catch (err) { Alert.alert('Error', friendlyError(err)); }
         },
       },

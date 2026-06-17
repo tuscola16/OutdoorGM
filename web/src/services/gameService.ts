@@ -136,18 +136,42 @@ export async function joinGameByCode(
 
 // --- Phase transitions ---
 
-/** Open a game to players (phase: setup → lobby). */
+/** Read a game's resolved phase (for the #22 monotonic-transition guards). */
+async function readPhase(gameId: string): Promise<GamePhase> {
+  const snap = await getDoc(doc(db, Collections.GAMES, gameId));
+  return gamePhase(snap.data() as { phase?: GamePhase; status?: GameStatus } | undefined);
+}
+
+/**
+ * Open a game to players (phase: setup → lobby). #22: guarded + monotonic — a no-op if
+ * already in the lobby, and refused from any later phase (a stale tap can't rewind play).
+ */
 export async function openLobby(gameId: string): Promise<void> {
+  const phase = await readPhase(gameId);
+  if (phase === 'lobby') return;
+  if (phase !== 'setup') throw new Error('This game has already started.');
   await updateDoc(doc(db, Collections.GAMES, gameId), { phase: 'lobby' });
 }
 
-/** Send a game back to setup (phase: lobby → setup). */
+/**
+ * Send a game back to setup (phase: lobby → setup) — the one sanctioned backward move.
+ * #22: only from the lobby; refused once play has begun.
+ */
 export async function reopenSetup(gameId: string): Promise<void> {
+  const phase = await readPhase(gameId);
+  if (phase === 'setup') return;
+  if (phase !== 'lobby') throw new Error('Only a game waiting in the lobby can return to setup.');
   await updateDoc(doc(db, Collections.GAMES, gameId), { phase: 'setup' });
 }
 
-/** Start play and stamp the start time (phase: lobby → play). */
+/**
+ * Start play and stamp the start time (phase: lobby → play). #22: a no-op if already in
+ * play (so a double-tap can't re-stamp `startedAt`), and refused from setup/results.
+ */
 export async function startGame(gameId: string): Promise<void> {
+  const phase = await readPhase(gameId);
+  if (phase === 'play') return;
+  if (phase !== 'lobby') throw new Error('The game can only be started from the lobby.');
   await updateDoc(doc(db, Collections.GAMES, gameId), {
     phase: 'play',
     startedAt: serverTimestamp(),
@@ -156,8 +180,11 @@ export async function startGame(gameId: string): Promise<void> {
 
 /** Stop play and move to results (phase: play → results). Keeps `status: 'ended'`
  * so existing "is this game over?" checks (and the joinGameByCode active filter)
- * keep working. */
+ * keep working. #22: a no-op if already in results, and refused before play. */
 export async function endGame(gameId: string): Promise<void> {
+  const phase = await readPhase(gameId);
+  if (phase === 'results') return;
+  if (phase !== 'play') throw new Error('Only a game in play can be ended.');
   await updateDoc(doc(db, Collections.GAMES, gameId), {
     status: 'ended',
     phase: 'results',
@@ -215,6 +242,38 @@ export async function eliminatePlayer(
 /** Back-compat alias. */
 export async function markPlayerOut(gameId: string, userId: string): Promise<void> {
   await eliminatePlayer(gameId, userId, 'self');
+}
+
+/**
+ * Reverse an accidental elimination (#21). Clears out/outAt/cause, posts a correcting
+ * broadcast, and — if that death had ended the game via winner detection — reopens
+ * `results → play`. GM-only. Mirrors the mobile gameService.revivePlayer.
+ *
+ * Clearing `out` (true→false) does NOT re-trigger handleDeath (it gates on `out` rising),
+ * so reviving never re-fires a death toll. We also drop the deterministic death-toll doc
+ * (`${userId}_death`, #26) so a later re-elimination can toll afresh.
+ */
+export async function revivePlayer(gameId: string, userId: string): Promise<void> {
+  const gameRef = doc(db, Collections.GAMES, gameId);
+  const memberRef = doc(db, Collections.GAMES, gameId, Collections.MEMBERS, userId);
+  const [memberSnap, gameSnap] = await Promise.all([getDoc(memberRef), getDoc(gameRef)]);
+  const name = (memberSnap.data()?.displayName as string | undefined) ?? 'A tribute';
+  const game = gameSnap.data() as Game | undefined;
+
+  await updateDoc(memberRef, { out: false, outAt: null, cause: deleteField() });
+
+  await deleteDoc(doc(db, Collections.GAMES, gameId, Collections.BROADCASTS, `${userId}_death`)).catch(() => {});
+
+  await addDoc(collection(db, Collections.GAMES, gameId, Collections.BROADCASTS), {
+    kind: 'gm-message',
+    message: `${name} is back in the game.`,
+    targetPlayerId: null,
+    createdAt: serverTimestamp(),
+  });
+
+  if (gamePhase(game) === 'results' && game?.status === 'ended') {
+    await updateDoc(gameRef, { phase: 'play', status: 'active', endedAt: null });
+  }
 }
 
 /** GM acknowledges a safety alert (#5): stamps `sosAckAt` so it stops being the live,

@@ -280,17 +280,9 @@ These items are pure logic, rules, client architecture, or ops — no new fields
 - **56** Auto-end threshold — **built**: `GameConfig.autoEndThreshold` (`one`/`zero`/`manual`; legacy `winnerDetection:false` ⇒ `manual`) gating the `onMemberWrite` end/winner transaction.
 - **58** Single-game test checklist — a doc plus an optional `seedTestGame` helper; no new fields.
 - **12** Auto per-interval count — wire the `playerCountBroadcast` toggle to auto-seed a repeating `template:'player-count'` scheduled-announcement row each interval (the #61 authoring + `runScheduledEvents` sweep already exist); today the toggle is stored but does nothing automatic.
-- **16** Geofence read cost — remaining work: cache phase/role per write (lobby short-circuit, zero-checkpoint skip, and checkpoint cache already shipped).
-- **20** No mid-game delete — deny member `delete` when `gamePhase(game) === 'play'` (`firestore.rules` + `removePlayer`).
-- **21** Reversible elimination — `revivePlayer()` clears `out`/`outAt`/`cause`, posts a correcting broadcast, and reverts `results → play` if needed.
-- **22** Monotonic phases — phase-transition helpers; `reopenSetup` warns; End Game confirm-gated and single-fire.
-- **23** Start-Game preflight — checks in `startGame` (boundary, ≥1 checkpoint, ≥1 player, ≥1 GM FCM token).
-- **24** Config lock — freeze interval-defining fields in `updateGameConfig` once `play` begins.
-- **25** Checkpoint-edit history — remaining work: warn when pending run-sheet events still point at a deleted/moved checkpoint (`arrivals` are already preserved as independent docs; the paired reveal row is already cleaned up).
-- **26** Idempotent server actions — deterministic ids / `firedAt` across winner/starvation/run-sheet.
-- **27** Late-join lock — `joinGameByCode` rejects any join once `gamePhase(game) !== 'lobby'` (today it only checks `status === 'active'`).
-- **28** Confirm destructive broadcasts — two-step confirm + log for void-economy / End Game.
-- **29** `deleteAccount` — remaining work: sole-GM transfer or server-side end (chunked ≤450-write batches already shipped). Maybe a small `transferGm`/`deleteGameForce` callable.
+- **16** Geofence read cost — remaining work: cache phase/role per write (lobby short-circuit, zero-checkpoint skip, and checkpoint cache already shipped). NB: #20/#24's rules now add a game-doc `get()` on some member/game writes.
+- **20–28** Tier 7 integrity invariants — **built** (enforcement/logic only): #27 late-join lock (`joinGameByCode` refuses a new *player* join once phase ≠ `lobby`); #20 member delete-lock in `play` (rules `gamePhase()` resolver + UI + `deleteAccount` scrub-and-eliminate); #26 deterministic `broadcasts/{userId}_death` toll; #23 shared `common/startPreflight.ts`; #24 interval-trio freeze (client disable + scoped rules guard); #21 `revivePlayer()` (+ `results → play` reopen); #22 guarded monotonic phase helpers; #25 dangling-reveal warning on checkpoint delete; #28 End Game two-step confirm + audit log lines.
+- **29** `deleteAccount` — remaining work: sole-GM transfer or server-side end (chunked ≤450-write batches already shipped; #20's carve-out now scrubs-and-eliminates a live game's member). Maybe a small `transferGm`/`deleteGameForce` callable.
 - **42** Arena map overlay — a GM-uploaded image overlay (asset/storage + map layer; spec when prioritized).
 - **44** Voucher-site preset — a one-tap scaffold of open/close/announce run-sheet rows on a time-windowed checkpoint.
 - **47** Maps-key restriction — Cloud Console ops task.

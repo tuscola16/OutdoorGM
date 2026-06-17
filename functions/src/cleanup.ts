@@ -34,6 +34,16 @@ export const cleanupRationPhotosOnGameEnd = functions.firestore
     const db = admin.firestore();
     const gameRef = db.collection('games').doc(gameId);
 
+    // #28 Audit trail: log every game-end (a fleet-wide destructive transition) at the
+    // single chokepoint they all flow through — GM-initiated End Game *and* winner-detection
+    // auto-end both land here on `status → ended`. (The Firestore trigger carries no auth
+    // context, so we log the transition fact, not the actor.)
+    functions.logger.info(`[audit] game ${gameId} ended — destructive transition (phase ${before?.phase ?? '?'} → results)`, {
+      gameId,
+      name: after?.name ?? null,
+      endedAt: after?.endedAt ?? null,
+    });
+
     // All best-effort and independent — run in parallel. `force` on deleteFiles keeps
     // going past any individual error; absent photos/subcollections are fine.
     await Promise.allSettled([

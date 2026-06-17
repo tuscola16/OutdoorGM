@@ -20,6 +20,15 @@ service cloud.firestore {
         && get(memberPath(gameId)).data.role == 'gm';
     }
 
+    // Resolve a game's phase the same way the clients' gamePhase() helper does:
+    // honor an explicit `phase`, else default a legacy (no-phase) game to `results`
+    // once ended and `play` while still active. Used to delete-lock member docs
+    // during `play` (#20).
+    function gamePhase(gameId) {
+      let g = get(/databases/$(database)/documents/games/$(gameId)).data;
+      return g.get('phase', g.get('status', 'active') == 'ended' ? 'results' : 'play');
+    }
+
     // Users can read/write their own profile only.
     match /users/{userId} {
       allow read, write: if isSignedIn() && request.auth.uid == userId;
@@ -52,9 +61,28 @@ service cloud.firestore {
       // join codes or creatorId. hasOnly() rejects a write that touches any key
       // outside this set (and affectedKeys() lists only *changed* keys, so codes
       // and creatorId are protected because changing them isn't permitted here).
+      //
+      // #24: once the *current* phase is `play`, the interval-defining trio
+      // (config.durationMinutes, config.rationIntervalMinutes, startedAt) is frozen —
+      // editing them mid-game rescrambles the ration schedule and could retroactively
+      // starve everyone (#11 acts on those boundaries). Every other config edit
+      // (battery saver, unique cards, …) stays allowed. The freeze keys off the
+      // *resolved current* phase, so the lobby→play start (which stamps startedAt) and
+      // the #21 results→play revive (which the resolver still sees as `results`) are
+      // unaffected.
       allow update: if isGameGM(gameId)
         && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['name', 'phase', 'status', 'rules', 'boundary', 'config', 'startedAt', 'endedAt', 'gameDate', 'isTest', 'testStepIndex']);
+             .hasOnly(['name', 'phase', 'status', 'rules', 'boundary', 'config', 'startedAt', 'endedAt', 'gameDate', 'isTest', 'testStepIndex'])
+        && (
+          resource.data.get('phase', resource.data.get('status', 'active') == 'ended' ? 'results' : 'play') != 'play'
+          || (
+            request.resource.data.get('startedAt', null) == resource.data.get('startedAt', null)
+            && request.resource.data.get('config', {}).get('durationMinutes', null)
+                 == resource.data.get('config', {}).get('durationMinutes', null)
+            && request.resource.data.get('config', {}).get('rationIntervalMinutes', null)
+                 == resource.data.get('config', {}).get('rationIntervalMinutes', null)
+          )
+        );
 
       // Checkpoints — GM only. Players intentionally cannot see checkpoint
       // locations (it would reveal the objectives), so reads are GM-scoped too.
@@ -99,8 +127,13 @@ service cloud.firestore {
                   || request.resource.data.get('sosAckAt', null) == null));
 
         // A GM may remove anyone; a user may remove their own membership (leave /
-        // delete account).
-        allow delete: if isGameGM(gameId) || (isSignedIn() && request.auth.uid == memberId);
+        // delete account) — BUT member docs are delete-locked during `play` (#20):
+        // the only way out of a running game is an *elimination* (an `update` setting
+        // out/cause, which preserves timing/death-location/ration history). Hard deletes
+        // are allowed in setup/lobby (pre-start cleanup) and results (post-game cleanup),
+        // never in play. deleteAccount scrubs+eliminates instead of deleting in play.
+        allow delete: if (isGameGM(gameId) || (isSignedIn() && request.auth.uid == memberId))
+          && gamePhase(gameId) != 'play';
       }
 
       // Locations — a player writes only their own doc, and only while they are an

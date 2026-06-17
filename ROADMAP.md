@@ -11,8 +11,8 @@ reused**; when an item ships it moves to the **Built & removed** callout below (
 full detail in git + the README) rather than being renumbered. Recently shipped: the **#60 runbook
 overhaul**, the **2026-06-07/08 field-test batch** (#65–#70, #73, #76), the **P1 field-test
 batch** (#63/#64/#68/#72/#74), and the **2026-06-08 polish + ration-loop batch** (#62/#75/#71/#11/#61) —
-all in the callout below. **Outstanding field-test item #77** leads the next section; older tiers
-(integrity invariants, polish) follow.
+all in the callout below — as is the **Tier 7 integrity-invariants batch** (#20–28). **Outstanding
+field-test item #77** leads the next section; the remaining polish tiers follow.
 
 > **Built & removed** (retired numbers, never reused — see git history + the
 > [README](README.md#features)):
@@ -80,6 +80,24 @@ all in the callout below. **Outstanding field-test item #77** leads the next sec
 >   pane over the existing `scheduledEvents`/`runScheduledEvents` sweep (announcement / player-count /
 >   gear-drop / GM reminder, `offsetMinutes > 0` via shared `requirePositiveInt`). **Mobile halves
 >   awaiting APK: #71 in-list dismiss, #11 config toggle.**
+> - **20–28** — **Tier 7 integrity invariants** (enforcement/logic only, no new schema). Server +
+>   web + rules **deploy now**; mobile client halves ride the next APK. **#27** late-join lock in
+>   `joinGameByCode` (a brand-new *player* join is refused once phase != `lobby`; co-GM joins + existing
+>   members reconnecting still pass). **#20** member docs delete-locked during `play` (rules
+>   `gamePhase()` resolver + UI hides Remove outside setup/lobby); `deleteAccount` now scrubs-and-
+>   eliminates (anonymized `out`) instead of hard-deleting a live game's member. **#26** the death toll
+>   is now a deterministic `broadcasts/{userId}_death` create-if-absent (retry-safe; push only on first
+>   post); winner detection already idempotent. **#23** shared `common/startPreflight.ts` hard-blocks
+>   start with no boundary / no checkpoints / no players / no GM FCM token; unlocated-players stays a
+>   confirm-past warning. **#24** the interval-defining trio (`durationMinutes`/`rationIntervalMinutes`/
+>   `startedAt`) is frozen in `play` — client inputs disabled + a scoped rules guard. **#21**
+>   `revivePlayer()` clears `out`/`outAt`/`cause`, posts a correcting broadcast, deletes the death toll,
+>   and reopens `results -> play` if that kill had ended the game. **#22** the phase helpers
+>   (`openLobby`/`reopenSetup`/`startGame`/`endGame`) are guarded + monotonic (double-tap Start can't
+>   re-stamp `startedAt`; illegal jumps throw). **#25** deleting a checkpoint warns + cleans up any
+>   separately-authored pending `reveal-checkpoint` row pointing at it. **#28** End Game keeps its
+>   two-step confirm (no fleet-wide ration-void action exists) + an audit log line on every
+>   `status -> ended` transition (`cleanup.ts`) and the winner-detection auto-end (`members.ts`).
 
 ---
 
@@ -116,45 +134,6 @@ hand. Now trivial since #61 shipped the web "Scheduled announcements" authoring 
 skip, and checkpoint cache shipped, but the trigger still reads the game doc **and** the member doc
 on every location write. Cache phase/role (short TTL, like the checkpoint cache) to cut the
 remaining per-write reads. Model cost at expected player counts before launch.
-
----
-
-## Tier 7 — Integrity invariants (land alongside the features they protect)
-
-Backend guards so a running game can't be corrupted.
-
-**20. No mid-game player removal.** In `play`, member docs are delete-locked; the only way out is
-an elimination (`out`/`cause`), preserving timing/death-location/ration history. Hard deletes only
-in `setup`/`lobby`. (`removePlayer` has no phase lock today — the gap.)
-
-**21. Reversible elimination.** `revivePlayer()` clears `out`/`outAt`/`cause` and posts a
-correcting broadcast; if an accidental kill had ended the game, return `results → play`.
-
-**22. Guarded, monotonic phases.** Phase only advances; the lone backward move is `reopenSetup`
-(warns it resets `startedAt`/timers). Confirm remaining gaps are closed.
-
-**23. Full Start-Game preflight.** Refuse/hard-warn to start with no boundary, zero checkpoints,
-zero joined players, or no GM holding a valid FCM token (the partial fix-warning exists).
-
-**24. Lock interval-defining config during play.** Freeze `rationIntervalMinutes`,
-`durationMinutes`, `startedAt` once `play` begins — changing them rescrambles ration intervals and
-could retroactively starve everyone. Editable only in setup, shown disabled with a reason.
-
-**25. Warn on checkpoint edits with pending run-sheet events.** A deleted/moved checkpoint already
-keeps its `arrivals` (independent docs) and its paired reveal row is cleaned up; the remaining gap is
-warning the GM when other pending run-sheet events (open/close/reveal) still point at it, so none are
-left dangling.
-
-**26. Idempotent destructive server actions.** Winner detection, the starvation sweep (#11, now
-built with a per-interval `starvationSweeps/{i}` latch), and the run-sheet dedupe must be safe under
-retry/double-trigger (deterministic ids / `firedAt` / create-if-absent latches) — tested as an
-explicit invariant rather than relying on incidental idempotency.
-
-**27. Late-join lock.** Joining closes once the game reaches `play` (no exceptions for MVP), so an
-eliminated player can't rejoin under a fresh name. (GM opt-in for stragglers is post-MVP.)
-
-**28. Confirm fleet-wide destructive broadcasts.** "Void all vouchers / ration cards" and End Game
-take a two-step confirm and are logged.
 
 ---
 
@@ -231,8 +210,9 @@ its bundle ID / SHA-1 and the Maps SDK in Cloud Console before wide release. Con
    the next APK.)
 1. **Tier 4** (12) — the auto per-interval count — is the small ration-loop follow-on now that #11
    (auto-starvation) and #61 (scheduled announcements) have shipped.
-2. **Tier 6** (16) trims the last geofence read cost; **Tier 7** (20–28) — integrity invariants —
-   land alongside the features they protect.
+2. **Tier 6** (16) trims the last geofence read cost (and now pairs with the #20/#24 rules, which
+   add a game-doc `get()` on some writes). *Tier 7 (20–28) integrity invariants shipped — see the
+   Built & removed callout.*
 3. **Tier 8** (29, 35) trails as robustness/polish.
 4. **Tier 13** (58) — test tooling; useful throughout, build when convenient.
 5. **Tier 11** (41–45, 57) is P3 polish (43/45 and per-GM teams deprioritized).

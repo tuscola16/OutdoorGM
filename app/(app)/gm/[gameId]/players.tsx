@@ -8,7 +8,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useGame } from '@/context/GameContext';
 import { Colors } from '@/constants/colors';
-import { updateMemberRole, removePlayer, eliminatePlayer, clearSos, ackSos, setMemberDistrict } from '@/services/gameService';
+import { updateMemberRole, removePlayer, eliminatePlayer, revivePlayer, clearSos, ackSos, setMemberDistrict } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
 import { useNow } from '@/hooks/useNow';
 import { stalenessLevel, stalenessColor, formatAgo } from '@/services/locationStatus';
@@ -149,6 +149,28 @@ export default function PlayersScreen() {
     );
   }
 
+  function handleRevive(member: GameMember) {
+    // Reverse an accidental kill (#21): clears out + reopens the game if that death ended it.
+    Alert.alert(
+      `Bring ${member.displayName} back?`,
+      'Clears their elimination. If the game had already ended, it reopens.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Revive',
+          onPress: async () => {
+            if (!gameId) return;
+            try {
+              await revivePlayer(gameId, member.userId);
+            } catch (err) {
+              Alert.alert('Error', friendlyError(err));
+            }
+          },
+        },
+      ]
+    );
+  }
+
   async function handleAckSos(member: GameMember) {
     if (!gameId) return;
     try {
@@ -260,6 +282,13 @@ export default function PlayersScreen() {
           </TouchableOpacity>
         )}
 
+        {/* Revive a dead player (#21): reverse an accidental kill, reopening the game if needed. */}
+        {!isGM && isOut && (
+          <TouchableOpacity onPress={() => handleRevive(item)} style={styles.iconBtn}>
+            <Ionicons name="heart-outline" size={22} color={Colors.success} />
+          </TouchableOpacity>
+        )}
+
         <TouchableOpacity onPress={() => handleRoleToggle(item)} style={styles.iconBtn}>
           <Ionicons
             name={isGM ? 'arrow-down-circle-outline' : 'arrow-up-circle-outline'}
@@ -268,9 +297,14 @@ export default function PlayersScreen() {
           />
         </TouchableOpacity>
 
-        <TouchableOpacity onPress={() => handleRemove(item)} style={styles.iconBtn}>
-          <Ionicons name="person-remove-outline" size={22} color={Colors.danger} />
-        </TouchableOpacity>
+        {/* Hard-remove is only available before the game starts (#20). Once in play/
+            results, member docs are delete-locked to preserve timing/death history —
+            the GM eliminates instead. */}
+        {(phase === 'setup' || phase === 'lobby') && (
+          <TouchableOpacity onPress={() => handleRemove(item)} style={styles.iconBtn}>
+            <Ionicons name="person-remove-outline" size={22} color={Colors.danger} />
+          </TouchableOpacity>
+        )}
       </View>
     );
   }

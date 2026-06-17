@@ -68,16 +68,32 @@ async function handleDeath(
     .filter((m) => m.role !== 'gm' && !m.out);
   const livingCount = livingNonGm.length;
 
+  // #26 Idempotency invariant: onWrite can be retried after a partial run, so the
+  // death toll is written at a DETERMINISTIC id (`${userId}_death`) inside a
+  // transaction that no-ops if it already exists. The push fires only on the first
+  // (real) post, so a retry can't double-toll or double-push. Winner detection below
+  // still runs on every invocation — it is independently idempotent (its own
+  // transaction bails once `status === 'ended'`). (#21 revive deletes this doc so a
+  // re-elimination after a revive can toll afresh.)
+  const playerId = player.userId ?? 'unknown';
+  const tollRef = gameRef.collection('broadcasts').doc(`${playerId}_death`);
   const name = player.displayName ?? 'A tribute';
-  await gameRef.collection('broadcasts').add({
-    kind: 'death',
-    message: `${name} has fallen — ${livingCount} ${livingCount === 1 ? 'tribute remains' : 'tributes remain'}.`,
-    targetPlayerId: null,
-    pushed: true, // #69: pushed below, so onBroadcastCreate skips it
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  const posted = await db.runTransaction(async (t) => {
+    const snap = await t.get(tollRef);
+    if (snap.exists) return false; // a retry — toll already posted
+    t.set(tollRef, {
+      kind: 'death',
+      message: `${name} has fallen — ${livingCount} ${livingCount === 1 ? 'tribute remains' : 'tributes remain'}.`,
+      targetPlayerId: null,
+      pushed: true, // #69: pushed below, so onBroadcastCreate skips it
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return true;
   });
-  const livingTokens = livingNonGm.map((m) => m.fcmToken).filter((t): t is string => !!t);
-  await sendPushToTokens(livingTokens, '☠️ A tribute has fallen', `${livingCount} remaining`, 'broadcasts');
+  if (posted) {
+    const livingTokens = livingNonGm.map((m) => m.fcmToken).filter((t): t is string => !!t);
+    await sendPushToTokens(livingTokens, '☠️ A tribute has fallen', `${livingCount} remaining`, 'broadcasts');
+  }
 
   // Winner detection only kicks in once the field could plausibly be at the threshold;
   // skip the expensive grace+transaction otherwise.
@@ -95,9 +111,9 @@ async function handleDeath(
   // Let simultaneous deaths settle, then decide atomically.
   await sleep(WINNER_GRACE_MS);
 
-  await db.runTransaction(async (t) => {
+  const ended = await db.runTransaction(async (t) => {
     const gSnap = await t.get(gameRef);
-    if (!gSnap.exists || gSnap.data()?.status === 'ended') return; // already over
+    if (!gSnap.exists || gSnap.data()?.status === 'ended') return false; // already over
 
     const mSnap = await t.get(gameRef.collection('members'));
     const living = mSnap.docs
@@ -105,8 +121,8 @@ async function handleDeath(
       .filter((m) => m.role !== 'gm' && !m.out);
 
     // Re-check the threshold with fresh data (another death may have landed).
-    if (threshold === 'one' && living.length > 1) return;
-    if (threshold === 'zero' && living.length > 0) return;
+    if (threshold === 'one' && living.length > 1) return false;
+    if (threshold === 'zero' && living.length > 0) return false;
 
     const bRef = gameRef.collection('broadcasts').doc();
     if (threshold === 'one' && living.length === 1) {
@@ -132,7 +148,15 @@ async function handleDeath(
       status: 'ended',
       endedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
+    return true;
   });
+
+  // #28 Audit trail: winner detection just auto-ended the game (a fleet-wide destructive
+  // transition). The cleanup trigger logs the `status → ended` fact too; this records that
+  // it was the *automatic* path, not a GM tap.
+  if (ended) {
+    functions.logger.info(`[audit] game ${gameRef.id} auto-ended by winner detection (threshold '${threshold}')`);
+  }
 }
 
 async function handleSos(
