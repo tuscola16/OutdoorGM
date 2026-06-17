@@ -1,6 +1,10 @@
 # Implementation Plan — "Tier 11 P3 polish" (#41–45)
 
-**Status:** not started. **Created:** 2026-06-17. **Owner:** (pick up in a fresh session.)
+**Status:** **ALL FIVE (#41–45) BUILT** (2026-06-17) across types, services (mobile + web),
+functions, rules, and UI — web + functions builds green, mobile `tsc` clean (the 2 known
+expo-router `Href` errors aside), rules + storage rules validated, lint shows no new errors.
+Roadmap (`ROADMAP.md` + `ROADMAP_DATA_MODEL.md`) updated. **Not yet committed/deployed** (awaiting
+the user's go-ahead). Deploy split + APK notes below still apply. **Created:** 2026-06-17.
 
 This batch is the **Tier 11 P3 polish** cluster (#41–45): end-game phase, custom arena map overlay,
 practice game, voucher-site run-sheet preset, and post-game media. Items carry the **stable roadmap

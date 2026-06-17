@@ -1,9 +1,9 @@
 import React, { useRef, useEffect, useMemo } from 'react';
 import { View, StyleSheet, Text } from 'react-native';
-import MapView, { Marker, Circle, Polygon, UrlTile, PROVIDER_GOOGLE, Region } from 'react-native-maps';
+import MapView, { Marker, Circle, Polygon, Overlay, UrlTile, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import { Colors } from '@/constants/colors';
 import { TOPO_TILE_URL, TOPO_TILE_SIZE, TOPO_MAX_ZOOM, TOPO_MAX_NATIVE_ZOOM } from '@/constants/map';
-import type { Checkpoint, PlayerLocation, MapBoundary, RevealedMarker } from '@/types';
+import type { Checkpoint, PlayerLocation, MapBoundary, RevealedMarker, Game } from '@/types';
 import { isLowBattery, formatBattery } from '@/services/locationStatus';
 
 // Whole-US fallback, used only when there's no boundary/checkpoints/players to frame.
@@ -54,6 +54,13 @@ interface GameMapProps {
    * `checkpoints` collection). */
   markers?: RevealedMarker[];
   onMapLongPress?: (coord: { latitude: number; longitude: number }) => void;
+  /** Single-tap on the map (e.g. placing the #41 end-game rally point). */
+  onMapPress?: (coord: { latitude: number; longitude: number }) => void;
+  /** #41: the end-game convergence point, drawn as a distinct flame pin (draft or live). */
+  rallyPoint?: { latitude: number; longitude: number } | null;
+  /** #42: custom arena image overlay. Rendered as the axis-aligned bbox of its 4 corners
+   * (react-native-maps `Overlay` is bbox-only — no rotation/skew on mobile). */
+  mapOverlay?: Game['mapOverlay'] | null;
   onCheckpointPress?: (checkpoint: Checkpoint) => void;
   editMode?: boolean;
   initialRegion?: Region;
@@ -146,6 +153,9 @@ export function GameMap({
   deathMarkers = [],
   markers = [],
   onMapLongPress,
+  onMapPress,
+  rallyPoint,
+  mapOverlay,
   onCheckpointPress,
   editMode = false,
   initialRegion,
@@ -201,6 +211,7 @@ export function GameMap({
       onLongPress={
         onMapLongPress ? (e) => onMapLongPress(e.nativeEvent.coordinate) : undefined
       }
+      onPress={onMapPress ? (e) => onMapPress(e.nativeEvent.coordinate) : undefined}
       showsUserLocation={showsUserLocation}
       showsMyLocationButton={false}
     >
@@ -212,6 +223,18 @@ export function GameMap({
         maximumNativeZ={TOPO_MAX_NATIVE_ZOOM}
         zIndex={-1}
       />
+      {/* #42: custom arena overlay — axis-aligned bbox of the 4 corners (no rotation on
+          mobile, a documented react-native-maps Overlay limit). Sits above the basemap,
+          below the boundary/markers. */}
+      {mapOverlay?.url && mapOverlay.corners?.length >= 2 && (() => {
+        const lats = mapOverlay.corners.map((c) => c.latitude);
+        const lngs = mapOverlay.corners.map((c) => c.longitude);
+        const bounds: [[number, number], [number, number]] = [
+          [Math.min(...lats), Math.min(...lngs)],
+          [Math.max(...lats), Math.max(...lngs)],
+        ];
+        return <Overlay image={{ uri: mapOverlay.url }} bounds={bounds} />;
+      })()}
       {boundary && (
         <Polygon
           coordinates={boundaryCorners(boundary)}
@@ -238,6 +261,19 @@ export function GameMap({
           tracksViewChanges={false}
         />
       ))}
+      {rallyPoint && (
+        <Marker
+          coordinate={rallyPoint}
+          title="Final Rally"
+          description="Converge here"
+          anchor={{ x: 0.5, y: 0.5 }}
+          tracksViewChanges={false}
+        >
+          <View style={styles.rallyMarker}>
+            <Text style={styles.rallyFlame}>🔥</Text>
+          </View>
+        </Marker>
+      )}
       {playerLocations.map((pl) => (
         <PlayerMarker key={pl.userId} player={pl} />
       ))}
@@ -295,4 +331,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   deathSkull: { fontSize: 14 },
+  rallyMarker: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: Colors.primary,
+    borderWidth: 2,
+    borderColor: Colors.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rallyFlame: { fontSize: 16 },
 });

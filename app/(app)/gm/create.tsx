@@ -18,6 +18,7 @@ export default function CreateGameScreen() {
   const [gameName, setGameName] = useState('');
   const [displayName, setDisplayName] = useState(profile?.displayName ?? '');
   const [isTest, setIsTest] = useState(false);
+  const [practice, setPractice] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -30,7 +31,7 @@ export default function CreateGameScreen() {
     setLoading(true);
     try {
       const fcmToken = await getFcmToken();
-      const game = await createGame(gameName.trim(), displayName.trim(), fcmToken ?? undefined, isTest);
+      const game = await createGame(gameName.trim(), displayName.trim(), fcmToken ?? undefined, isTest, practice);
       router.replace(isTest ? `/(app)/gm/${game.id}/test` : `/(app)/gm/${game.id}`);
     } catch (err) {
       setError(friendlyError(err));
@@ -62,14 +63,30 @@ export default function CreateGameScreen() {
             </View>
             <Switch
               value={isTest}
-              onValueChange={setIsTest}
+              onValueChange={(v) => { setIsTest(v); if (v) setPractice(false); }}
+              trackColor={{ false: Colors.border, true: Colors.primary }}
+              thumbColor={Colors.white}
+            />
+          </View>
+
+          <View style={styles.testRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.testLabel}>Practice game</Text>
+              <Text style={styles.testHint}>
+                A disposable on-site dress rehearsal — relaxed guards, a one-tap test checkpoint,
+                a GM reset, and it auto-deletes when you end it.
+              </Text>
+            </View>
+            <Switch
+              value={practice}
+              onValueChange={(v) => { setPractice(v); if (v) setIsTest(false); }}
               trackColor={{ false: Colors.border, true: Colors.primary }}
               thumbColor={Colors.white}
             />
           </View>
 
           {error ? <Text style={styles.error}>{error}</Text> : null}
-          <Button title={isTest ? 'Create Test Event' : 'Create Game'} onPress={handleCreate} loading={loading} />
+          <Button title={isTest ? 'Create Test Event' : practice ? 'Create Practice Game' : 'Create Game'} onPress={handleCreate} loading={loading} />
         </View>
       </ScrollView>
     </SafeAreaView>

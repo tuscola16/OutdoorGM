@@ -34,6 +34,18 @@ export const cleanupRationPhotosOnGameEnd = functions.firestore
     const db = admin.firestore();
     const gameRef = db.collection('games').doc(gameId);
 
+    // #43: a practice game is disposable — when it ends, delete the whole thing (doc + all
+    // subcollections) and its Storage photos, so a season of throwaway rehearsals doesn't
+    // accumulate. This supersedes the targeted cleanup below.
+    if (after?.practice === true) {
+      functions.logger.info(`[cleanupOnGameEnd] practice game ${gameId} ended — deleting it entirely`);
+      await Promise.allSettled([
+        admin.storage().bucket().deleteFiles({ prefix: `games/${gameId}/`, force: true }),
+        db.recursiveDelete(gameRef),
+      ]);
+      return;
+    }
+
     // #28 Audit trail: log every game-end (a fleet-wide destructive transition) at the
     // single chokepoint they all flow through — GM-initiated End Game *and* winner-detection
     // auto-end both land here on `status → ended`. (The Firestore trigger carries no auth

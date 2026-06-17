@@ -31,5 +31,20 @@ service firebase.storage {
         && (request.resource.contentType == null
             || request.resource.contentType.matches('image/.*'));
     }
+
+    // Custom arena map overlay (#42): one image per game, georeferenced onto the map.
+    // Storage rules can't read Firestore (see the note above), so GM-only *write* can't be
+    // enforced here — but it doesn't need to be: the overlay is only ever rendered from the
+    // download URL the GM saves onto the game doc, and a non-GM can't write that field
+    // (firestore.rules restricts game-doc updates to GMs). So an unreferenced upload by a
+    // non-GM is inert. We still gate on signed-in + size + image type. Members read the
+    // image via the tokenized download URL; the direct-path read allows any member too.
+    match /games/{gameId}/overlay/{fileName} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn()
+        && request.resource.size < 15 * 1024 * 1024
+        && (request.resource.contentType == null
+            || request.resource.contentType.matches('image/.*'));
+    }
   }
 }

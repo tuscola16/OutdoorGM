@@ -53,6 +53,15 @@ shipped** (see the callout) — the outstanding work is the field-test item **#7
 >   member-doc short-TTL caches (cuts per-write reads); sole-GM `deleteAccount` rescue
 >   (`transferGmOrEndGame` promotes the longest-tenured player or ends the game); low-battery beacon
 >   (`PlayerLocation.battery`, GM roster/map flag); single-game test checklist (`TESTING_CHECKLIST.md`).
+> - **41–45** — **Tier 11 P3 polish batch**: `endgame` phase (GM-placed convergence rally in
+>   `markers`, rations auto-off, geofence/tracking stay live, broadcast + banners); custom arena
+>   `mapOverlay` (web upload + 4-corner georeference, web true-quad raster render, mobile bbox
+>   `Overlay`, `storage.rules` overlay path); night-before practice game (`Game.practice`/
+>   `Checkpoint.test`, `createGame` flag, PRACTICE badges, relaxed #20/#22/#28 guards + rules
+>   carve-out, drop-test-checkpoint, `resetPracticeGame`, auto-delete on end, GM readiness view);
+>   voucher-site run-sheet preset (scaffolds open/close/announce rows); post-game `media` (GM
+>   attaches host-validated YouTube + Google Photos links on results, `onGameMediaWrite` pushes
+>   all-but-setter, results screens link out). Schema in `types/index.ts`; `common/mediaLinks.ts`.
 
 ---
 
@@ -76,25 +85,9 @@ re-test (the #49 caveat).
 
 ## Tier 11 — P3 polish
 
-**41. End-game phase.** Add an `endgame` phase between `play` and `results` (e.g. a final
-convergence / sudden-death window) the GM triggers, so the app models the schedule's end-game block.
-
-**42. Custom arena map overlay.** Let the GM upload the arena map image as a map overlay instead of
-relying only on generic tiles + the boundary (Rule 33).
-
-**43. Night-before practice game.** A disposable, badged, re-runnable on-site dress-rehearsal game
-(`game.practice`) with a one-tap "drop test checkpoint here", relaxed safety guards, and a GM
-readiness view — exercises joins/tracking/events/pushes end-to-end. *Deprioritized:* slot in just
-ahead of the first real rehearsal, not ahead of everyday APK work.
-
-**44. Voucher-site run-sheet preset.** Vouchers are paper/in-person, so the app mints nothing — a
-voucher site is just a time-windowed checkpoint with announcing run-sheet rows. A one-tap "voucher
-site" preset that scaffolds the open/close/announce rows is the only (optional) work.
-
-**45. Post-game media.** After `results`, let a GM attach a YouTube recap + Google Photos album on
-the game doc (`media` object); a Cloud Function pushes "recap is up" to everyone but the setter;
-results screens show outbound Watch/View links. *Lowest priority* — stitching footage happens well
-after the event.
+> **Built (2026-06-17):** #41 end-game phase, #42 arena overlay, #43 practice game, #44 voucher
+> preset, and #45 post-game media all shipped — see the Built & removed callout. The server/web/
+> rules sides are deploy-ready; the mobile halves ride the next APK. Only #57 remains below.
 
 **57. Per-GM teams.** With multiple GMs, each GM owns a team of players and only watches / tracks /
 notifies (and sends updates to) their own set. Needs per-member team assignment and notification /

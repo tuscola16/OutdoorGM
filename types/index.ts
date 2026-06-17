@@ -19,9 +19,12 @@ export type GameStatus = 'active' | 'ended';
  * - `setup`   — GMs define boundary, checkpoints, and rules. Not yet open to players.
  * - `lobby`   — Open for players to join, name themselves, and read the tutorial. Not started.
  * - `play`    — Game is live; the play timer runs and players share location.
+ * - `endgame` — GM-triggered "final showdown" (#41): a labeled stretch between `play` and
+ *               `results` that rallies players to a convergence point. Live systems (tracking,
+ *               boundary, SOS, geofence) keep running; only the ration loop turns off.
  * - `results` — Game over; players can see how they did.
  */
-export type GamePhase = 'setup' | 'lobby' | 'play' | 'results';
+export type GamePhase = 'setup' | 'lobby' | 'play' | 'endgame' | 'results';
 
 /** Play-area boundary, defined by the GM from a map view. */
 export interface MapBoundary {
@@ -71,6 +74,38 @@ export interface Game {
   /** GM-tunable parameters; absent on legacy games (resolve with BASE_GAME_CONFIG). */
   config?: Partial<GameConfig>;
   /**
+   * Custom arena map overlay (ROADMAP #42): a GM-uploaded image georeferenced onto the
+   * live map in place of generic tiles. Authored web-only (drag/scale 4 corners over the
+   * Mapbox map); rendered on web as a true quad (Mapbox `image` source) and on mobile as
+   * the axis-aligned bbox of the corners (a documented react-native-maps `Overlay` limit).
+   * Absent on games without a custom overlay.
+   */
+  mapOverlay?: {
+    /** Firebase Storage download URL of the arena image. */
+    url: string;
+    /** The 4 georeferencing corners, ordered TL, TR, BR, BL (quad placement). */
+    corners: { latitude: number; longitude: number }[];
+    /** Render opacity 0–1; defaults to ~0.7 when absent. */
+    opacity?: number;
+    updatedAt: FsTimestamp;
+    updatedBy: string;
+  };
+  /**
+   * Post-game media links (ROADMAP #45): a GM attaches a YouTube recap and/or a Google
+   * Photos album after the game ends. Authored on the results screen; setting either link
+   * pushes every member except the setter ("recap is up"). Results screens show outbound
+   * Watch/View links. Absent until a GM adds media.
+   */
+  media?: {
+    /** Validated host: youtube.com / youtu.be. */
+    youtubeUrl?: string;
+    /** Validated host: photos.google.com / photos.app.goo.gl. */
+    photosAlbumUrl?: string;
+    updatedAt: FsTimestamp;
+    /** uid of the GM who set the media — excluded from the "recap is up" push. */
+    updatedBy: string;
+  };
+  /**
    * This is a guided Test Event (created from the "This is a test" checkbox). It's a
    * real, auto-configured game whose GM is walked through verifying every feature in a
    * tight space. Set server-side by the createGame Cloud Function.
@@ -82,6 +117,14 @@ export interface Game {
    * survives an app restart. See app/(app)/gm/[gameId]/test.tsx.
    */
   testStepIndex?: number;
+  /**
+   * Night-before practice game (ROADMAP #43): a disposable, badged, re-runnable on-site
+   * dress rehearsal. GM-write-only, set at `createGame`. Every screen shows a PRACTICE badge;
+   * the integrity invariants that block destructive actions (#20/#22/#28) are relaxed so the
+   * GM can tear down and re-run freely (`resetPracticeGame`); the whole game (doc + Storage
+   * photos) auto-deletes when it ends. Absent on real games.
+   */
+  practice?: boolean;
   createdAt: FsTimestamp;
 }
 
@@ -362,6 +405,12 @@ export interface Checkpoint {
   revealedAt?: FsTimestamp | null;
   /** For `specific-players`/`triggerer` audiences: member ids it's been revealed to so far. */
   revealedTo?: string[];
+  /**
+   * Practice-game "drop test checkpoint here" marker (ROADMAP #43): a throwaway checkpoint
+   * the GM dropped at their current GPS to exercise the real geofence/event/push path.
+   * Badged in the UI; cleared with the practice game. Absent on normal checkpoints.
+   */
+  test?: boolean;
 }
 
 /**

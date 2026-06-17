@@ -28,61 +28,6 @@ and the shared `common/` helpers `pointInBoundary`, `validateGameConfig`, `start
 
 ---
 
-## 41. End-game phase
-
-```ts
-phase?: 'setup' | 'lobby' | 'play' | 'endgame' | 'results';
-```
-
-Add `'endgame'` between `'play'` and `'results'`; a `startEndgame()` helper alongside
-`startGame`/`endGame` in `gameService.ts`. `gamePhase(game)` keeps defaulting legacy games. The
-ration loop can auto-disable in this phase. No new collection.
-
-## 43. Practice / dress-rehearsal game
-
-```ts
-export interface Game {
-  // ...existing...
-  /** Disposable on-site rehearsal: PRACTICE badge, relaxed guards, auto-cleanup. */
-  practice?: boolean;
-}
-export interface Checkpoint {
-  // ...existing...
-  /** "Drop test checkpoint here" marker; badged and bulk-removed with the practice game. */
-  test?: boolean;
-}
-```
-
-- `practice` is GM-write-only, set at creation (`createGame`). Every screen shows a PRACTICE badge.
-- The integrity invariants that block destructive actions (items 20, 22, 28) are **bypassed** when
-  `practice` — the point is to tear down and re-run freely.
-- A "drop test checkpoint here" action creates a `test` checkpoint at current GPS (generous radius,
-  test event), firing the real `onLocationUpdate` path so events/pushes can be verified off-venue.
-- A GM reset clears `arrivals`/`locations`/`rations`; practice games auto-delete (doc + Storage
-  photos) on end, extending `cleanupRationPhotosOnGameEnd` to remove the whole game.
-- Readiness view is derived GM-side state (no schema): joined-vs-expected, fresh-fix count
-  (`services/locationStatus.ts`), per-device push confirmation.
-
-## 45. Post-game media
-
-```ts
-export interface Game {
-  // ...existing...
-  media?: {
-    youtubeUrl?: string;        // validate host: youtube.com / youtu.be
-    photosAlbumUrl?: string;    // validate host: photos.google.com / photos.app.goo.gl
-    updatedAt: FsTimestamp;
-    updatedBy: string;
-  };
-}
-```
-
-GM-authored on the **results** screen (gated on the game being finished). A Firestore-trigger Cloud
-Function fires when `media.youtubeUrl`/`photosAlbumUrl` changes, writes a broadcast, and pushes
-every member token **except the setter** (reuses the broadcast/push pipeline). Results screens show
-outbound `Linking.openURL` / `<a target="_blank">` links — no in-app player. Add `'media'` to the
-game-doc `affectedKeys().hasOnly([...])` whitelist in `firestore.rules`.
-
 ## 46. App Check enforcement
 
 The per-UID throttle on `joinGameByCode` already shipped (`enforceJoinRateLimit` — an internal,
@@ -110,7 +55,5 @@ These **outstanding** items are pure logic, rules, client architecture, or ops �
 collections. (Shipped no-schema items — 20–28, 48–56, 58's prerequisites, etc. — are retired; see the
 [ROADMAP.md](ROADMAP.md) Built & removed callout and git history.)
 
-- **42** Arena map overlay — a GM-uploaded image overlay (asset/storage + map layer; spec when prioritized).
-- **44** Voucher-site preset — a one-tap scaffold of open/close/announce run-sheet rows on a time-windowed checkpoint.
 - **47** Maps-key restriction — Cloud Console ops task.
 - **77** Closed-phone pass-through reliability — #49 follow-up; tuning of background-location cadence / `MAX_SEGMENT_METERS` / foreground-resume retro-test. No schema; needs an on-device locked-phone test.

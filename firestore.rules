@@ -29,6 +29,12 @@ service cloud.firestore {
       return g.get('phase', g.get('status', 'active') == 'ended' ? 'results' : 'play');
     }
 
+    // #43: a disposable practice game relaxes the destructive-action locks (the GM tears
+    // down and re-runs freely). Used to carve the member delete-lock open during `play`.
+    function isPracticeGame(gameId) {
+      return get(/databases/$(database)/documents/games/$(gameId)).data.get('practice', false) == true;
+    }
+
     // Users can read/write their own profile only.
     match /users/{userId} {
       allow read, write: if isSignedIn() && request.auth.uid == userId;
@@ -72,9 +78,12 @@ service cloud.firestore {
       // unaffected.
       allow update: if isGameGM(gameId)
         && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['name', 'phase', 'status', 'rules', 'boundary', 'config', 'startedAt', 'endedAt', 'gameDate', 'isTest', 'testStepIndex'])
+             .hasOnly(['name', 'phase', 'status', 'rules', 'boundary', 'config', 'startedAt', 'endedAt', 'gameDate', 'isTest', 'testStepIndex', 'mapOverlay', 'media', 'practice'])
         && (
-          resource.data.get('phase', resource.data.get('status', 'active') == 'ended' ? 'results' : 'play') != 'play'
+          // #41: the interval trio is frozen once the resolved phase is `play` OR `endgame`
+          // (interval edits there are moot, but the freeze should stay closed).
+          (resource.data.get('phase', resource.data.get('status', 'active') == 'ended' ? 'results' : 'play') != 'play'
+           && resource.data.get('phase', resource.data.get('status', 'active') == 'ended' ? 'results' : 'play') != 'endgame')
           || (
             request.resource.data.get('startedAt', null) == resource.data.get('startedAt', null)
             && request.resource.data.get('config', {}).get('durationMinutes', null)
@@ -133,7 +142,7 @@ service cloud.firestore {
         // are allowed in setup/lobby (pre-start cleanup) and results (post-game cleanup),
         // never in play. deleteAccount scrubs+eliminates instead of deleting in play.
         allow delete: if (isGameGM(gameId) || (isSignedIn() && request.auth.uid == memberId))
-          && gamePhase(gameId) != 'play';
+          && (gamePhase(gameId) != 'play' || isPracticeGame(gameId));
       }
 
       // Locations — a player writes only their own doc, and only while they are an
