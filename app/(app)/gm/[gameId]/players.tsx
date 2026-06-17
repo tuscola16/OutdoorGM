@@ -11,7 +11,7 @@ import { Colors } from '@/constants/colors';
 import { updateMemberRole, removePlayer, eliminatePlayer, revivePlayer, clearSos, ackSos, setMemberDistrict } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
 import { useNow } from '@/hooks/useNow';
-import { stalenessLevel, stalenessColor, formatAgo } from '@/services/locationStatus';
+import { stalenessLevel, stalenessColor, formatAgo, isLowBattery, formatBattery } from '@/services/locationStatus';
 import type { GameMember } from '@/types';
 
 export default function PlayersScreen() {
@@ -28,9 +28,12 @@ export default function PlayersScreen() {
   // userId → last location fix (ms), for the stale-fix indicator. Outdoor GM is the
   // only tracker now, so a silent drop-off needs to be visible to the GM.
   const lastFixByUser = new Map<string, number>();
+  // userId → last reported battery level (0–1), for the low-battery flag (#35).
+  const batteryByUser = new Map<string, number>();
   for (const loc of playerLocations) {
     const ms = loc.updatedAt?.toMillis?.();
     if (ms) lastFixByUser.set(loc.userId, ms);
+    if (typeof loc.battery === 'number') batteryByUser.set(loc.userId, loc.battery);
   }
 
   // Ensure the shared game subscription is active. We intentionally do NOT
@@ -201,6 +204,9 @@ export default function PlayersScreen() {
     const hasDistrict = item.district != null && String(item.district).trim() !== '';
     const fixMs = lastFixByUser.get(item.userId) ?? null;
     const level = showFix ? stalenessLevel(fixMs == null ? null : now - fixMs) : 'none';
+    // Low-battery flag (#35): a living player about to go dark. Only while tracking (showFix).
+    const batteryLevel = batteryByUser.get(item.userId);
+    const lowBattery = showFix && isLowBattery(batteryLevel);
     return (
       <View style={[styles.row, item.sos ? (sosAcked ? styles.sosAckedRow : styles.sosRow) : null]}>
         <View style={[styles.avatar, isGM ? styles.gmAvatar : styles.playerAvatar, isOut ? styles.outAvatar : null]}>
@@ -237,6 +243,14 @@ export default function PlayersScreen() {
               <Text style={[styles.fixText, level === 'stale' && styles.fixTextStale]}>
                 {fixMs == null ? 'No signal yet' : `Last fix ${formatAgo(now - fixMs)}`}
               </Text>
+              {lowBattery && (
+                <View style={styles.battChip}>
+                  <Ionicons name="battery-dead-outline" size={12} color={Colors.danger} />
+                  <Text style={styles.battText}>
+                    {batteryLevel != null ? formatBattery(batteryLevel) : 'Low'}
+                  </Text>
+                </View>
+              )}
             </View>
           ) : (
             <Text style={styles.email}>{item.email}</Text>
@@ -438,10 +452,21 @@ const styles = StyleSheet.create({
   sosLabel: { fontSize: 12, color: Colors.danger, marginTop: 1, fontWeight: '600' },
   oobLabel: { fontSize: 12, color: Colors.warning, marginTop: 1, fontWeight: '600' },
   deadBadge: { backgroundColor: Colors.danger + '33' },
-  fixRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
+  fixRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2, flexWrap: 'wrap' },
   fixDot: { width: 8, height: 8, borderRadius: 4 },
   fixText: { fontSize: 12, color: Colors.textSecondary },
   fixTextStale: { color: Colors.danger, fontWeight: '600' },
+  // Low-battery flag (#35) — a player about to go dark.
+  battChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    borderRadius: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    backgroundColor: Colors.danger + '1A',
+  },
+  battText: { fontSize: 11, fontWeight: '700', color: Colors.danger },
   avatar: {
     width: 40,
     height: 40,

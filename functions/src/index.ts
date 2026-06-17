@@ -3,7 +3,7 @@ admin.initializeApp();
 
 export { onLocationUpdate } from './geofence';
 export { onMemberWrite } from './members';
-export { createGame, cloneGame, joinGameByCode, deleteGame } from './games';
+export { createGame, cloneGame, joinGameByCode, deleteGame, transferGmOrEndGame } from './games';
 export { onBroadcastCreate } from './broadcasts';
 export { cleanupRationPhotosOnGameEnd } from './cleanup';
 export { runScheduledEvents } from './runsheet';

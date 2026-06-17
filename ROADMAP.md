@@ -9,8 +9,8 @@ implementation-ready schema/enforcement detail for the items below is in
 store launch. Items are grouped by tier, roughly in build order. Numbers are **stable and never
 reused**; a shipped item moves to the **Built & removed** callout below (one-line summary; full
 detail in git + the README) rather than being renumbered. The build-out **through Tier 7 has
-shipped** (see the callout) — the outstanding work is the field-test item **#77**, a few
-cost/robustness items (Tiers 4/6/8), test tooling (#58), and P3 polish (Tier 11).
+shipped** (see the callout) — the outstanding work is the field-test item **#77** and P3 polish
+(Tier 11), plus the deferred public-launch gating (#46/#47).
 
 > **Built & removed** (retired numbers, never reused — one-line summaries; full detail in git
 > history + the [README](README.md#features)):
@@ -48,6 +48,11 @@ cost/robustness items (Tiers 4/6/8), test tooling (#58), and P3 polish (Tier 11)
 >   reopen); guarded monotonic phase helpers; dangling-reveal warning; End-Game confirm + audit log.
 > - **Mobile client halves** of #20–25, #63/#64/#66/#70/#71/#74, #11, and mobile Clone ship in the
 >   **2026-06-17 APK** — the server/web/rules sides of all of these are already deployed.
+> - **12, 16, 29, 35, 58** — **"harden for the first real event" batch**: auto per-interval
+>   "N remain" broadcast (seeded at Start when `playerCountBroadcast` is on); geofence game-doc +
+>   member-doc short-TTL caches (cuts per-write reads); sole-GM `deleteAccount` rescue
+>   (`transferGmOrEndGame` promotes the longest-tenured player or ends the game); low-battery beacon
+>   (`PlayerLocation.battery`, GM roster/map flag); single-game test checklist (`TESTING_CHECKLIST.md`).
 
 ---
 
@@ -66,45 +71,6 @@ no segment to test until the app foregrounds. Investigate: background-location c
 settings on a locked device, whether a larger `MAX_SEGMENT_METERS` or distance-filter tuning helps,
 and whether the foreground-resume fix should retro-test the gap. Needs an on-device locked-phone
 re-test (the #49 caveat).
-
----
-
-## Tier 4 — Core ration loop
-
-**12. Auto per-interval "N remaining" broadcast.** A config toggle that seeds repeating
-player-count entries each ration interval, so the GM needn't add each scheduled-announcement row by
-hand. Now trivial since #61 shipped the web "Scheduled announcements" authoring over
-`scheduledEvents` — this just auto-seeds a `player-count` row per interval. Low priority.
-
----
-
-## Tier 6 — Cost, privacy & performance (before a real event)
-
-**16. Cache game-phase/member-role in `onLocationUpdate`.** The lobby short-circuit, zero-checkpoint
-skip, and checkpoint cache shipped, but the trigger still reads the game doc **and** the member doc
-on every location write. Cache phase/role (short TTL, like the checkpoint cache) to cut the
-remaining per-write reads. Model cost at expected player counts before launch.
-
----
-
-## Tier 8 — Robustness & polish
-
-**29. Handle the sole-GM case in `deleteAccount`.** Membership deletes are already chunked into
-≤450-write batches; the remaining gap is the *sole GM* of a game — deleting them orphans it (players
-remain, no GM). Transfer GM, or server-side end the game.
-
-**35. Low-battery beacon.** Players report battery level with each fix; the GM roster flags a
-player about to go dark (Rule 21) so they can be checked on before they vanish.
-
----
-
-## Tier 13 — Test tooling
-
-**58. Single-game test checklist.** A documented checklist (ideally backed by a one-tap "seed test
-game" helper) covering everything to configure in one game to exercise the full feature surface:
-every checkpoint type/function and timed transition, the key game settings, and the ration check in
-its **unique-card (most restrictive)** mode — since a single game can only run one ration-card mode.
-Lets a tester validate everything in a single sitting.
 
 ---
 
@@ -157,12 +123,7 @@ its bundle ID / SHA-1 and the Maps SDK in Cloud Console before wide release. Con
 0. **Verify the 2026-06-17 APK** once it's installed: smoke-test the mobile halves now riding it
    (#20–25 integrity UI, #63/#64/#66/#70/#71/#74, #11, mobile Clone), then run the **#77**
    closed-phone pass-through test on a locked device — the one outstanding field-test defect, held
-   for exactly this on-device check.
-1. **Tier 4** (12) — the auto per-interval count — is the small ration-loop follow-on now that #11
-   (auto-starvation) and #61 (scheduled announcements) have shipped.
-2. **Tier 6** (16) trims the last geofence read cost (and now pairs with the #20/#24 rules, which
-   add a game-doc `get()` on some writes).
-3. **Tier 8** (29, 35) trails as robustness/polish.
-4. **Tier 13** (58) — test tooling; useful throughout, build when convenient.
-5. **Tier 11** (41–45, 57) is P3 polish (43/45 and per-GM teams deprioritized).
-6. **Deferred** (46–47) waits for a real public-store launch.
+   for exactly this on-device check. Use [TESTING_CHECKLIST.md](TESTING_CHECKLIST.md) (#58) for a
+   full single-game surface pass.
+1. **Tier 11** (41–45, 57) is P3 polish (43/45 and per-GM teams deprioritized).
+2. **Deferred** (46–47) waits for a real public-store launch.

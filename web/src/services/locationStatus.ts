@@ -38,6 +38,22 @@ export function formatAgo(ageMs: number): string {
   return `${h}h ago`;
 }
 
+/**
+ * Battery level (0–1) at/under which the GM roster flags a player as about to go dark
+ * (ROADMAP #35, Rule 21). Ported from the mobile app.
+ */
+export const LOW_BATTERY_THRESHOLD = 0.2;
+
+/** Is this reported battery level (0–1) low enough to flag? Absent/unknown → not flagged. */
+export function isLowBattery(level: number | null | undefined): boolean {
+  return typeof level === 'number' && level >= 0 && level <= LOW_BATTERY_THRESHOLD;
+}
+
+/** Whole-percent battery for display, e.g. 0.18 → "18%". */
+export function formatBattery(level: number): string {
+  return `${Math.round(level * 100)}%`;
+}
+
 /** Why a living player is unaccounted-for (#6). Ported from the mobile app. */
 export type UnaccountedReason = 'sos' | 'no-signal' | 'stale';
 

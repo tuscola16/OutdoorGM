@@ -721,7 +721,7 @@ export default function GMGameScreen() {
 
             <ConfigToggle
               label="Auto player-count updates"
-              hint="Push the living-player count each interval"
+              hint="On Start, auto-schedules a “N tributes remain” push at every ration interval — no run-sheet rows to add by hand"
               value={cfgPlayerCount}
               onValueChange={setCfgPlayerCount}
             />

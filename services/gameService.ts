@@ -753,6 +753,17 @@ export async function deleteAccount(userId: string, password: string): Promise<v
   const credential = auth.EmailAuthProvider.credential(current.email, password);
   await current.reauthenticateWithCredential(credential);
 
+  // #29 Sole-GM rescue — run *before* we strip the caller's memberships (the callable
+  // resolves them via the still-present member docs). For any active game this user solely
+  // GMs, it promotes the longest-tenured active player to GM or ends an empty game, so the
+  // membership cleanup below can't orphan a game. Best-effort: a failure here must not block
+  // the rest of account deletion (the hourly orphan sweep is the backstop).
+  try {
+    await functions().httpsCallable('transferGmOrEndGame')({});
+  } catch (err) {
+    console.error('[deleteAccount] sole-GM transfer failed (orphan sweep will backstop):', err);
+  }
+
   // Remove user from all game member + location subcollections
   const memberSnap = await firestore()
     .collectionGroup(Collections.MEMBERS)
@@ -822,10 +833,8 @@ export async function deleteAccount(userId: string, password: string): Promise<v
     await batch.commit();
   }
 
-  // NOTE (#34, deferred): if this user is the *sole GM* of a game, deleting their
-  // membership orphans that game (players remain, no GM). Reassigning/cleaning up such
-  // games belongs with the "always ≥ 1 GM" safety-net invariant and a GM-transfer flow,
-  // tracked separately — not handled here.
+  // Sole-GM games were already handed off / ended by the transferGmOrEndGame call above (#29),
+  // so the membership removal here can no longer orphan a game.
 
   // Delete the Firebase Auth account last — once deleted we lose Firestore write
   // access. Reauthentication above ensures this cannot fail with requires-recent-login.
@@ -888,7 +897,14 @@ export async function updatePlayerLocation(
   gameId: string,
   userId: string,
   displayName: string,
-  coords: { latitude: number; longitude: number; accuracy?: number; heading?: number }
+  coords: {
+    latitude: number;
+    longitude: number;
+    accuracy?: number;
+    heading?: number;
+    /** Device battery 0–1 (#35); omitted when unavailable. */
+    battery?: number;
+  }
 ): Promise<void> {
   await firestore()
     .collection(Collections.GAMES)
@@ -902,6 +918,9 @@ export async function updatePlayerLocation(
       longitude: coords.longitude,
       accuracy: coords.accuracy ?? null,
       heading: coords.heading ?? null,
+      // #35: only write battery when we have a real reading, so a fix never clobbers a
+      // prior good level with null on a device that can't report it.
+      ...(typeof coords.battery === 'number' ? { battery: coords.battery } : {}),
       updatedAt: firestore.FieldValue.serverTimestamp(),
     });
 }

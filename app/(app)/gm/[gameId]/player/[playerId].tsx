@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/Input';
 import { sendBroadcast, eliminatePlayer, clearSos, ackSos } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
 import { useNow } from '@/hooks/useNow';
-import { stalenessLevel, stalenessColor, formatAgo } from '@/services/locationStatus';
+import { stalenessLevel, stalenessColor, formatAgo, isLowBattery, formatBattery } from '@/services/locationStatus';
 
 const CAUSE_LABEL: Record<string, string> = {
   self: 'self-reported', starvation: 'starvation', 'bad-sport': 'bad sport',
@@ -41,6 +41,7 @@ export default function PlayerDetailScreen() {
   const loc = playerLocations.find((l) => l.userId === playerId);
   const fixMs = loc?.updatedAt?.toMillis?.() ?? null;
   const level = !member?.out && phase === 'play' ? stalenessLevel(fixMs == null ? null : now - fixMs) : 'none';
+  const batteryLevel = typeof loc?.battery === 'number' ? loc.battery : null;
 
   async function handleSend() {
     const text = message.trim();
@@ -107,6 +108,19 @@ export default function PlayerDetailScreen() {
                   <View style={[styles.fixDot, { backgroundColor: stalenessColor(level) }]} />
                   <Text style={[styles.statusValue, level === 'stale' && styles.dead]}>
                     {fixMs == null ? 'No signal yet' : formatAgo(now - fixMs)}
+                  </Text>
+                </View>
+              </View>
+            )}
+            {!member.out && phase === 'play' && batteryLevel != null && (
+              <View style={styles.statusRow}>
+                <Text style={styles.statusLabel}>Battery</Text>
+                <View style={styles.fixRow}>
+                  {isLowBattery(batteryLevel) && (
+                    <Ionicons name="battery-dead-outline" size={14} color={Colors.danger} />
+                  )}
+                  <Text style={[styles.statusValue, isLowBattery(batteryLevel) && styles.dead]}>
+                    {formatBattery(batteryLevel)}
                   </Text>
                 </View>
               </View>

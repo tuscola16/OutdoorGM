@@ -8,7 +8,7 @@ import { Modal } from '@/components/Modal';
 import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
 import { useNow } from '@/hooks/useNow';
 import { friendlyError } from '@/services/errorUtils';
-import { stalenessLevel, stalenessColor, formatAgo, STALE_MS, unaccountedPlayers, unaccountedReasonText } from '@/services/locationStatus';
+import { stalenessLevel, stalenessColor, formatAgo, STALE_MS, unaccountedPlayers, unaccountedReasonText, isLowBattery, formatBattery } from '@/services/locationStatus';
 import {
   openLobby, reopenSetup, startGame, endGame, updateGameConfig, gameConfig,
   addCheckpoint, updateCheckpoint, deleteCheckpoint,
@@ -91,9 +91,12 @@ export function GameScreen() {
   // Stale-fix tracking: Outdoor GM is the only tracker now (replaces Pingo), so a
   // silent drop-off must be visible. userId → last fix (ms).
   const lastFixByUser = new Map<string, number>();
+  // userId → last reported battery level (0–1), for the low-battery flag (#35).
+  const batteryByUser = new Map<string, number>();
   for (const loc of playerLocations) {
     const ms = loc.updatedAt?.toMillis?.();
     if (ms) lastFixByUser.set(loc.userId, ms);
+    if (typeof loc.battery === 'number') batteryByUser.set(loc.userId, loc.battery);
   }
   const notReporting = players.filter((p) => {
     if (p.out) return false;
@@ -261,6 +264,7 @@ export function GameScreen() {
           gameId={gameId!}
           members={members}
           lastFixByUser={lastFixByUser}
+          batteryByUser={batteryByUser}
           now={now}
           phase={phase}
           onClose={() => setShowPlayers(false)}
@@ -1088,11 +1092,12 @@ function CopyableCode({ code, big }: { code: string; big?: boolean }) {
 }
 
 function PlayersModal({
-  gameId, members, lastFixByUser, now, phase, onClose,
+  gameId, members, lastFixByUser, batteryByUser, now, phase, onClose,
 }: {
   gameId: string;
   members: GameMember[];
   lastFixByUser: Map<string, number>;
+  batteryByUser: Map<string, number>;
   now: number;
   phase: string;
   onClose: () => void;
@@ -1188,6 +1193,8 @@ function PlayersModal({
           const showFix = !isGM && !isOut && phase === 'play';
           const fixMs = lastFixByUser.get(m.userId) ?? null;
           const level = showFix ? stalenessLevel(fixMs == null ? null : now - fixMs) : 'none';
+          const batteryLevel = batteryByUser.get(m.userId);
+          const lowBattery = showFix && isLowBattery(batteryLevel);
           return (
             <div key={m.userId} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderColor: m.sos ? (m.sosAckAt ? 'var(--warning, #D4893F)' : 'var(--danger)') : undefined, background: m.sos ? (m.sosAckAt ? 'rgba(212,137,63,0.08)' : 'rgba(232,64,42,0.08)') : undefined }}>
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -1215,9 +1222,14 @@ function PlayersModal({
                 ) : !isGM && !isOut && m.outOfBounds ? (
                   <div style={{ fontSize: 12, color: 'var(--warning, #D4893F)', fontWeight: 600 }}>🚧 Outside the play area</div>
                 ) : showFix ? (
-                  <div style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, color: level === 'stale' ? 'var(--danger)' : 'var(--text-secondary)' }}>
+                  <div style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', color: level === 'stale' ? 'var(--danger)' : 'var(--text-secondary)' }}>
                     <span style={{ width: 8, height: 8, borderRadius: 4, background: stalenessColor(level), display: 'inline-block' }} />
                     {fixMs == null ? 'No signal yet' : `Last fix ${formatAgo(now - fixMs)}`}
+                    {lowBattery && (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontWeight: 700, color: 'var(--danger)', background: 'rgba(232,64,42,0.12)', borderRadius: 6, padding: '1px 6px' }}>
+                        🪫 {batteryLevel != null ? formatBattery(batteryLevel) : 'Low'}
+                      </span>
+                    )}
                   </div>
                 ) : (
                   <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{m.email}</div>
@@ -1464,6 +1476,9 @@ function ConfigModal({
         </span>
       </div>
       <Toggle label="Auto player-count updates" checked={playerCount} onChange={setPlayerCount} />
+      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+        On Start, auto-schedules a “N tributes remain” push at every ration interval — no run-sheet rows to add by hand.
+      </span>
       <Toggle label="Declare a winner" checked={winner} onChange={setWinner} />
       <Toggle label="Battery saver" checked={battery} onChange={setBattery} />
       <Toggle label="Ration check" checked={rations} onChange={setRations} />

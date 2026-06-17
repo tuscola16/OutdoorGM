@@ -432,3 +432,71 @@ export const deleteGame = functions.https.onCall(async (data, context) => {
   await db.recursiveDelete(gameRef);
   return { deleted: true };
 });
+
+/**
+ * Sole-GM rescue for account deletion (#29). For each **active** game where the caller is the
+ * only GM, hand the game off so it isn't orphaned (players left with no Game Master):
+ *  - promote the longest-tenured **active** (non-out) player to GM, or
+ *  - if no active player remains, end the game server-side (`status: 'ended'` →
+ *    `cleanupRationPhotosOnGameEnd` purges its location/arrival data + ration photos).
+ * Games that still have a co-GM are left untouched. Called from the client's `deleteAccount()`
+ * flow **before** it removes the caller's memberships, so the membership query still resolves.
+ * GM role changes stay server-authoritative (admin SDK) — never client-self-assigned.
+ */
+export const transferGmOrEndGame = functions.https.onCall(async (_data, context) => {
+  const uid = requireAuth(context);
+  const db = admin.firestore();
+
+  // All of the caller's memberships (reuses the existing userId collection-group index;
+  // role is filtered in-process to avoid a second composite index). The caller still has
+  // these memberships because deleteAccount invokes this before scrubbing/deleting them.
+  const memberships = await db
+    .collectionGroup('members')
+    .where('userId', '==', uid)
+    .get();
+
+  let transferred = 0;
+  let ended = 0;
+
+  await Promise.all(
+    memberships.docs.map(async (memberDoc) => {
+      if (memberDoc.data().role !== 'gm') return; // only GM memberships can orphan a game
+      const gameRef = memberDoc.ref.parent.parent;
+      if (!gameRef) return;
+
+      const gameSnap = await gameRef.get();
+      if (!gameSnap.exists || gameSnap.data()?.status !== 'active') return; // ended/inert game
+
+      const membersSnap = await gameRef.collection('members').get();
+      const others = membersSnap.docs.filter((d) => d.id !== uid);
+
+      // Another GM already watches this game — the caller leaving doesn't orphan it.
+      if (others.some((d) => d.data().role === 'gm')) return;
+
+      // Longest-tenured active (non-out) player; missing joinedAt sorts last.
+      const activePlayers = others
+        .filter((d) => d.data().role !== 'gm' && d.data().out !== true)
+        .sort((a, b) => {
+          const am = a.data().joinedAt?.toMillis?.() ?? Infinity;
+          const bm = b.data().joinedAt?.toMillis?.() ?? Infinity;
+          return am - bm;
+        });
+
+      if (activePlayers.length > 0) {
+        await activePlayers[0].ref.update({ role: 'gm' });
+        functions.logger.info(`[transferGm] game ${gameRef.id}: promoted ${activePlayers[0].id} to GM (sole GM ${uid} leaving)`);
+        transferred++;
+      } else {
+        await gameRef.update({
+          status: 'ended',
+          phase: 'results',
+          endedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        functions.logger.info(`[transferGm] game ${gameRef.id}: ended (sole GM ${uid} leaving, no active players)`);
+        ended++;
+      }
+    })
+  );
+
+  return { transferred, ended };
+});

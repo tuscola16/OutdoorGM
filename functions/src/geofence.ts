@@ -245,6 +245,54 @@ async function getRunbookByCheckpointCached(gameId: string): Promise<Map<string,
   return byCp;
 }
 
+// Short-TTL cache of each game's doc (#16), reused across warm invocations so a burst of
+// fixes from one player doesn't re-read the game doc every write. Only read-only,
+// mid-burst-stable fields are consumed from it (phase/status/boundary/config/startedAt) —
+// none are mutated by this trigger. A GM phase change (e.g. End Game) is honored within one
+// TTL window. Pairs with #20/#24's rules, which add a game-doc get() on some writes.
+const gameCache = new Map<string, { data: FirebaseFirestore.DocumentData; expires: number }>();
+
+async function getGameCached(gameId: string): Promise<FirebaseFirestore.DocumentData | null> {
+  const hit = gameCache.get(gameId);
+  if (hit && hit.expires > Date.now()) return hit.data;
+  const snap = await admin.firestore().collection('games').doc(gameId).get();
+  const data = snap.data();
+  if (!data) return null;
+  gameCache.set(gameId, { data, expires: Date.now() + CP_CACHE_TTL_MS });
+  return data;
+}
+
+// Short-TTL cache of a player's member doc (#16). role/fcmToken/district are read-only on the
+// location-write path; `outOfBounds` is the lone mutable field, written through below so the
+// boundary latch (#7) still fires exactly once per excursion within a warm instance. Cached
+// `null` short-circuits writes from a non-member without a per-write read.
+interface CachedMember {
+  role?: string;
+  fcmToken?: string;
+  district?: string | number;
+  outOfBounds?: boolean;
+}
+const memberCache = new Map<string, { data: CachedMember | null; expires: number }>();
+
+async function getMemberCached(gameId: string, uid: string): Promise<CachedMember | null> {
+  const key = `${gameId}_${uid}`;
+  const hit = memberCache.get(key);
+  if (hit && hit.expires > Date.now()) return hit.data;
+  const snap = await admin.firestore()
+    .collection('games').doc(gameId).collection('members').doc(uid).get();
+  const m = snap.exists ? snap.data()! : null;
+  const data: CachedMember | null = m
+    ? {
+        role: m.role as string | undefined,
+        fcmToken: m.fcmToken as string | undefined,
+        district: m.district as string | number | undefined,
+        outOfBounds: m.outOfBounds === true,
+      }
+    : null;
+  memberCache.set(key, { data, expires: Date.now() + CP_CACHE_TTL_MS });
+  return data;
+}
+
 export const onLocationUpdate = functions
   .runWith({ secrets: TWILIO_SECRETS })
   .firestore.document('games/{gameId}/locations/{userId}')
@@ -273,9 +321,9 @@ export const onLocationUpdate = functions
         : null;
 
     // Only fire checkpoint arrivals while the game is in play. Players upload location
-    // during the lobby too (#16) — lobby fixes must never trigger a checkpoint.
-    const gameSnap = await admin.firestore().collection('games').doc(gameId).get();
-    const gameData = gameSnap.data();
+    // during the lobby too (#16) — lobby fixes must never trigger a checkpoint. The game
+    // doc is cached (#16): a burst of fixes reuses one read.
+    const gameData = await getGameCached(gameId);
     if (!gameData) return;
     const phase = gameData.phase ?? (gameData.status === 'ended' ? 'results' : 'play');
     if (phase !== 'play') return;
@@ -293,14 +341,15 @@ export const onLocationUpdate = functions
     // #67: re-evaluate a lingering player's runbook entries at most this often (default 2 min).
     const tripIntervalMs = Math.max(0, rawConfig.tripIntervalMinutes ?? 2) * 60_000;
 
-    // Skip if the player is a GM (GMs don't trigger checkpoint arrivals).
-    const memberSnap = await admin.firestore()
-      .collection('games').doc(gameId).collection('members').doc(userId).get();
-    if (!memberSnap.exists || memberSnap.data()?.role === 'gm') return;
-    const playerFcmToken = memberSnap.data()?.fcmToken as string | undefined;
-    const crossingDistrict = memberSnap.data()?.district as string | number | undefined;
+    // Skip if the player is a GM (GMs don't trigger checkpoint arrivals). The member doc is
+    // cached (#16); the mutable `outOfBounds` field is written through below.
+    const member = await getMemberCached(gameId, userId);
+    if (!member || member.role === 'gm') return;
+    const playerFcmToken = member.fcmToken;
+    const crossingDistrict = member.district;
 
     const db = admin.firestore();
+    const memberRef = db.collection('games').doc(gameId).collection('members').doc(userId);
     const arrivalsCol = db.collection('games').doc(gameId).collection('arrivals');
 
     // Player-left-the-boundary alert (#7). Runs before checkpoint work so it fires even
@@ -309,9 +358,10 @@ export const onLocationUpdate = functions
     const boundary = gameData.boundary as MapBoundary | undefined;
     if (boundary) {
       const inside = pointInBoundary(location.latitude, location.longitude, boundary);
-      const wasOut = memberSnap.data()?.outOfBounds === true;
+      const wasOut = member.outOfBounds === true;
       if (!inside && !wasOut) {
-        await memberSnap.ref.update({ outOfBounds: true });
+        await memberRef.update({ outOfBounds: true });
+        member.outOfBounds = true; // write through the #16 cache so the latch holds within the TTL
         const { tokens, phones } = await getGmRecipients(db, gameId, playerFcmToken);
         const body = `${location.displayName} left the play area`;
         await Promise.allSettled([
@@ -319,7 +369,8 @@ export const onLocationUpdate = functions
           sendArrivalSMS(phones, `BOUNDARY: ${body}`),
         ]);
       } else if (inside && wasOut) {
-        await memberSnap.ref.update({ outOfBounds: false });
+        await memberRef.update({ outOfBounds: false });
+        member.outOfBounds = false; // write through the #16 cache
         const { tokens } = await getGmRecipients(db, gameId, playerFcmToken);
         await sendPushToTokens(
           tokens, '✅ Back in the area',

@@ -86,6 +86,62 @@ function phaseOf(g: admin.firestore.DocumentData | undefined): string {
   return (g?.phase as string) ?? (g?.status === 'ended' ? 'results' : 'play');
 }
 
+// Auto per-interval "N remaining" broadcast (#12). Defaults mirror BASE_GAME_CONFIG
+// (types/index.ts), which functions/ can't import.
+const DEFAULT_DURATION_MIN = 210;
+const DEFAULT_INTERVAL_MIN = 30;
+const MAX_AUTO_COUNT_ROWS = 50; // sanity cap on a misconfigured (tiny-interval) game
+
+/**
+ * Seed one repeating `template: 'player-count'` run-sheet row per ration interval (#12) when
+ * the `playerCountBroadcast` toggle is on, so the GM needn't hand-add a scheduled-announcement
+ * row each interval. The `runScheduledEvents` sweep then fires each at its offset, filling in
+ * the living-tribute count (Rule 24). Rows use deterministic ids so a Start retry (or a
+ * reopen→restart) overwrites rather than duplicating, and re-arms `firedAt` for the new run.
+ */
+async function seedPlayerCountBroadcasts(
+  db: admin.firestore.Firestore,
+  gameId: string,
+  config: admin.firestore.DocumentData | undefined
+): Promise<void> {
+  // Toggle defaults ON (BASE_GAME_CONFIG.playerCountBroadcast), so a legacy/no-config game
+  // gets the base-rules behavior; only an explicit `false` opts out.
+  if (config?.playerCountBroadcast === false) return;
+
+  const durationMin = Number(config?.durationMinutes) > 0
+    ? Number(config?.durationMinutes) : DEFAULT_DURATION_MIN;
+  const intervalMin = Number(config?.rationIntervalMinutes) > 0
+    ? Number(config?.rationIntervalMinutes) : DEFAULT_INTERVAL_MIN;
+  if (intervalMin <= 0 || durationMin <= 0) return;
+
+  const eventsCol = db.collection('games').doc(gameId).collection('scheduledEvents');
+  const now = admin.firestore.FieldValue.serverTimestamp();
+  const batch = db.batch();
+
+  // Clear any auto rows from a prior run/seed so a changed duration/interval can't leave
+  // stale rows behind (the deterministic ids below also overwrite, but a shrink would
+  // otherwise orphan the now-excess rows). GM-authored rows (no `auto` marker) are untouched.
+  const existingAuto = await eventsCol.where('auto', '==', 'player-count').get();
+  for (const d of existingAuto.docs) batch.delete(d.ref);
+
+  let seeded = 0;
+  for (let k = 1; k * intervalMin < durationMin && seeded < MAX_AUTO_COUNT_ROWS; k++) {
+    // Deterministic id → idempotent across retries / re-starts.
+    const ref = eventsCol.doc(`auto_playercount_${k}`);
+    batch.set(ref, {
+      type: 'broadcast',
+      template: 'player-count',
+      offsetMinutes: k * intervalMin,
+      message: '',
+      auto: 'player-count', // marks rows the GM didn't hand-author (#12)
+      firedAt: null,
+      createdAt: now,
+    });
+    seeded++;
+  }
+  await batch.commit();
+}
+
 /**
  * On Start Game (the lobby → play transition):
  * 1. Delete stale marker docs for checkpoints that are NOT `'shown'` — a marker
@@ -102,6 +158,10 @@ export const onGameStartProjectMarkers = functions.firestore
     }
     const { gameId } = context.params;
     const db = admin.firestore();
+
+    // #12: seed the auto per-interval "N remaining" run-sheet rows for this run.
+    await seedPlayerCountBroadcasts(db, gameId, change.after.data()?.config);
+
     const cps = await db.collection('games').doc(gameId).collection('checkpoints').get();
 
     // Delete any existing marker docs for non-'shown' checkpoints. A stale marker

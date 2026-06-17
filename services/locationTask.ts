@@ -1,5 +1,6 @@
 import * as TaskManager from 'expo-task-manager';
 import * as Location from 'expo-location';
+import * as Battery from 'expo-battery';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { updatePlayerLocation } from './gameService';
 import auth from '@react-native-firebase/auth';
@@ -51,6 +52,18 @@ function setDiag(patch: Partial<TrackingDiagnostics>): void {
 
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
+/** Current battery level 0–1 (#35), or `undefined` if it can't be read (emulator, denied,
+ * or transient error) — callers omit the field in that case rather than reporting a fake 0. */
+async function readBattery(): Promise<number | undefined> {
+  try {
+    const level = await Battery.getBatteryLevelAsync();
+    // expo-battery returns -1 when the level is unavailable.
+    return typeof level === 'number' && level >= 0 ? level : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // Define the background task — must be at module top level
 TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
   if (error) {
@@ -76,6 +89,7 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
       longitude: location.coords.longitude,
       accuracy: location.coords.accuracy ?? undefined,
       heading: location.coords.heading ?? undefined,
+      battery: await readBattery(),
     });
     setDiag({ lastUploadAt: Date.now(), lastError: null });
   } catch (err) {
@@ -257,6 +271,7 @@ export async function startLocationTracking(
               longitude: pos.coords.longitude,
               accuracy: pos.coords.accuracy ?? undefined,
               heading: pos.coords.heading ?? undefined,
+              battery: await readBattery(),
             });
             setDiag({ lastUploadAt: Date.now(), lastError: null });
           } catch (err) {

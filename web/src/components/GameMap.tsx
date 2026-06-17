@@ -4,6 +4,7 @@ import MapboxDraw from '@mapbox/mapbox-gl-draw';
 import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
 import type { Checkpoint, PlayerLocation, MapBoundary, RunbookEntry } from '@shared/types';
 import { KIND_META, checkpointKind } from '@/services/checkpointKinds';
+import { isLowBattery, formatBattery } from '@/services/locationStatus';
 
 mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN ?? '';
 
@@ -406,18 +407,28 @@ export function GameMap({
         .join('')
         .toUpperCase()
         .slice(0, 2);
+      // Low-battery flag (#35): red ring + a "🪫 N%" note in the popup so a player about to
+      // go dark stands out on the map, not just the roster.
+      const low = isLowBattery(p.battery);
+      const popupText = low
+        ? `${p.displayName} · 🪫 ${typeof p.battery === 'number' ? formatBattery(p.battery) : 'low'}`
+        : p.displayName;
+      const border = low ? '2px solid var(--danger, #E8402A)' : '2px solid #fff';
       let marker = playerMarkers.current[p.userId];
       if (!marker) {
         const el = document.createElement('div');
-        el.style.cssText = `width:34px;height:34px;border-radius:50%;background:${COLORS.playerDot};border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;color:#000;box-shadow:0 2px 4px rgba(0,0,0,.5)`;
+        el.style.cssText = `width:34px;height:34px;border-radius:50%;background:${COLORS.playerDot};border:${border};display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;color:#000;box-shadow:0 2px 4px rgba(0,0,0,.5)`;
         el.textContent = initials;
         marker = new mapboxgl.Marker({ element: el }).setLngLat([p.longitude, p.latitude]);
-        marker.setPopup(new mapboxgl.Popup({ offset: 20 }).setText(p.displayName));
+        marker.setPopup(new mapboxgl.Popup({ offset: 20 }).setText(popupText));
         marker.addTo(map);
         playerMarkers.current[p.userId] = marker;
       } else {
         marker.setLngLat([p.longitude, p.latitude]);
-        (marker.getElement()).textContent = initials;
+        const el = marker.getElement();
+        el.textContent = initials;
+        el.style.border = border;
+        marker.getPopup()?.setText(popupText);
       }
     }
     // Remove markers for players that disappeared.

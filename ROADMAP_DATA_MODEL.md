@@ -21,24 +21,12 @@ Built & removed callout + git). Live data-model/infra deltas left behind by thos
 `autoEndThreshold`/`starvationMode`; the `Checkpoint.icon` field + the #60 runbook model (`RunbookEntry`
 collection); the server-only `checkpointTrips`, `entryTrips` (GM-readable, #67/#73), `rationWindowPings`
 (#72), and `starvationSweeps` (#11) latches; `Broadcast.pushed` (#69) + `Broadcast.dismissedBy` (#71);
-`RevealedMarker.visibleFrom` (#48); the `cloneGame`/`submitRation`/`fireRunbookEntry`/`rationPings`/
-`starvationSweep` callables/functions; and the shared `common/` helpers `pointInBoundary`,
-`validateGameConfig`, `startPreflight` (#63/#64/#23). Tier 7 (#20–28) added **no** new schema.
+`RevealedMarker.visibleFrom` (#48); `PlayerLocation.battery` (#35); the `cloneGame`/`submitRation`/
+`fireRunbookEntry`/`rationPings`/`starvationSweep`/`transferGmOrEndGame` (#29) callables/functions;
+and the shared `common/` helpers `pointInBoundary`, `validateGameConfig`, `startPreflight`
+(#63/#64/#23). Tier 7 (#20–28) added **no** new schema.
 
 ---
-
-## 35. Low-battery beacon
-
-```ts
-export interface PlayerLocation {
-  // ...existing...
-  /** Device battery 0–1, reported with each fix; drives the GM low-battery flag. */
-  battery?: number;
-}
-```
-
-Player writes its own `battery` with each location fix (allowed by the existing self-write rule);
-the GM roster flags a player below a threshold.
 
 ## 41. End-game phase
 
@@ -122,11 +110,7 @@ These **outstanding** items are pure logic, rules, client architecture, or ops �
 collections. (Shipped no-schema items — 20–28, 48–56, 58's prerequisites, etc. — are retired; see the
 [ROADMAP.md](ROADMAP.md) Built & removed callout and git history.)
 
-- **12** Auto per-interval count — wire the `playerCountBroadcast` toggle to auto-seed a repeating `template:'player-count'` scheduled-announcement row each interval (the #61 authoring + `runScheduledEvents` sweep already exist); today the toggle is stored but does nothing automatic.
-- **16** Geofence read cost — cache phase/role per write (lobby short-circuit, zero-checkpoint skip, and checkpoint cache already shipped). NB: #20/#24's rules now add a game-doc `get()` on some member/game writes.
-- **29** `deleteAccount` — sole-GM transfer or server-side end (chunked ≤450-write batches already shipped; #20's carve-out now scrubs-and-eliminates a live game's member). Maybe a small `transferGm`/`deleteGameForce` callable.
 - **42** Arena map overlay — a GM-uploaded image overlay (asset/storage + map layer; spec when prioritized).
 - **44** Voucher-site preset — a one-tap scaffold of open/close/announce run-sheet rows on a time-windowed checkpoint.
 - **47** Maps-key restriction — Cloud Console ops task.
-- **58** Single-game test checklist — a doc plus an optional `seedTestGame` helper; no new fields.
 - **77** Closed-phone pass-through reliability — #49 follow-up; tuning of background-location cadence / `MAX_SEGMENT_METERS` / foreground-resume retro-test. No schema; needs an on-device locked-phone test.

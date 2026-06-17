@@ -447,6 +447,12 @@ export interface PlayerLocation {
   longitude: number;
   accuracy?: number;
   heading?: number;
+  /**
+   * Device battery level 0–1, reported with each fix (ROADMAP #35). Drives the GM
+   * roster's low-battery flag so a player about to go dark (Rule 21) can be checked on
+   * before they vanish. Absent on legacy fixes / when the level is unavailable.
+   */
+  battery?: number;
   updatedAt: FsTimestamp;
 }
 

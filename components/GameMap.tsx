@@ -4,6 +4,7 @@ import MapView, { Marker, Circle, Polygon, UrlTile, PROVIDER_GOOGLE, Region } fr
 import { Colors } from '@/constants/colors';
 import { TOPO_TILE_URL, TOPO_TILE_SIZE, TOPO_MAX_ZOOM, TOPO_MAX_NATIVE_ZOOM } from '@/constants/map';
 import type { Checkpoint, PlayerLocation, MapBoundary, RevealedMarker } from '@/types';
+import { isLowBattery, formatBattery } from '@/services/locationStatus';
 
 // Whole-US fallback, used only when there's no boundary/checkpoints/players to frame.
 const DEFAULT_REGION: Region = { latitude: 37.0902, longitude: -95.7129, latitudeDelta: 30, longitudeDelta: 30 };
@@ -83,11 +84,19 @@ function PlayerMarker({ player }: { player: PlayerLocation }) {
     .toUpperCase()
     .slice(0, 2);
 
+  // Low-battery flag (#35): surfaced in the tap title (not the marker bitmap, which is
+  // intentionally static — see tracksViewChanges below) so a player about to go dark is
+  // visible on the map, not just the roster.
+  const low = isLowBattery(player.battery);
+  const title = low
+    ? `${player.displayName} · 🪫 ${typeof player.battery === 'number' ? formatBattery(player.battery) : 'low'}`
+    : player.displayName;
+
   return (
     <Marker
       coordinate={{ latitude: player.latitude, longitude: player.longitude }}
       anchor={{ x: 0.5, y: 0.5 }}
-      title={player.displayName}
+      title={title}
       // The marker view is static (initials never change), only its coordinate
       // moves. Without this, Android regenerates the marker bitmap on every
       // re-render — with live location updates every few seconds that thrashes
