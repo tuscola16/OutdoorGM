@@ -63,7 +63,7 @@ field-test item #77** leads the next section; the remaining polish tiers follow.
 >   (`@/common/*`). #63 numeric validation + ordering (window ≤ interval ≤ game length; reveal offset
 >   > 0) replacing silent clamps; #64 placement guard rejecting out-of-boundary/no-boundary
 >   checkpoints; #68 `submitRation` callable enforcing unique card numbers (`already-exists`; client
->   surfaces + de-queues) — **the `rations` create-rule lock is deferred until the new APK ships**; #72
+>   surfaces + de-queues) — **the `rations` create-rule lock is now applied** (`create: if false`); #72
 >   `rationPings` per-minute push with an idempotent `rationWindowPings/{i}` latch; #74 a gm-notify
 >   (GM-only) fire warning in the web Runbook editor + mobile fire modal. **Mobile halves: #63/#64/#74
 >   + the #68 callable client/ration-queue change.**

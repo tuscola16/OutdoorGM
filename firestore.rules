@@ -194,18 +194,14 @@ service cloud.firestore {
         allow read, write: if isGameGM(gameId);
       }
 
-      // Rations — a player writes only their own submission (doc id `${uid}_${n}`)
-      // and only while it's still pending; the GM reviews (sets status). A player
-      // can never mark their own ration valid.
+      // Rations — submissions are now created **only** by the `submitRation` Cloud
+      // Function (#68), which enforces unique card numbers at write time and uses the
+      // admin SDK (bypassing rules). Direct client creates are locked off. The GM
+      // reviews (sets status); a player can never mark their own ration valid.
       match /rations/{rationId} {
         allow read: if isGameGM(gameId)
           || (isSignedIn() && resource.data.playerId == request.auth.uid);
-        allow create: if isSignedIn()
-          && isGameMember(gameId)
-          && request.resource.data.playerId == request.auth.uid
-          && request.resource.data.status == 'pending'
-          && request.resource.data.intervalIndex is int
-          && request.resource.data.photoUrl is string;
+        allow create: if false;
         allow update: if isGameGM(gameId)
           || (isSignedIn()
               && request.auth.uid == resource.data.playerId
