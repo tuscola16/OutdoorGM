@@ -118,12 +118,13 @@ export function GameScreen() {
   // unplayable, then keep the #16 unlocated-players advisory as a confirm-past warning.
   function confirmStart() {
     const located = players.filter((p) => lastFixByUser.has(p.userId)).length;
-    const gmHasToken = members.some((m) => m.role === 'gm' && !!m.fcmToken);
     const { blockers, warnings } = startGamePreflight({
       hasBoundary: !!game?.boundary,
       checkpointCount: checkpoints.length,
       playerCount: players.length,
-      gmHasToken,
+      // The web GM dashboard is itself a live alert surface (the GM watching sees arrivals
+      // in real time), so a GM FCM push token isn't required to start from web.
+      gmHasToken: true,
       unlocatedPlayerCount: players.length - located,
     });
     if (blockers.length > 0) {
