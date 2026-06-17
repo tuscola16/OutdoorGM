@@ -3,6 +3,7 @@ import * as Location from 'expo-location';
 import * as Battery from 'expo-battery';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { updatePlayerLocation } from './gameService';
+import { isBatteryOptimized } from './batteryOptimization';
 import auth from '@react-native-firebase/auth';
 
 export const LOCATION_TASK_NAME = 'hgl-background-location';
@@ -27,6 +28,9 @@ export interface TrackingDiagnostics {
   startedAt: number | null;
   /** ms of the most recent successful location upload. */
   lastUploadAt: number | null;
+  /** Android only: true when battery optimization is still on (Doze will stop background
+   * location when the screen locks even though the service is running). null = unknown/iOS. */
+  batteryOptimized: boolean | null;
   /** Most recent error (start or upload), or null. */
   lastError: string | null;
   updatedAt: number;
@@ -38,6 +42,7 @@ let _diag: TrackingDiagnostics = {
   path: 'none',
   startedAt: null,
   lastUploadAt: null,
+  batteryOptimized: null,
   lastError: null,
   updatedAt: Date.now(),
 };
@@ -152,6 +157,10 @@ export async function startLocationTracking(
     setDiag({ lastError: 'foreground permission denied' });
     throw new Error('PERMISSION_DENIED:Location access is required to play. Please enable it in Settings.');
   }
+
+  // Record whether Doze is still allowed to throttle us. Best-effort + non-blocking — this
+  // only drives diagnostics/warnings, never whether tracking starts.
+  isBatteryOptimized().then((opt) => setDiag({ batteryOptimized: opt })).catch(() => {});
 
   // Tracking cadence: tighter when accuracy matters, looser to save battery.
   const accuracy = options.batterySaver ? Location.Accuracy.Balanced : Location.Accuracy.High;

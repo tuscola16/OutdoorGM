@@ -1,7 +1,9 @@
+import { Platform } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Notifications from 'expo-notifications';
 import * as Location from 'expo-location';
 import { requestNotificationPermissions } from './notificationService';
+import { isBatteryOptimized } from './batteryOptimization';
 
 /**
  * Player permission priming. We request *everything* a player needs up front while
@@ -19,6 +21,10 @@ export interface PlayerPermissions {
   locationAlways: PermState;
   /** Foreground location ("While using") — prerequisite for the above. */
   locationWhenInUse: PermState;
+  /** Android battery-optimization exemption: 'granted' = unrestricted (location keeps
+   * flowing when locked), 'denied' = still "Optimized" (drops off the map in Doze).
+   * Always 'granted' off Android — there's no equivalent restriction. */
+  backgroundUnrestricted: PermState;
   notifications: PermState;
   /** Only meaningful when the game uses rations; otherwise reported 'granted'. */
   camera: PermState;
@@ -34,15 +40,18 @@ function norm(p: RawPerm): PermState {
 
 /** Read current statuses without prompting. */
 export async function getPlayerPermissions(rationsEnabled: boolean): Promise<PlayerPermissions> {
-  const [fg, bg, notif, cam] = await Promise.all([
+  const [fg, bg, notif, cam, optimized] = await Promise.all([
     Location.getForegroundPermissionsAsync(),
     Location.getBackgroundPermissionsAsync(),
     Notifications.getPermissionsAsync(),
     ImagePicker.getCameraPermissionsAsync(),
+    isBatteryOptimized(),
   ]);
   return {
     locationWhenInUse: norm(fg),
     locationAlways: norm(bg),
+    // Battery optimization can always be re-requested, so it's never 'blocked'.
+    backgroundUnrestricted: Platform.OS !== 'android' ? 'granted' : optimized ? 'denied' : 'granted',
     notifications: norm(notif),
     camera: rationsEnabled ? norm(cam) : 'granted',
   };

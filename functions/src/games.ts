@@ -369,10 +369,14 @@ export const joinGameByCode = functions.https.onCall(async (data, context) => {
   if (role === 'player' && !existing.exists) {
     const phase = gameData.phase ?? (gameData.status === 'ended' ? 'results' : 'play');
     if (phase !== 'lobby') {
-      throw new functions.https.HttpsError(
-        'failed-precondition',
-        'This game has already started — joins are closed.'
-      );
+      // `setup` means the GM hasn't opened the game to players yet — that's a
+      // "come back in a moment", not a "you missed it". Only a game that has left
+      // the lobby (play/endgame/results) is genuinely closed to new players.
+      const msg =
+        phase === 'setup'
+          ? "This game isn't open to players yet. Ask your Game Master to open it, then try again."
+          : 'This game has already started — joins are closed.';
+      throw new functions.https.HttpsError('failed-precondition', msg);
     }
   }
 

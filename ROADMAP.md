@@ -76,10 +76,33 @@ before wider testing; P2 = polish). Schema detail is in
 way through a large (100 m radius) checkpoint with the phone locked and only got the alert when they
 **opened the phone**. Server-side pass-through (#49) tests the prev→curr segment against each radius,
 but a locked phone may emit **no** background fix across the whole transit (OS throttling), so there's
-no segment to test until the app foregrounds. Investigate: background-location cadence/`deferred`
-settings on a locked device, whether a larger `MAX_SEGMENT_METERS` or distance-filter tuning helps,
-and whether the foreground-resume fix should retro-test the gap. Needs an on-device locked-phone
-re-test (the #49 caveat).
+no segment to test until the app foregrounds.
+
+> **Root cause found + Built (2026-06-17):** the throttling was **Android battery optimization
+> (Doze)**, not a cadence/segment problem — reproduced on a stock Pixel 8 with "Allow all the time"
+> granted and the foreground service running (so it isn't OEM-specific). With the app in the default
+> "Optimized" battery state, Android freezes background location ~seconds after the screen locks;
+> flipping the app to "Unrestricted" makes background GPS flow normally while locked (confirmed).
+> Fix: new `services/batteryOptimization.ts` (`isBatteryOptimized` via expo-battery +
+> `requestBatteryOptimizationExemption` via expo-intent-launcher), a `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`
+> manifest permission, a "Background activity — Unrestricted" row in the lobby permission checklist,
+> a play-screen warning banner, and a `batteryOptimized` line in the tracking diagnostics. **Rides
+> the next APK.** Re-test on-device after install: lock the phone untouched ~3 min and confirm the
+> player stays live on the GM map.
+
+**78. Ration panel stuck on the capture form after submitting.** *(P1 — Built 2026-06-17)* After a
+player submitted a ration ("submitted ✓"), the panel never flipped to "waiting for GM" — it kept
+showing the card-number field and "eat within" countdown. Cause: the panel listens to its own
+`rations/{uid}_{interval}` doc *before* it exists; on a non-existent doc `resource` is null, so the
+read rule's `resource.data.playerId` reference errored → the listener was denied on its first read
+and died, never delivering the later `pending`/`valid` writes. Fix: allow the read when
+`resource == null` in `firestore.rules`. **Needs `firebase deploy --only firestore`.**
+
+**79. Wrong "already started" message joining a not-yet-open game.** *(P2 — Built 2026-06-17)*
+Joining a game still in `setup` returned "This game has already started — joins are closed," which is
+misleading (it hasn't started; it isn't open yet). `joinGameByCode` now distinguishes `setup` ("isn't
+open to players yet — ask your GM to open it") from play/results ("already started"). **Needs
+`firebase deploy --only functions`.**
 
 ---
 

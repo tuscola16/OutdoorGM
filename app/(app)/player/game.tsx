@@ -19,6 +19,7 @@ import { Tutorial } from '@/components/Tutorial';
 import { BroadcastsProvider } from '@/context/BroadcastsContext';
 import * as Location from 'expo-location';
 import { startLocationTracking, stopLocationTracking, getTrackingDiagnostics } from '@/services/locationTask';
+import { requestBatteryOptimizationExemption } from '@/services/batteryOptimization';
 import { eliminatePlayer, raiseSos, setDeathLocation, gamePhase, gameConfig } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
 import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
@@ -418,6 +419,10 @@ export default function PlayerGameScreen() {
     // Tracking is "active" but only via the foreground watcher → the player drops
     // off the GM's map when their screen locks. Worth a loud, fixable warning.
     const fgOnly = tracking && diag.path === 'foreground-watch';
+    // Background service is running, but Android battery optimization (Doze) will still
+    // freeze its location once the screen locks — the player silently goes stale. Only
+    // worth flagging on the background path (it's moot if we're foreground-only anyway).
+    const batteryThrottled = tracking && diag.path === 'background-service' && diag.batteryOptimized === true;
     return (
       <>
         {/* Tab bar: a full-screen Map view vs. a Stats view (#20). */}
@@ -456,6 +461,21 @@ export default function PlayerGameScreen() {
               </Text>
             </View>
             <TouchableOpacity onPress={() => Linking.openSettings()} style={styles.warnBtn}>
+              <Text style={styles.warnBtnText}>Fix</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+        {!out && !fgOnly && batteryThrottled && (
+          <View style={styles.warnBanner}>
+            <Ionicons name="battery-charging" size={20} color={Colors.warning} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.warnTitle}>You may drop off the map when your screen locks</Text>
+              <Text style={styles.warnSub}>
+                Battery optimization can stop sharing your location in the background. Allow Outdoor
+                GM to run unrestricted so your Game Master always sees you.
+              </Text>
+            </View>
+            <TouchableOpacity onPress={() => requestBatteryOptimizationExemption()} style={styles.warnBtn}>
               <Text style={styles.warnBtnText}>Fix</Text>
             </TouchableOpacity>
           </View>
@@ -543,6 +563,9 @@ export default function PlayerGameScreen() {
                       <Text style={styles.diagRow}>Foreground permission: <Text style={styles.diagVal}>{diag.foreground}</Text></Text>
                       <Text style={styles.diagRow}>Background permission: <Text style={styles.diagVal}>{diag.background}</Text></Text>
                       <Text style={styles.diagRow}>Source: <Text style={styles.diagVal}>{diag.path}</Text></Text>
+                      <Text style={styles.diagRow}>Battery optimization: <Text style={styles.diagVal}>
+                        {diag.batteryOptimized == null ? 'unknown' : diag.batteryOptimized ? 'on (will throttle when locked)' : 'off'}
+                      </Text></Text>
                       <Text style={styles.diagRow}>
                         Last upload: <Text style={styles.diagVal}>
                           {diag.lastUploadAt ? `${Math.round((Date.now() - diag.lastUploadAt) / 1000)}s ago` : 'never'}

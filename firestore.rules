@@ -208,8 +208,15 @@ service cloud.firestore {
       // admin SDK (bypassing rules). Direct client creates are locked off. The GM
       // reviews (sets status); a player can never mark their own ration valid.
       match /rations/{rationId} {
+        // `resource == null` covers the player listening to their *own* ration doc
+        // *before* it exists: the panel subscribes to `${uid}_${interval}` the moment
+        // the eat-window opens (to flip to "waiting for GM" once they submit). On a
+        // not-yet-created doc `resource` is null, so referencing `resource.data` would
+        // error → deny → the listener dies and never delivers the later 'pending' write,
+        // leaving the panel stuck on the capture form. Reading a non-existent doc leaks
+        // nothing; once it exists the playerId check applies.
         allow read: if isGameGM(gameId)
-          || (isSignedIn() && resource.data.playerId == request.auth.uid);
+          || (isSignedIn() && (resource == null || resource.data.playerId == request.auth.uid));
         allow create: if false;
         allow update: if isGameGM(gameId)
           || (isSignedIn()
