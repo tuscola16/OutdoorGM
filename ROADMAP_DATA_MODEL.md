@@ -56,4 +56,3 @@ collections. (Shipped no-schema items — 20–28, 48–56, 58's prerequisites, 
 [ROADMAP.md](ROADMAP.md) Built & removed callout and git history.)
 
 - **47** Maps-key restriction — Cloud Console ops task.
-- **77** Closed-phone pass-through reliability — #49 follow-up; tuning of background-location cadence / `MAX_SEGMENT_METERS` / foreground-resume retro-test. No schema; needs an on-device locked-phone test.

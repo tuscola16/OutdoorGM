@@ -8,9 +8,9 @@ implementation-ready schema/enforcement detail for the items below is in
 **Current focus: a beautifully functional APK for a limited, trusted user base** — not a public
 store launch. Items are grouped by tier, roughly in build order. Numbers are **stable and never
 reused**; a shipped item moves to the **Built & removed** callout below (one-line summary; full
-detail in git + the README) rather than being renumbered. The build-out **through Tier 7 has
-shipped** (see the callout) — the outstanding work is the field-test item **#77** and P3 polish
-(Tier 11), plus the deferred public-launch gating (#46/#47).
+detail in git + the README) rather than being renumbered. The build-out **through Tier 7 plus all
+field-test findings has shipped** (see the callout) — the only outstanding work is P3 polish
+(Tier 11 — **#57** per-GM teams), plus the deferred public-launch gating (#46/#47).
 
 > **Built & removed** (retired numbers, never reused — one-line summaries; full detail in git
 > history + the [README](README.md#features)):
@@ -62,47 +62,13 @@ shipped** (see the callout) — the outstanding work is the field-test item **#7
 >   voucher-site run-sheet preset (scaffolds open/close/announce rows); post-game `media` (GM
 >   attaches host-validated YouTube + Google Photos links on results, `onGameMediaWrite` pushes
 >   all-but-setter, results screens link out). Schema in `types/index.ts`; `common/mediaLinks.ts`.
-
----
-
-## Field-test findings (2026-06-07 → 06-08) — outstanding
-
-Defects and gaps from testing the web dashboard and the app; the built items from these passes are
-in the Built & removed callout above. Priority tags inline (P0 = before the next real game; P1 =
-before wider testing; P2 = polish). Schema detail is in
-[ROADMAP_DATA_MODEL.md](ROADMAP_DATA_MODEL.md) under the same numbers.
-
-**77. Closed-phone pass-through still unreliable.** *(P1 — #49 follow-up)* A player walked most of the
-way through a large (100 m radius) checkpoint with the phone locked and only got the alert when they
-**opened the phone**. Server-side pass-through (#49) tests the prev→curr segment against each radius,
-but a locked phone may emit **no** background fix across the whole transit (OS throttling), so there's
-no segment to test until the app foregrounds.
-
-> **Root cause found + Built (2026-06-17):** the throttling was **Android battery optimization
-> (Doze)**, not a cadence/segment problem — reproduced on a stock Pixel 8 with "Allow all the time"
-> granted and the foreground service running (so it isn't OEM-specific). With the app in the default
-> "Optimized" battery state, Android freezes background location ~seconds after the screen locks;
-> flipping the app to "Unrestricted" makes background GPS flow normally while locked (confirmed).
-> Fix: new `services/batteryOptimization.ts` (`isBatteryOptimized` via expo-battery +
-> `requestBatteryOptimizationExemption` via expo-intent-launcher), a `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`
-> manifest permission, a "Background activity — Unrestricted" row in the lobby permission checklist,
-> a play-screen warning banner, and a `batteryOptimized` line in the tracking diagnostics. **Rides
-> the next APK.** Re-test on-device after install: lock the phone untouched ~3 min and confirm the
-> player stays live on the GM map.
-
-**78. Ration panel stuck on the capture form after submitting.** *(P1 — Built 2026-06-17)* After a
-player submitted a ration ("submitted ✓"), the panel never flipped to "waiting for GM" — it kept
-showing the card-number field and "eat within" countdown. Cause: the panel listens to its own
-`rations/{uid}_{interval}` doc *before* it exists; on a non-existent doc `resource` is null, so the
-read rule's `resource.data.playerId` reference errored → the listener was denied on its first read
-and died, never delivering the later `pending`/`valid` writes. Fix: allow the read when
-`resource == null` in `firestore.rules`. **Needs `firebase deploy --only firestore`.**
-
-**79. Wrong "already started" message joining a not-yet-open game.** *(P2 — Built 2026-06-17)*
-Joining a game still in `setup` returned "This game has already started — joins are closed," which is
-misleading (it hasn't started; it isn't open yet). `joinGameByCode` now distinguishes `setup` ("isn't
-open to players yet — ask your GM to open it") from play/results ("already started"). **Needs
-`firebase deploy --only functions`.**
+> - **77, 78, 79** — **2026-06-18 field fixes**: #77 closed-phone tracking traced to Android battery
+>   optimization/Doze (reproduced on a stock Pixel 8) — added a battery-optimization exemption flow
+>   (`services/batteryOptimization.ts`, `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, lobby "Background
+>   activity — Unrestricted" row, play-screen warn banner, `batteryOptimized` diagnostic); #78 ration
+>   panel un-stuck after submit (Firestore `rations` read allowed when `resource == null`, so the
+>   player's pre-create listener isn't denied); #79 joining a `setup`-phase game now says "not open
+>   yet" vs "already started". Rules + functions deployed; the mobile battery flow rides the 2026-06-18 APK.
 
 ---
 
@@ -136,10 +102,12 @@ its bundle ID / SHA-1 and the Maps SDK in Cloud Console before wide release. Con
 
 ## Suggested order
 
-0. **Verify the 2026-06-17 APK** once it's installed: smoke-test the mobile halves now riding it
-   (#20–25 integrity UI, #63/#64/#66/#70/#71/#74, #11, mobile Clone), then run the **#77**
-   closed-phone pass-through test on a locked device — the one outstanding field-test defect, held
-   for exactly this on-device check. Use [TESTING_CHECKLIST.md](TESTING_CHECKLIST.md) (#58) for a
-   full single-game surface pass.
+0. **Verify the 2026-06-18 APK** once it's installed (clean-install — uninstall the old app first):
+   confirm the **#77** battery-optimization fix (grant "Background activity — Unrestricted" in the
+   lobby, then lock the phone untouched ~3 min and confirm the player stays live on the GM map and
+   checkpoints fire), **#78** (submit a ration → panel flips to "waiting for GM"), and **#79** (join a
+   `setup`-phase game → "not open yet" message). Also smoke-test the mobile halves from the prior APK
+   (#20–25 integrity UI, #63/#64/#66/#70/#71/#74, #11, mobile Clone). Use
+   [TESTING_CHECKLIST.md](TESTING_CHECKLIST.md) (#58) for a full single-game surface pass.
 1. **Tier 11** (41–45, 57) is P3 polish (43/45 and per-GM teams deprioritized).
 2. **Deferred** (46–47) waits for a real public-store launch.
