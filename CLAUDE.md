@@ -363,6 +363,12 @@ Info.plist that will actually be generated (a full `expo prebuild --platform ios
   would be an unused-permission rejection vector (and RECORD_AUDIO on Android).
 - **`ios.privacyManifests`** feeds the generated `PrivacyInfo.xcprivacy`. Missing required-reason
   API declarations get the automated ITMS-91053 bounce on upload.
+- **`expo-build-properties` with `ios.useFrameworks: "static"` is required by
+  `@react-native-firebase`.** Without it the `Install pods` phase fails with *"The following
+  Swift pods cannot yet be integrated as static libraries"* — `FirebaseCoreInternal`,
+  `FirebaseCrashlytics`, `FirebaseFirestore`, `FirebaseFunctions`, `FirebaseSessions`, and
+  `FirebaseStorage` all depend on pods (`GoogleUtilities`, `FirebaseCore`, `nanopb`, …) that
+  don't define modules. Only iOS is affected; Android builds fine without it.
 
 ## Common Patterns
 
