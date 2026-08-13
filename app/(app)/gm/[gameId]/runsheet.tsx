@@ -83,7 +83,60 @@ export default function RunSheetScreen() {
   const [checkpointId, setCheckpointId] = useState<string | undefined>(undefined);
   const [saving, setSaving] = useState(false);
 
+  // #44 Voucher-site preset state.
+  const [showVoucher, setShowVoucher] = useState(false);
+  const [voucherCpId, setVoucherCpId] = useState<string | undefined>(undefined);
+  const [voucherOpen, setVoucherOpen] = useState('60');
+  const [voucherClose, setVoucherClose] = useState('120');
+  const [voucherSaving, setVoucherSaving] = useState(false);
+
   const action = actionFor(actionKey);
+
+  function openVoucher() {
+    setVoucherCpId(checkpoints[0]?.id);
+    setVoucherOpen('60');
+    setVoucherClose('120');
+    setShowVoucher(true);
+  }
+
+  /**
+   * #44: scaffold the open/close/announce run-sheet rows for a time-windowed "voucher"
+   * checkpoint (vouchers are paper/in-person — the app mints nothing). Pure client
+   * scaffolding over addScheduledEvent; every row is an ordinary, editable run-sheet entry.
+   */
+  async function saveVoucherPreset() {
+    if (!gameId) return;
+    const cp = checkpoints.find((c) => c.id === voucherCpId);
+    if (!cp) { Alert.alert('Pick a checkpoint for the voucher site.'); return; }
+    const openMin = parseInt(voucherOpen, 10);
+    const closeMin = parseInt(voucherClose, 10);
+    if (isNaN(openMin) || openMin < 0) { Alert.alert('Enter a valid open time (minutes after start).'); return; }
+    if (isNaN(closeMin) || closeMin <= openMin) { Alert.alert('Close time must be after the open time.'); return; }
+    const name = cp.name;
+    // Warn a few minutes before close (clamped so it never precedes open).
+    const preClose = Math.max(openMin, closeMin - 5);
+    const warnMin = closeMin - preClose;
+
+    setVoucherSaving(true);
+    try {
+      const ops: Promise<void>[] = [];
+      // Reveal the marker at open, only if it's a hidden-until-triggered checkpoint.
+      if (cp.visibility === 'shown-on-trigger') {
+        ops.push(addScheduledEvent(gameId, { type: 'reveal-checkpoint', checkpointId: cp.id, offsetMinutes: openMin }));
+      }
+      ops.push(addScheduledEvent(gameId, { type: 'broadcast', offsetMinutes: openMin, message: `🎟️ Voucher site ${name} is open` }));
+      if (warnMin > 0) {
+        ops.push(addScheduledEvent(gameId, { type: 'broadcast', offsetMinutes: preClose, message: `⏳ ${name} voucher site closes in ${warnMin} min` }));
+      }
+      ops.push(addScheduledEvent(gameId, { type: 'broadcast', offsetMinutes: closeMin, message: `🚫 ${name} voucher site is now closed` }));
+      await Promise.all(ops);
+      setShowVoucher(false);
+    } catch (err) {
+      Alert.alert('Error', friendlyError(err));
+    } finally {
+      setVoucherSaving(false);
+    }
+  }
 
   function openAdd() {
     setEditId(null);
@@ -256,6 +309,12 @@ export default function RunSheetScreen() {
 
       <View style={styles.footer}>
         <Button title="Add timed action" onPress={openAdd} />
+        <TouchableOpacity onPress={openVoucher} style={styles.presetBtn} disabled={checkpoints.length === 0}>
+          <Ionicons name="ticket-outline" size={16} color={checkpoints.length === 0 ? Colors.textMuted : Colors.primary} />
+          <Text style={[styles.presetText, checkpoints.length === 0 && { color: Colors.textMuted }]}>
+            Voucher site preset
+          </Text>
+        </TouchableOpacity>
       </View>
 
       <Modal visible={showModal} transparent animationType="slide" onRequestClose={() => setShowModal(false)}>
@@ -350,6 +409,57 @@ export default function RunSheetScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* #44 Voucher-site preset */}
+      <Modal visible={showVoucher} transparent animationType="slide" onRequestClose={() => setShowVoucher(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalSheet}>
+            <ScrollView contentContainerStyle={styles.modalContent} keyboardShouldPersistTaps="handled">
+              <Text style={styles.modalTitle}>Voucher site preset</Text>
+              <Text style={styles.hintSmall}>
+                Scaffolds the open/close/announce run-sheet rows for a time-windowed voucher
+                checkpoint (vouchers are paper/in-person). You can edit or delete any row after.
+              </Text>
+
+              <Text style={styles.sectionLabel}>Checkpoint</Text>
+              {checkpoints.length === 0 ? (
+                <Text style={styles.hintSmall}>No checkpoints yet — add one on the Play Area map first.</Text>
+              ) : (
+                <View style={styles.cpList}>
+                  {checkpoints.map((cp) => {
+                    const active = cp.id === voucherCpId;
+                    return (
+                      <TouchableOpacity
+                        key={cp.id}
+                        onPress={() => setVoucherCpId(cp.id)}
+                        style={[styles.cpOption, active && styles.cpOptionActive]}
+                      >
+                        <Ionicons
+                          name={active ? 'radio-button-on' : 'radio-button-off'}
+                          size={18}
+                          color={active ? Colors.primary : Colors.textSecondary}
+                        />
+                        <Text style={styles.cpOptionText}>{cp.name}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
+
+              <Input label="Opens (minutes after start)" value={voucherOpen} onChangeText={setVoucherOpen} keyboardType="number-pad" placeholder="60" />
+              <Input label="Closes (minutes after start)" value={voucherClose} onChangeText={setVoucherClose} keyboardType="number-pad" placeholder="120" />
+              <Text style={styles.hintSmall}>
+                A selected hidden-until-triggered checkpoint is also revealed at open.
+              </Text>
+
+              <View style={styles.modalActions}>
+                <Button title="Cancel" onPress={() => setShowVoucher(false)} variant="ghost" fullWidth={false} style={{ flex: 1 }} />
+                <Button title="Scaffold rows" onPress={saveVoucherPreset} loading={voucherSaving} fullWidth={false} style={{ flex: 1 }} />
+              </View>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -395,7 +505,12 @@ const styles = StyleSheet.create({
   iconBtn: { padding: 6, marginLeft: 2 },
   empty: { alignItems: 'center', paddingTop: 60, gap: 12 },
   emptyText: { color: Colors.textSecondary, fontSize: 14, textAlign: 'center', lineHeight: 22 },
-  footer: { padding: 16 },
+  footer: { padding: 16, gap: 10 },
+  presetBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: Colors.border,
+  },
+  presetText: { color: Colors.primary, fontSize: 14, fontWeight: '600' },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
   modalSheet: {

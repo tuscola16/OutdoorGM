@@ -326,7 +326,9 @@ export const onLocationUpdate = functions
     const gameData = await getGameCached(gameId);
     if (!gameData) return;
     const phase = gameData.phase ?? (gameData.status === 'ended' ? 'results' : 'play');
-    if (phase !== 'play') return;
+    // #41: keep tracking, boundary, SOS, and checkpoint eval running through the end-game
+    // showdown (a convergence checkpoint can still fire); only the ration loop turns off.
+    if (phase !== 'play' && phase !== 'endgame') return;
 
     // Resolve geofence config knobs with defaults (#50/#55/#56/#67).
     const rawConfig = (gameData.config ?? {}) as {

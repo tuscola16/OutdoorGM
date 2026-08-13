@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import mapboxgl from 'mapbox-gl';
 import MapboxDraw from '@mapbox/mapbox-gl-draw';
 import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
-import type { Checkpoint, PlayerLocation, MapBoundary, RunbookEntry } from '@shared/types';
+import type { Checkpoint, PlayerLocation, MapBoundary, RunbookEntry, Game } from '@shared/types';
 import { KIND_META, checkpointKind } from '@/services/checkpointKinds';
 import { isLowBattery, formatBattery } from '@/services/locationStatus';
 
@@ -25,8 +25,19 @@ interface GameMapProps {
   boundary?: MapBoundary | null;
   /** When true, clicking the map adds a checkpoint and a drag draws the boundary. */
   editMode?: boolean;
-  /** Setup: a single map click (lng/lat) to drop a checkpoint. */
+  /** Setup: a single map click (lng/lat) to drop a checkpoint. Also used by the #41
+   * end-game rally placement (gated by `placingRally`, independent of editMode). */
   onMapClick?: (coord: { latitude: number; longitude: number }) => void;
+  /** #41: while true, a map click places the end-game rally point (independent of editMode). */
+  placingRally?: boolean;
+  /** #41: the end-game convergence point, drawn as a distinct flame pin (draft or live). */
+  rallyPoint?: { latitude: number; longitude: number } | null;
+  /** #42: custom arena image overlay — rendered as a true quad (Mapbox image source). */
+  mapOverlay?: Game['mapOverlay'] | null;
+  /** #42 authoring: when set, draw draggable handles at these 4 corners (TL,TR,BR,BL). */
+  overlayCorners?: { latitude: number; longitude: number }[] | null;
+  /** #42 authoring: called as a corner handle is dragged. */
+  onOverlayCornerDrag?: (index: number, coord: { latitude: number; longitude: number }) => void;
   /** Click an existing checkpoint pin (edit in setup, info in play). */
   onCheckpointClick?: (cp: Checkpoint) => void;
   /** Setup: while true, a click-drag on the map defines the rectangular boundary. */
@@ -99,6 +110,11 @@ export function GameMap({
   boundary,
   editMode = false,
   onMapClick,
+  placingRally = false,
+  rallyPoint,
+  mapOverlay,
+  overlayCorners,
+  onOverlayCornerDrag,
   onCheckpointClick,
   drawingBoundary = false,
   drawingPolygon = false,
@@ -110,6 +126,13 @@ export function GameMap({
   const playerMarkers = useRef<Record<string, mapboxgl.Marker>>({});
   const deathMarkerEls = useRef<Record<string, mapboxgl.Marker>>({});
   const checkpointMarkers = useRef<mapboxgl.Marker[]>([]);
+  const rallyMarkerRef = useRef<mapboxgl.Marker | null>(null);
+  // #42: arena overlay state — whether the image source/layer is added, and the draggable
+  // corner handles while authoring.
+  const overlayAddedRef = useRef(false);
+  const overlayHandleMarkers = useRef<mapboxgl.Marker[]>([]);
+  const onOverlayCornerDragRef = useRef(onOverlayCornerDrag);
+  onOverlayCornerDragRef.current = onOverlayCornerDrag;
   const didFit = useRef(false);
   const fitToDataRef = useRef<() => boolean>(() => false);
   const syncSourcesRef = useRef<() => void>(() => {});
@@ -121,11 +144,13 @@ export function GameMap({
   const onBoundaryDrawnRef = useRef(onBoundaryDrawn);
   const editRef = useRef(editMode);
   const drawingRef = useRef(drawingBoundary);
+  const placingRallyRef = useRef(placingRally);
   onMapClickRef.current = onMapClick;
   onCheckpointClickRef.current = onCheckpointClick;
   onBoundaryDrawnRef.current = onBoundaryDrawn;
   editRef.current = editMode;
   drawingRef.current = drawingBoundary;
+  placingRallyRef.current = placingRally;
 
   // Polygon drawing (#39): the mapbox-gl-draw instance + a ref to the latest boundary so
   // entering polygon mode can load the existing polygon for editing.
@@ -188,8 +213,13 @@ export function GameMap({
       if (fitToDataRef.current()) didFit.current = true;
     });
 
-    // Click to add a checkpoint (setup only, and not while drawing a boundary).
+    // Click to add a checkpoint (setup only, and not while drawing a boundary), or to
+    // place the #41 end-game rally point (independent of editMode).
     map.on('click', (e) => {
+      if (placingRallyRef.current) {
+        onMapClickRef.current?.({ latitude: e.lngLat.lat, longitude: e.lngLat.lng });
+        return;
+      }
       if (!editRef.current || drawingRef.current) return;
       onMapClickRef.current?.({ latitude: e.lngLat.lat, longitude: e.lngLat.lng });
     });
@@ -330,9 +360,97 @@ export function GameMap({
       features: circleFeatures,
     });
 
+    syncOverlay();
+    syncOverlayHandles();
     syncCheckpointMarkers();
     syncPlayerMarkers();
     syncDeathMarkers();
+    syncRallyMarker();
+  }
+
+  /**
+   * #42: render the custom arena image as a Mapbox `image` source + `raster` layer placed
+   * below the boundary/checkpoint layers (so pins stay on top). The 4 `corners` (TL,TR,BR,BL)
+   * place it as a true quad. Adds/updates/removes the source+layer as `mapOverlay` changes.
+   */
+  function syncOverlay() {
+    const map = mapRef.current;
+    if (!map || !readyRef.current) return;
+    const ov = mapOverlay;
+    const valid = ov?.url && Array.isArray(ov.corners) && ov.corners.length === 4;
+    if (!valid) {
+      if (overlayAddedRef.current) {
+        if (map.getLayer('arena-overlay-raster')) map.removeLayer('arena-overlay-raster');
+        if (map.getSource('arena-overlay')) map.removeSource('arena-overlay');
+        overlayAddedRef.current = false;
+      }
+      return;
+    }
+    const coordinates = ov!.corners.map((c) => [c.longitude, c.latitude]) as [
+      [number, number], [number, number], [number, number], [number, number]
+    ];
+    const opacity = typeof ov!.opacity === 'number' ? ov!.opacity : 0.7;
+    if (!overlayAddedRef.current) {
+      map.addSource('arena-overlay', { type: 'image', url: ov!.url, coordinates });
+      // Insert just below the boundary fill so checkpoint/player markers stay on top.
+      const beforeId = map.getLayer('boundary-fill') ? 'boundary-fill' : undefined;
+      map.addLayer({
+        id: 'arena-overlay-raster',
+        type: 'raster',
+        source: 'arena-overlay',
+        paint: { 'raster-opacity': opacity, 'raster-fade-duration': 0 },
+      }, beforeId);
+      overlayAddedRef.current = true;
+    } else {
+      const src = map.getSource('arena-overlay') as mapboxgl.ImageSource | undefined;
+      src?.updateImage({ url: ov!.url, coordinates });
+      if (map.getLayer('arena-overlay-raster')) {
+        map.setPaintProperty('arena-overlay-raster', 'raster-opacity', opacity);
+      }
+    }
+  }
+
+  /** #42 authoring: draggable corner handles (TL,TR,BR,BL) while editing the overlay. */
+  function syncOverlayHandles() {
+    const map = mapRef.current;
+    if (!map) return;
+    overlayHandleMarkers.current.forEach((m) => m.remove());
+    overlayHandleMarkers.current = [];
+    if (!overlayCorners || overlayCorners.length !== 4) return;
+    const labels = ['TL', 'TR', 'BR', 'BL'];
+    overlayCorners.forEach((c, i) => {
+      const el = document.createElement('div');
+      el.style.cssText = `width:22px;height:22px;border-radius:50%;background:${COLORS.primary};border:2px solid #fff;cursor:grab;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:#000;box-shadow:0 1px 3px rgba(0,0,0,.6)`;
+      el.textContent = labels[i];
+      const marker = new mapboxgl.Marker({ element: el, draggable: true }).setLngLat([c.longitude, c.latitude]).addTo(map);
+      marker.on('drag', () => {
+        const ll = marker.getLngLat();
+        onOverlayCornerDragRef.current?.(i, { latitude: ll.lat, longitude: ll.lng });
+      });
+      overlayHandleMarkers.current.push(marker);
+    });
+  }
+
+  /** #41: the end-game rally pin (flame), drawn from `rallyPoint` (draft or live marker). */
+  function syncRallyMarker() {
+    const map = mapRef.current;
+    if (!map) return;
+    if (!rallyPoint) {
+      rallyMarkerRef.current?.remove();
+      rallyMarkerRef.current = null;
+      return;
+    }
+    if (!rallyMarkerRef.current) {
+      const el = document.createElement('div');
+      el.style.cssText = `width:32px;height:32px;border-radius:50%;background:${COLORS.primary};border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 2px 4px rgba(0,0,0,.5)`;
+      el.textContent = '🔥';
+      const marker = new mapboxgl.Marker({ element: el }).setLngLat([rallyPoint.longitude, rallyPoint.latitude]);
+      marker.setPopup(new mapboxgl.Popup({ offset: 18 }).setText('Final Rally — converge here'));
+      marker.addTo(map);
+      rallyMarkerRef.current = marker;
+    } else {
+      rallyMarkerRef.current.setLngLat([rallyPoint.longitude, rallyPoint.latitude]);
+    }
   }
 
   function syncDeathMarkers() {
@@ -477,7 +595,7 @@ export function GameMap({
   useEffect(() => {
     syncSources();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checkpoints, playerLocations, boundary, deathMarkers]);
+  }, [checkpoints, playerLocations, boundary, deathMarkers, rallyPoint, mapOverlay, overlayCorners]);
 
   // Fit once when the first data arrives. Only mark the one-time fit as done if
   // it actually fit — if the data lands before the map's `load` event, fitToData

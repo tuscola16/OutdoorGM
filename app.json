@@ -50,6 +50,7 @@
         "ACCESS_BACKGROUND_LOCATION",
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_LOCATION",
+        "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
         "RECEIVE_BOOT_COMPLETED",
         "CAMERA"
       ]
@@ -112,7 +113,8 @@
       "policy": "appVersion"
     },
     "updates": {
-      "url": "https://u.expo.dev/ac670593-883f-4ab4-974f-57992e269c6b"
+      "url": "https://u.expo.dev/ac670593-883f-4ab4-974f-57992e269c6b",
+      "enabled": false
     }
   }
 }

@@ -115,6 +115,7 @@ export const createGame = functions.https.onCall(async (data, context) => {
   const displayName = cleanName(data?.displayName);
   const fcmToken = typeof data?.fcmToken === 'string' && data.fcmToken ? data.fcmToken : undefined;
   const isTest = data?.isTest === true;
+  const practice = data?.practice === true;
 
   if (!name) {
     throw new functions.https.HttpsError('invalid-argument', 'A game name is required.');
@@ -150,6 +151,8 @@ export const createGame = functions.https.onCall(async (data, context) => {
     endedAt: null,
     createdAt: now,
   };
+  // #43: a disposable practice game — server-set so a client can't forge the flag.
+  if (practice) game.practice = true;
 
   const batch = db.batch();
   if (isTest) {
@@ -366,10 +369,14 @@ export const joinGameByCode = functions.https.onCall(async (data, context) => {
   if (role === 'player' && !existing.exists) {
     const phase = gameData.phase ?? (gameData.status === 'ended' ? 'results' : 'play');
     if (phase !== 'lobby') {
-      throw new functions.https.HttpsError(
-        'failed-precondition',
-        'This game has already started — joins are closed.'
-      );
+      // `setup` means the GM hasn't opened the game to players yet — that's a
+      // "come back in a moment", not a "you missed it". Only a game that has left
+      // the lobby (play/endgame/results) is genuinely closed to new players.
+      const msg =
+        phase === 'setup'
+          ? "This game isn't open to players yet. Ask your Game Master to open it, then try again."
+          : 'This game has already started — joins are closed.';
+      throw new functions.https.HttpsError('failed-precondition', msg);
     }
   }
 
@@ -431,6 +438,86 @@ export const deleteGame = functions.https.onCall(async (data, context) => {
 
   await db.recursiveDelete(gameRef);
   return { deleted: true };
+});
+
+/**
+ * Reset a **practice** game (ROADMAP #43) so a dress rehearsal can be re-run. Clears all
+ * runtime/participant *state* while keeping the setup (boundary, checkpoints, runbook, rules,
+ * config) and the roster: deletes locations/arrivals/rations/trip-latches/markers, re-arms the
+ * run-sheet (`firedAt → null`), revives every player, and drops the game back to `lobby` with
+ * its timers cleared. GM-only, and refused on a non-practice game (so a real game's history can
+ * never be wiped this way). Admin SDK → bypasses the client monotonic-phase guard (#22).
+ */
+export const resetPracticeGame = functions.https.onCall(async (data, context) => {
+  const uid = requireAuth(context);
+  const gameId = String(data?.gameId ?? '').trim();
+  if (!gameId) throw new functions.https.HttpsError('invalid-argument', 'A game id is required.');
+
+  const db = admin.firestore();
+  const gameRef = db.collection('games').doc(gameId);
+  const [gameSnap, memberSnap] = await Promise.all([
+    gameRef.get(),
+    gameRef.collection('members').doc(uid).get(),
+  ]);
+  if (!gameSnap.exists) throw new functions.https.HttpsError('not-found', 'That game no longer exists.');
+  if (!memberSnap.exists || memberSnap.data()?.role !== 'gm') {
+    throw new functions.https.HttpsError('permission-denied', 'Only a Game Master can reset this game.');
+  }
+  if (gameSnap.data()?.practice !== true) {
+    throw new functions.https.HttpsError('failed-precondition', 'Only a practice game can be reset.');
+  }
+
+  // Purge transient runtime data + storage photos.
+  await Promise.allSettled([
+    admin.storage().bucket().deleteFiles({ prefix: `games/${gameId}/rations/`, force: true }),
+    db.recursiveDelete(gameRef.collection('locations')),
+    db.recursiveDelete(gameRef.collection('arrivals')),
+    db.recursiveDelete(gameRef.collection('rations')),
+    db.recursiveDelete(gameRef.collection('checkpointTrips')),
+    db.recursiveDelete(gameRef.collection('entryTrips')),
+    db.recursiveDelete(gameRef.collection('rationWindowPings')),
+    db.recursiveDelete(gameRef.collection('starvationSweeps')),
+    db.recursiveDelete(gameRef.collection('markers')),
+  ]);
+
+  // Re-arm run-sheet rows + revive players, in batched writes.
+  const [eventsSnap, membersSnap] = await Promise.all([
+    gameRef.collection('scheduledEvents').get(),
+    gameRef.collection('members').get(),
+  ]);
+  const batch = db.batch();
+  for (const d of eventsSnap.docs) batch.update(d.ref, { firedAt: null });
+  for (const d of membersSnap.docs) {
+    if (d.data().role === 'gm') continue;
+    batch.update(d.ref, {
+      out: false,
+      outAt: null,
+      cause: admin.firestore.FieldValue.delete(),
+      sos: false,
+      sosAt: null,
+      sosAckAt: null,
+      outOfBounds: false,
+      deathLocation: admin.firestore.FieldValue.delete(),
+    });
+  }
+  // Drop the latched checkpoint reveals so a fresh run re-reveals from scratch.
+  const cpSnap = await gameRef.collection('checkpoints').get();
+  for (const d of cpSnap.docs) {
+    batch.update(d.ref, {
+      revealedAt: admin.firestore.FieldValue.delete(),
+      revealedTo: admin.firestore.FieldValue.delete(),
+    });
+  }
+  // Back to the lobby with cleared timers, ready to start again.
+  batch.update(gameRef, {
+    phase: 'lobby',
+    status: 'active',
+    startedAt: null,
+    endedAt: null,
+  });
+  await batch.commit();
+
+  return { reset: true };
 });
 
 /**

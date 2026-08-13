@@ -14,7 +14,7 @@ import { friendlyError } from '@/services/errorUtils';
 import { requirePositiveInt } from '@shared/common/gameConfigValidation';
 import type {
   RunbookEntry, RunbookEffect, RunbookTriggerType, CheckpointKind, NotifyAudience, TimedBound,
-  ScheduledEvent, ScheduledActionType,
+  ScheduledEvent, ScheduledActionType, Checkpoint,
 } from '@shared/types';
 
 // Standalone full-page runbook editor (ROADMAP #60). Left sidebar lists entries in two
@@ -129,6 +129,7 @@ export function RunbookScreen() {
         <ScheduledAnnouncementsModal
           gameId={gameId!}
           events={announcements}
+          checkpoints={checkpoints}
           onClose={() => setShowScheduled(false)}
         />
       )}
@@ -162,10 +163,11 @@ const keyForScheduled = (ev: ScheduledEvent): ScheduledKey =>
   ev.template === 'player-count' ? 'player-count' : (ev.type as ScheduledKey);
 
 function ScheduledAnnouncementsModal({
-  gameId, events, onClose,
+  gameId, events, checkpoints, onClose,
 }: {
   gameId: string;
   events: ScheduledEvent[];
+  checkpoints: Checkpoint[];
   onClose: () => void;
 }) {
   const [editId, setEditId] = useState<string | null>(null);
@@ -173,6 +175,42 @@ function ScheduledAnnouncementsModal({
   const [offset, setOffset] = useState('5');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
+
+  // #44 Voucher-site preset.
+  const [showVoucher, setShowVoucher] = useState(false);
+  const [voucherCpId, setVoucherCpId] = useState<string>(checkpoints[0]?.id ?? '');
+  const [voucherOpen, setVoucherOpen] = useState('60');
+  const [voucherClose, setVoucherClose] = useState('120');
+
+  /** #44: scaffold open/close/announce rows for a time-windowed voucher checkpoint (paper/
+   * in-person — the app mints nothing). Ordinary, editable run-sheet rows over addScheduledEvent. */
+  async function scaffoldVoucher() {
+    const cp = checkpoints.find((c) => c.id === voucherCpId);
+    if (!cp) { window.alert('Pick a checkpoint for the voucher site.'); return; }
+    const openMin = Math.round(Number(voucherOpen));
+    const closeMin = Math.round(Number(voucherClose));
+    const openErr = requirePositiveInt(openMin, 'Open time');
+    if (openErr && openMin !== 0) { window.alert(openErr); return; }
+    if (!(closeMin > openMin)) { window.alert('Close time must be after the open time.'); return; }
+    const name = cp.name;
+    const preClose = Math.max(openMin, closeMin - 5);
+    const warnMin = closeMin - preClose;
+    setBusy(true);
+    try {
+      const ops: Promise<void>[] = [];
+      if (cp.visibility === 'shown-on-trigger') {
+        ops.push(addScheduledEvent(gameId, { type: 'reveal-checkpoint', checkpointId: cp.id, offsetMinutes: openMin }));
+      }
+      ops.push(addScheduledEvent(gameId, { type: 'broadcast', offsetMinutes: openMin, message: `🎟️ Voucher site ${name} is open` }));
+      if (warnMin > 0) {
+        ops.push(addScheduledEvent(gameId, { type: 'broadcast', offsetMinutes: preClose, message: `⏳ ${name} voucher site closes in ${warnMin} min` }));
+      }
+      ops.push(addScheduledEvent(gameId, { type: 'broadcast', offsetMinutes: closeMin, message: `🚫 ${name} voucher site is now closed` }));
+      await Promise.all(ops);
+      setShowVoucher(false);
+    } catch (err) { window.alert(friendlyError(err)); }
+    finally { setBusy(false); }
+  }
 
   const action = scheduledActionFor(actionKey);
   const sorted = [...events].sort((a, b) => (a.offsetMinutes ?? Infinity) - (b.offsetMinutes ?? Infinity));
@@ -253,6 +291,43 @@ function ScheduledAnnouncementsModal({
             </div>
           );
         })}
+      </div>
+
+      {/* #44 Voucher-site preset */}
+      <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {!showVoucher ? (
+          <button className="btn btn--ghost" style={{ justifyContent: 'center' }} onClick={() => setShowVoucher(true)} disabled={checkpoints.length === 0}>
+            🎟️ Voucher site preset
+          </button>
+        ) : (
+          <>
+            <span style={labelStyle}>Voucher site preset</span>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              Scaffolds the open/close/announce rows for a time-windowed voucher checkpoint
+              (vouchers are paper/in-person). Edit or delete any row afterward.
+            </span>
+            <div className="field">
+              <label>Checkpoint</label>
+              <select className="input" value={voucherCpId} onChange={(e) => setVoucherCpId(e.target.value)}>
+                {checkpoints.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+            <div style={{ display: 'flex', gap: 12 }}>
+              <div className="field" style={{ flex: 1 }}>
+                <label>Opens (+min)</label>
+                <input className="input" type="number" value={voucherOpen} onChange={(e) => setVoucherOpen(e.target.value)} />
+              </div>
+              <div className="field" style={{ flex: 1 }}>
+                <label>Closes (+min)</label>
+                <input className="input" type="number" value={voucherClose} onChange={(e) => setVoucherClose(e.target.value)} />
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 12 }}>
+              <button className="btn btn--ghost" style={{ flex: 1 }} onClick={() => setShowVoucher(false)} disabled={busy}>Cancel</button>
+              <button className="btn" style={{ flex: 1 }} onClick={scaffoldVoucher} disabled={busy}>Scaffold rows</button>
+            </div>
+          </>
+        )}
       </div>
 
       <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>

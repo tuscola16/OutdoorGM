@@ -16,14 +16,17 @@ import { AlertFeed } from '@/components/AlertFeed';
 import { Button } from '@/components/ui/Button';
 import { Colors } from '@/constants/colors';
 import { onForegroundMessage } from '@/services/notificationService';
-import { endGame, openLobby, reopenSetup, startGame, updateGameConfig, deleteGame, setGameArchived, sendBroadcast, sendGmMessage, subscribeGmMessages, gameConfig, parseEventDate, formatEventDate } from '@/services/gameService';
+import firestore from '@react-native-firebase/firestore';
+import { Collections } from '@/services/firebase';
+import { endGame, openLobby, reopenSetup, startGame, startEndgame, ENDGAME_RALLY_ID, updateGameConfig, deleteGame, setGameArchived, setGameMedia, resetPracticeGame, addCheckpoint, addRunbookEntry, sendBroadcast, sendGmMessage, subscribeGmMessages, gameConfig, parseEventDate, formatEventDate } from '@/services/gameService';
+import { PostGameMedia } from '@/components/PostGameMedia';
 import { friendlyError } from '@/services/errorUtils';
 import { validateGameConfig } from '@/common/gameConfigValidation';
 import { startGamePreflight } from '@/common/startPreflight';
 import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
 import { useNow } from '@/hooks/useNow';
 import { STALE_MS, unaccountedPlayers, unaccountedReasonText } from '@/services/locationStatus';
-import type { Checkpoint, GameMember, Broadcast } from '@/types';
+import type { Checkpoint, GameMember, Broadcast, Game } from '@/types';
 
 type Tab = 'map' | 'alerts';
 
@@ -31,6 +34,7 @@ const PHASE_LABEL: Record<string, string> = {
   setup: 'SETUP',
   lobby: 'LOBBY',
   play: 'IN PLAY',
+  endgame: 'END-GAME',
   results: 'RESULTS',
 };
 
@@ -65,6 +69,11 @@ export default function GMGameScreen() {
   const [lastSeenArrivals, setLastSeenArrivals] = useState(0);
   const [copiedCode, setCopiedCode] = useState<'player' | 'gm' | null>(null);
   const [busy, setBusy] = useState(false);
+  const [showReadiness, setShowReadiness] = useState(false); // #43 practice readiness
+  // #41 end-game: tap-to-place rally flow + the live rally point (from the marker doc).
+  const [placingRally, setPlacingRally] = useState(false);
+  const [rallyDraft, setRallyDraft] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [rally, setRally] = useState<{ latitude: number; longitude: number } | null>(null);
   const prevArrivalsRef = useRef(0);
 
   const elapsed = useElapsed(game?.startedAt, game?.endedAt);
@@ -112,6 +121,47 @@ export default function GMGameScreen() {
   useEffect(() => {
     return onForegroundMessage(() => {});
   }, []);
+
+  // #41: track the live end-game rally point so the GM map shows it (survives reload).
+  useEffect(() => {
+    if (!gameId) return;
+    return firestore()
+      .collection(Collections.GAMES)
+      .doc(gameId)
+      .collection(Collections.MARKERS)
+      .doc(ENDGAME_RALLY_ID)
+      .onSnapshot(
+        (snap) => {
+          const d = snap.data();
+          setRally(
+            d && typeof d.latitude === 'number' && typeof d.longitude === 'number'
+              ? { latitude: d.latitude, longitude: d.longitude }
+              : null
+          );
+        },
+        (err) => console.error('[GMGame] rally listener error', err)
+      );
+  }, [gameId]);
+
+  function confirmStartEndgame() {
+    if (!gameId || !rallyDraft) return;
+    Alert.alert(
+      'Begin the final showdown?',
+      'Rations turn off and every player is rallied to the point you placed. Tracking, alerts, and checkpoints keep running. You can still End Game from here.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Begin end-game',
+          onPress: () =>
+            runPhaseAction(async () => {
+              await startEndgame(gameId, rallyDraft);
+              setPlacingRally(false);
+              setRallyDraft(null);
+            }),
+        },
+      ]
+    );
+  }
 
   async function handleCopyCode(code: string, type: 'player' | 'gm') {
     try {
@@ -177,7 +227,53 @@ export default function GMGameScreen() {
     ]);
   }
 
+  // #43 practice game: a one-tap "drop test checkpoint here" at the GM's current GPS,
+  // wired with a demo runbook entry so the real geofence/event/push path fires off-venue.
+  function handleDropTestCheckpoint() {
+    if (!gameId) return;
+    runPhaseAction(async () => {
+      let pos = await Location.getLastKnownPositionAsync();
+      if (!pos) pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      if (!pos) { Alert.alert('No location', 'Could not get your current location. Try again outside.'); return; }
+      const n = checkpoints.filter((c) => c.test).length + 1;
+      const cp = await addCheckpoint(gameId, {
+        name: `Test checkpoint ${n}`,
+        latitude: pos.coords.latitude,
+        longitude: pos.coords.longitude,
+        radius: 50, // generous so a confirmed crossing is easy on foot
+        visibility: 'shown',
+        test: true,
+      });
+      await addRunbookEntry(gameId, {
+        checkpointId: cp.id,
+        name: 'Test event',
+        priority: 0,
+        trigger: 'always-on',
+        effect: { kind: 'notify', message: '✅ Test checkpoint reached — geofence, event, and push all work.', audience: 'crossing-player' },
+      });
+      Alert.alert('Test checkpoint dropped', 'Walk into it to verify the geofence, event, and push end-to-end.');
+    });
+  }
+
+  function handleResetPractice() {
+    if (!gameId) return;
+    Alert.alert(
+      'Reset practice game?',
+      'Clears all locations, arrivals, rations, and event history, revives every player, and drops the game back to the lobby so you can run it again. Setup (boundary, checkpoints, runbook) is kept.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Reset', style: 'destructive', onPress: () => runPhaseAction(() => resetPracticeGame(gameId)) },
+      ]
+    );
+  }
+
   function handleEndGame() {
+    // #43: a practice game ends instantly (no unaccounted block / confirm) — it's a
+    // disposable rehearsal and auto-deletes on end.
+    if (game?.practice) {
+      runPhaseAction(() => endGame(gameId!));
+      return;
+    }
     // Block End Game while a player is unaccounted-for (#6): an open unacked SOS, or no
     // fresh fix. Hard override only — the GM can still end, but must confirm past the
     // warning so a game isn't closed with someone possibly in trouble.
@@ -350,7 +446,7 @@ export default function GMGameScreen() {
   // #24: once play has begun, the interval-defining fields (game length + ration interval)
   // are frozen — editing them rescrambles the ration schedule. Disabled with a reason here;
   // the rules enforce it server-side too.
-  const intervalLocked = phase === 'play' || phase === 'results';
+  const intervalLocked = phase === 'play' || phase === 'endgame' || phase === 'results';
   // Players we already have a location fix for (lobby readiness, #16). Used to show the
   // GM "N/N located" so they can wait to start until everyone is on the map.
   const locatedIds = new Set(playerLocations.map((l) => l.userId));
@@ -383,6 +479,11 @@ export default function GMGameScreen() {
             <View style={styles.phasePill}>
               <Text style={styles.phasePillText}>{PHASE_LABEL[phase]}</Text>
             </View>
+            {game?.practice && (
+              <View style={styles.practicePill}>
+                <Text style={styles.practicePillText}>PRACTICE</Text>
+              </View>
+            )}
           </View>
         </View>
         <View style={styles.headerActions}>
@@ -391,7 +492,7 @@ export default function GMGameScreen() {
               <Ionicons name="flask-outline" size={22} color={Colors.primary} />
             </TouchableOpacity>
           )}
-          {(phase === 'lobby' || phase === 'play') && (
+          {(phase === 'lobby' || phase === 'play' || phase === 'endgame') && (
             <TouchableOpacity onPress={() => setShowBroadcast(true)} style={styles.headerBtn}>
               <Ionicons name="megaphone-outline" size={22} color={Colors.text} />
             </TouchableOpacity>
@@ -424,6 +525,26 @@ export default function GMGameScreen() {
         </View>
       </View>
 
+      {/* #43 practice toolbar — quick rehearsal controls, hidden once the game ends. */}
+      {game?.practice && phase !== 'results' && (
+        <View style={styles.practiceStrip}>
+          {(phase === 'play' || phase === 'endgame') && (
+            <TouchableOpacity style={styles.practiceAction} onPress={handleDropTestCheckpoint} disabled={busy}>
+              <Ionicons name="add-circle-outline" size={16} color={Colors.primary} />
+              <Text style={styles.practiceActionText}>Test checkpoint</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity style={styles.practiceAction} onPress={() => setShowReadiness(true)}>
+            <Ionicons name="checkmark-done-outline" size={16} color={Colors.primary} />
+            <Text style={styles.practiceActionText}>Readiness</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.practiceAction} onPress={handleResetPractice} disabled={busy}>
+            <Ionicons name="refresh-outline" size={16} color={Colors.primary} />
+            <Text style={styles.practiceActionText}>Reset</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {phase === 'setup' && (
         <SetupView
           gameId={gameId!}
@@ -453,8 +574,26 @@ export default function GMGameScreen() {
         />
       )}
 
-      {phase === 'play' && (
+      {(phase === 'play' || phase === 'endgame') && (
         <>
+          {/* #41: end-game banner — the showdown is on. */}
+          {phase === 'endgame' && (
+            <View style={styles.endgameBanner}>
+              <Ionicons name="flame" size={18} color={Colors.primary} />
+              <Text style={styles.endgameBannerText}>
+                Final showdown — rations off, players rallying to the marked point.
+              </Text>
+            </View>
+          )}
+          {/* #41: rally-placement prompt while the GM is choosing the convergence point. */}
+          {placingRally && (
+            <View style={styles.endgameBanner}>
+              <Ionicons name="location" size={18} color={Colors.primary} />
+              <Text style={styles.endgameBannerText}>
+                {rallyDraft ? 'Rally point placed — confirm below, or tap again to move it.' : 'Tap the map to place the final rally point.'}
+              </Text>
+            </View>
+          )}
           {/* Stats bar */}
           <View style={styles.statsBar}>
             <View style={styles.stat}>
@@ -521,7 +660,10 @@ export default function GMGameScreen() {
                     latitude: m.deathLocation!.latitude,
                     longitude: m.deathLocation!.longitude,
                   }))}
-                onCheckpointPress={handleCheckpointPress}
+                rallyPoint={placingRally ? rallyDraft : rally}
+                mapOverlay={game?.mapOverlay}
+                onMapPress={placingRally ? setRallyDraft : undefined}
+                onCheckpointPress={placingRally ? undefined : handleCheckpointPress}
               />
             ) : (
               <View style={styles.alertContainer}><AlertFeed arrivals={arrivals} /></View>
@@ -529,9 +671,41 @@ export default function GMGameScreen() {
           </View>
 
           <View style={styles.footer}>
-            <TouchableOpacity onPress={handleEndGame} style={styles.endBtn} disabled={busy}>
-              <Text style={styles.endBtnText}>End Game</Text>
-            </TouchableOpacity>
+            {placingRally ? (
+              <View style={styles.endgameActions}>
+                <Button
+                  title="Cancel"
+                  onPress={() => { setPlacingRally(false); setRallyDraft(null); }}
+                  variant="ghost"
+                  fullWidth={false}
+                  style={{ flex: 1 }}
+                />
+                <Button
+                  title="Begin end-game"
+                  onPress={confirmStartEndgame}
+                  loading={busy}
+                  disabled={!rallyDraft}
+                  fullWidth={false}
+                  style={{ flex: 1 }}
+                />
+              </View>
+            ) : (
+              <>
+                {phase === 'play' && (
+                  <TouchableOpacity
+                    onPress={() => { setTab('map'); setPlacingRally(true); setRallyDraft(null); }}
+                    style={styles.endgameBtn}
+                    disabled={busy}
+                  >
+                    <Ionicons name="flame-outline" size={16} color={Colors.primary} />
+                    <Text style={styles.endgameBtnText}>Start End-Game</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity onPress={handleEndGame} style={styles.endBtn} disabled={busy}>
+                  <Text style={styles.endBtnText}>End Game</Text>
+                </TouchableOpacity>
+              </>
+            )}
           </View>
         </>
       )}
@@ -542,6 +716,8 @@ export default function GMGameScreen() {
           players={players}
           startedAtMs={game?.startedAt?.toMillis?.() ?? null}
           endedAtMs={game?.endedAt?.toMillis?.() ?? null}
+          media={game?.media}
+          onSaveMedia={(m) => runPhaseAction(() => setGameMedia(gameId!, m, user!.uid))}
           onDone={() => router.replace('/(app)/games')}
           onArchive={handleArchiveGame}
           busy={busy}
@@ -801,6 +977,40 @@ export default function GMGameScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* #43 Practice readiness — derived GM-side check before a rehearsal run */}
+      <Modal visible={showReadiness} transparent animationType="slide" onRequestClose={() => setShowReadiness(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Readiness</Text>
+            <Text style={styles.modalSub}>
+              A pre-run check: who's joined, on the map with a fresh fix, and able to receive pushes.
+            </Text>
+            {players.length === 0 ? (
+              <Text style={styles.lobbyEmpty}>No players have joined yet.</Text>
+            ) : (
+              players.map((p) => {
+                const located = locatedIds.has(p.userId);
+                const fixMs = lastFixByUser.get(p.userId);
+                const fresh = fixMs != null && now - fixMs < STALE_MS;
+                const canPush = !!p.fcmToken;
+                return (
+                  <View key={p.userId} style={styles.readyRow}>
+                    <Text style={styles.readyName}>{p.displayName}</Text>
+                    <View style={styles.readyFlags}>
+                      <Ionicons name={located ? 'location' : 'location-outline'} size={16} color={located ? Colors.success : Colors.textMuted} />
+                      <Ionicons name={fresh ? 'pulse' : 'pulse-outline'} size={16} color={fresh ? Colors.success : Colors.danger} />
+                      <Ionicons name={canPush ? 'notifications' : 'notifications-off-outline'} size={16} color={canPush ? Colors.success : Colors.danger} />
+                    </View>
+                  </View>
+                );
+              })
+            )}
+            <Text style={styles.readyLegend}>📍 on map · 〰 fresh fix · 🔔 push-ready</Text>
+            <Button title="Close" onPress={() => setShowReadiness(false)} variant="ghost" />
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -995,12 +1205,14 @@ function LobbyView({
 }
 
 function ResultsView({
-  totalDuration, players, startedAtMs, endedAtMs, onDone, onArchive, busy,
+  totalDuration, players, startedAtMs, endedAtMs, media, onSaveMedia, onDone, onArchive, busy,
 }: {
   totalDuration: number | null;
   players: GameMember[];
   startedAtMs: number | null;
   endedAtMs: number | null;
+  media: Game['media'] | null | undefined;
+  onSaveMedia: (media: { youtubeUrl?: string; photosAlbumUrl?: string } | null) => Promise<void>;
   onDone: () => void;
   onArchive: () => void;
   busy: boolean;
@@ -1023,6 +1235,10 @@ function ResultsView({
             {totalDuration != null ? formatDuration(totalDuration) : '—'}
           </Text>
           <Text style={styles.resultHeroSub}>total game time</Text>
+        </View>
+
+        <View style={{ marginBottom: 16 }}>
+          <PostGameMedia media={media} editable onSave={onSaveMedia} />
         </View>
 
         <Text style={styles.lobbyHeading}>Players</Text>
@@ -1068,6 +1284,27 @@ const styles = StyleSheet.create({
     paddingVertical: 1,
   },
   phasePillText: { fontSize: 10, fontWeight: '800', color: Colors.primary, letterSpacing: 1 },
+  practicePill: {
+    backgroundColor: Colors.secondary + '33', borderRadius: 6, paddingHorizontal: 6, paddingVertical: 1,
+    borderWidth: 1, borderColor: Colors.secondary,
+  },
+  practicePillText: { fontSize: 10, fontWeight: '800', color: Colors.secondary, letterSpacing: 1 },
+  practiceStrip: {
+    flexDirection: 'row', gap: 8, marginHorizontal: 16, marginBottom: 8,
+  },
+  practiceAction: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5,
+    paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+  },
+  practiceActionText: { color: Colors.primary, fontSize: 12, fontWeight: '700' },
+  readyRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.border,
+  },
+  readyName: { fontSize: 15, color: Colors.text, fontWeight: '600' },
+  readyFlags: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  readyLegend: { fontSize: 12, color: Colors.textMuted, marginTop: 12, marginBottom: 8 },
   headerActions: { flexDirection: 'row', gap: 8 },
   headerBtn: { padding: 4 },
   headerBadge: {
@@ -1126,6 +1363,19 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.danger,
   },
   endBtnText: { color: Colors.danger, fontWeight: '600', fontSize: 14 },
+  endgameBtn: {
+    alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 24, paddingVertical: 10, borderRadius: 20,
+    borderWidth: 1, borderColor: Colors.primary,
+  },
+  endgameBtnText: { color: Colors.primary, fontWeight: '700', fontSize: 14 },
+  endgameActions: { flexDirection: 'row', gap: 12 },
+  endgameBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    marginHorizontal: 16, marginBottom: 8, paddingVertical: 8, paddingHorizontal: 12,
+    borderRadius: 8, backgroundColor: Colors.primary + '1A', borderWidth: 1, borderColor: Colors.primary,
+  },
+  endgameBannerText: { color: Colors.text, fontSize: 13, fontWeight: '600', flex: 1 },
 
   // Setup
   setupBody: { padding: 16, gap: 12 },

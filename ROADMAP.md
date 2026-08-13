@@ -8,9 +8,9 @@ implementation-ready schema/enforcement detail for the items below is in
 **Current focus: a beautifully functional APK for a limited, trusted user base** — not a public
 store launch. Items are grouped by tier, roughly in build order. Numbers are **stable and never
 reused**; a shipped item moves to the **Built & removed** callout below (one-line summary; full
-detail in git + the README) rather than being renumbered. The build-out **through Tier 7 has
-shipped** (see the callout) — the outstanding work is the field-test item **#77** and P3 polish
-(Tier 11), plus the deferred public-launch gating (#46/#47).
+detail in git + the README) rather than being renumbered. The build-out **through Tier 7 plus all
+field-test findings has shipped** (see the callout) — the only outstanding work is P3 polish
+(Tier 11 — **#57** per-GM teams), plus the deferred public-launch gating (#46/#47).
 
 > **Built & removed** (retired numbers, never reused — one-line summaries; full detail in git
 > history + the [README](README.md#features)):
@@ -53,48 +53,30 @@ shipped** (see the callout) — the outstanding work is the field-test item **#7
 >   member-doc short-TTL caches (cuts per-write reads); sole-GM `deleteAccount` rescue
 >   (`transferGmOrEndGame` promotes the longest-tenured player or ends the game); low-battery beacon
 >   (`PlayerLocation.battery`, GM roster/map flag); single-game test checklist (`TESTING_CHECKLIST.md`).
-
----
-
-## Field-test findings (2026-06-07 → 06-08) — outstanding
-
-Defects and gaps from testing the web dashboard and the app; the built items from these passes are
-in the Built & removed callout above. Priority tags inline (P0 = before the next real game; P1 =
-before wider testing; P2 = polish). Schema detail is in
-[ROADMAP_DATA_MODEL.md](ROADMAP_DATA_MODEL.md) under the same numbers.
-
-**77. Closed-phone pass-through still unreliable.** *(P1 — #49 follow-up)* A player walked most of the
-way through a large (100 m radius) checkpoint with the phone locked and only got the alert when they
-**opened the phone**. Server-side pass-through (#49) tests the prev→curr segment against each radius,
-but a locked phone may emit **no** background fix across the whole transit (OS throttling), so there's
-no segment to test until the app foregrounds. Investigate: background-location cadence/`deferred`
-settings on a locked device, whether a larger `MAX_SEGMENT_METERS` or distance-filter tuning helps,
-and whether the foreground-resume fix should retro-test the gap. Needs an on-device locked-phone
-re-test (the #49 caveat).
+> - **41–45** — **Tier 11 P3 polish batch**: `endgame` phase (GM-placed convergence rally in
+>   `markers`, rations auto-off, geofence/tracking stay live, broadcast + banners); custom arena
+>   `mapOverlay` (web upload + 4-corner georeference, web true-quad raster render, mobile bbox
+>   `Overlay`, `storage.rules` overlay path); night-before practice game (`Game.practice`/
+>   `Checkpoint.test`, `createGame` flag, PRACTICE badges, relaxed #20/#22/#28 guards + rules
+>   carve-out, drop-test-checkpoint, `resetPracticeGame`, auto-delete on end, GM readiness view);
+>   voucher-site run-sheet preset (scaffolds open/close/announce rows); post-game `media` (GM
+>   attaches host-validated YouTube + Google Photos links on results, `onGameMediaWrite` pushes
+>   all-but-setter, results screens link out). Schema in `types/index.ts`; `common/mediaLinks.ts`.
+> - **77, 78, 79** — **2026-06-18 field fixes**: #77 closed-phone tracking traced to Android battery
+>   optimization/Doze (reproduced on a stock Pixel 8) — added a battery-optimization exemption flow
+>   (`services/batteryOptimization.ts`, `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, lobby "Background
+>   activity — Unrestricted" row, play-screen warn banner, `batteryOptimized` diagnostic); #78 ration
+>   panel un-stuck after submit (Firestore `rations` read allowed when `resource == null`, so the
+>   player's pre-create listener isn't denied); #79 joining a `setup`-phase game now says "not open
+>   yet" vs "already started". Rules + functions deployed; the mobile battery flow rides the 2026-06-18 APK.
 
 ---
 
 ## Tier 11 — P3 polish
 
-**41. End-game phase.** Add an `endgame` phase between `play` and `results` (e.g. a final
-convergence / sudden-death window) the GM triggers, so the app models the schedule's end-game block.
-
-**42. Custom arena map overlay.** Let the GM upload the arena map image as a map overlay instead of
-relying only on generic tiles + the boundary (Rule 33).
-
-**43. Night-before practice game.** A disposable, badged, re-runnable on-site dress-rehearsal game
-(`game.practice`) with a one-tap "drop test checkpoint here", relaxed safety guards, and a GM
-readiness view — exercises joins/tracking/events/pushes end-to-end. *Deprioritized:* slot in just
-ahead of the first real rehearsal, not ahead of everyday APK work.
-
-**44. Voucher-site run-sheet preset.** Vouchers are paper/in-person, so the app mints nothing — a
-voucher site is just a time-windowed checkpoint with announcing run-sheet rows. A one-tap "voucher
-site" preset that scaffolds the open/close/announce rows is the only (optional) work.
-
-**45. Post-game media.** After `results`, let a GM attach a YouTube recap + Google Photos album on
-the game doc (`media` object); a Cloud Function pushes "recap is up" to everyone but the setter;
-results screens show outbound Watch/View links. *Lowest priority* — stitching footage happens well
-after the event.
+> **Built (2026-06-17):** #41 end-game phase, #42 arena overlay, #43 practice game, #44 voucher
+> preset, and #45 post-game media all shipped — see the Built & removed callout. The server/web/
+> rules sides are deploy-ready; the mobile halves ride the next APK. Only #57 remains below.
 
 **57. Per-GM teams.** With multiple GMs, each GM owns a team of players and only watches / tracks /
 notifies (and sends updates to) their own set. Needs per-member team assignment and notification /
@@ -120,10 +102,12 @@ its bundle ID / SHA-1 and the Maps SDK in Cloud Console before wide release. Con
 
 ## Suggested order
 
-0. **Verify the 2026-06-17 APK** once it's installed: smoke-test the mobile halves now riding it
-   (#20–25 integrity UI, #63/#64/#66/#70/#71/#74, #11, mobile Clone), then run the **#77**
-   closed-phone pass-through test on a locked device — the one outstanding field-test defect, held
-   for exactly this on-device check. Use [TESTING_CHECKLIST.md](TESTING_CHECKLIST.md) (#58) for a
-   full single-game surface pass.
+0. **Verify the 2026-06-18 APK** once it's installed (clean-install — uninstall the old app first):
+   confirm the **#77** battery-optimization fix (grant "Background activity — Unrestricted" in the
+   lobby, then lock the phone untouched ~3 min and confirm the player stays live on the GM map and
+   checkpoints fire), **#78** (submit a ration → panel flips to "waiting for GM"), and **#79** (join a
+   `setup`-phase game → "not open yet" message). Also smoke-test the mobile halves from the prior APK
+   (#20–25 integrity UI, #63/#64/#66/#70/#71/#74, #11, mobile Clone). Use
+   [TESTING_CHECKLIST.md](TESTING_CHECKLIST.md) (#58) for a full single-game surface pass.
 1. **Tier 11** (41–45, 57) is P3 polish (43/45 and per-GM teams deprioritized).
 2. **Deferred** (46–47) waits for a real public-store launch.

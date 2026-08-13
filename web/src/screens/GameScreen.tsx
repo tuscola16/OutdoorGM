@@ -10,13 +10,17 @@ import { useNow } from '@/hooks/useNow';
 import { friendlyError } from '@/services/errorUtils';
 import { stalenessLevel, stalenessColor, formatAgo, STALE_MS, unaccountedPlayers, unaccountedReasonText, isLowBattery, formatBattery } from '@/services/locationStatus';
 import {
-  openLobby, reopenSetup, startGame, endGame, updateGameConfig, gameConfig,
+  openLobby, reopenSetup, startGame, endGame, startEndgame, ENDGAME_RALLY_ID, updateGameConfig, gameConfig,
   addCheckpoint, updateCheckpoint, deleteCheckpoint,
   updateMemberRole, removePlayer, eliminatePlayer, revivePlayer, clearSos, ackSos, sendBroadcast,
   deleteGame, setGameArchived, reviewRation, rationInterval, setMemberDistrict,
   revealCheckpointNow, setRevealSchedule, parseEventDate, formatEventDate,
   sendGmMessage, subscribeGmMessages, deleteScheduledEvent,
+  uploadArenaOverlay, setMapOverlay, setGameMedia, resetPracticeGame,
 } from '@/services/gameService';
+import { normalizeYoutubeUrl, normalizePhotosUrl } from '@shared/common/mediaLinks';
+import { doc, onSnapshot } from 'firebase/firestore';
+import { db, Collections } from '@/services/firebase';
 import {
   KIND_META, checkpointKind, VIS_META, VIS_ORDER,
   behaviorSummary, CHECKPOINT_ICON_EMOJIS, DEFAULT_CHECKPOINT_ICON, checkpointIconEmoji,
@@ -27,12 +31,22 @@ import { pointInBoundary } from '@shared/common/geo';
 import { deleteField } from 'firebase/firestore';
 import type {
   Arrival, Checkpoint, RunbookEntry, GameMember, MapBoundary, PlayerLocation, RationSubmission,
-  CheckpointVisibility, RevealTrigger, RevealAudience, CheckpointReveal, FsTimestamp, Broadcast, EntryTrip,
+  CheckpointVisibility, RevealTrigger, RevealAudience, CheckpointReveal, FsTimestamp, Broadcast, EntryTrip, Game,
 } from '@shared/types';
 
 const PHASE_LABEL: Record<string, string> = {
-  setup: 'SETUP', lobby: 'LOBBY', play: 'IN PLAY', results: 'RESULTS',
+  setup: 'SETUP', lobby: 'LOBBY', play: 'IN PLAY', endgame: 'END-GAME', results: 'RESULTS',
 };
+
+/** #42: the 4 overlay corners (TL,TR,BR,BL) seeded from a boundary's bounding box. */
+function boundaryQuad(b: MapBoundary): { latitude: number; longitude: number }[] {
+  return [
+    { latitude: b.maxLat, longitude: b.minLng }, // TL
+    { latitude: b.maxLat, longitude: b.maxLng }, // TR
+    { latitude: b.minLat, longitude: b.maxLng }, // BR
+    { latitude: b.minLat, longitude: b.minLng }, // BL
+  ];
+}
 
 export function GameScreen() {
   const { gameId } = useParams<{ gameId: string }>();
@@ -46,6 +60,10 @@ export function GameScreen() {
   const [showGmMessages, setShowGmMessages] = useState(false); // co-GM messaging (#40)
   const [showConfig, setShowConfig] = useState(false);
   const [showRations, setShowRations] = useState(false);
+  // #41 end-game: tap-to-place rally flow + the live rally point (from the marker doc).
+  const [placingRally, setPlacingRally] = useState(false);
+  const [rallyDraft, setRallyDraft] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [rally, setRally] = useState<{ latitude: number; longitude: number } | null>(null);
   const elapsed = useElapsed(game?.startedAt, game?.endedAt);
   const remaining = useRemaining(game?.startedAt, gameConfig(game).durationMinutes, game?.endedAt);
   const now = useNow(10000);
@@ -55,6 +73,35 @@ export function GameScreen() {
     return () => clearGame();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameId]);
+
+  // #41: track the live end-game rally point so the map shows it (survives reload).
+  useEffect(() => {
+    if (!gameId) return;
+    return onSnapshot(
+      doc(db, Collections.GAMES, gameId, Collections.MARKERS, ENDGAME_RALLY_ID),
+      (snap) => {
+        const d = snap.data();
+        setRally(
+          d && typeof d.latitude === 'number' && typeof d.longitude === 'number'
+            ? { latitude: d.latitude, longitude: d.longitude }
+            : null
+        );
+      },
+      (err) => console.error('[GameScreen] rally listener error', err)
+    );
+  }, [gameId]);
+
+  function beginEndgame() {
+    if (!gameId || !rallyDraft) return;
+    if (!window.confirm(
+      'Begin the final showdown? Rations turn off and every player is rallied to the point you placed. Tracking, alerts, and checkpoints keep running. You can still End Game.'
+    )) return;
+    run(async () => {
+      await startEndgame(gameId, rallyDraft);
+      setPlacingRally(false);
+      setRallyDraft(null);
+    });
+  }
 
   async function run(fn: () => Promise<void>) {
     if (!gameId) return;
@@ -166,8 +213,25 @@ export function GameScreen() {
             }}>
               {PHASE_LABEL[phase]}
             </span>
+            {game?.practice && (
+              <span style={{
+                fontSize: 10, fontWeight: 800, color: 'var(--secondary)', letterSpacing: 1,
+                border: '1px solid var(--secondary)', borderRadius: 6, padding: '1px 6px',
+              }}>
+                PRACTICE
+              </span>
+            )}
           </div>
         </div>
+        {game?.practice && phase !== 'results' && (
+          <button
+            className="btn btn--ghost"
+            style={{ padding: '8px 12px' }}
+            onClick={() => { if (window.confirm('Reset this practice game? Clears all runtime data, revives players, and returns it to the lobby. Setup is kept.')) run(() => resetPracticeGame(gameId!)); }}
+          >
+            ↻ Reset
+          </button>
+        )}
         <button className="btn btn--ghost" style={{ padding: '8px 12px' }} onClick={() => setShowCodes(true)}>Codes</button>
         {phase !== 'results' && (
           <button className="btn btn--ghost" style={{ padding: '8px 12px' }} onClick={() => navigate(`/games/${gameId}/runbook`)}>
@@ -197,8 +261,9 @@ export function GameScreen() {
             onDelete={confirmDelete}
           />
         )}
-        {phase === 'play' && (
+        {(phase === 'play' || phase === 'endgame') && (
           <PlayView
+            phase={phase}
             remaining={remaining}
             aliveCount={aliveCount}
             activeCount={playerLocations.length}
@@ -216,12 +281,22 @@ export function GameScreen() {
             busy={busy}
             rationsEnabled={rationsEnabled}
             pendingRations={pendingRations}
+            mapOverlay={game?.mapOverlay}
+            placingRally={placingRally}
+            rallyPoint={placingRally ? rallyDraft : rally}
+            rallyDraftSet={!!rallyDraft}
+            onPlaceRally={(coord) => setRallyDraft(coord)}
+            onStartPlaceRally={() => { setPlacingRally(true); setRallyDraft(null); }}
+            onCancelRally={() => { setPlacingRally(false); setRallyDraft(null); }}
+            onConfirmEndgame={beginEndgame}
             onOpenRations={() => setShowRations(true)}
             onBroadcast={() => setShowBroadcast(true)}
             onAckSos={(userId) => run(() => ackSos(gameId!, userId))}
             onClearSos={(userId) => run(() => clearSos(gameId!, userId))}
             onOpenPlayers={() => setShowPlayers(true)}
             onEnd={() => {
+              // #43: a practice game ends instantly (no block/confirm) — disposable, auto-deletes.
+              if (game?.practice) { run(() => endGame(gameId!)); return; }
               // Block End Game while a player is unaccounted-for (#6): open unacked SOS
               // or no fresh fix. Hard override only — confirm past the warning to end.
               const unaccounted = unaccountedPlayers(players, lastFixByUser, now);
@@ -245,6 +320,9 @@ export function GameScreen() {
             players={players}
             startedAtMs={game?.startedAt?.toMillis?.() ?? null}
             endedAtMs={game?.endedAt?.toMillis?.() ?? null}
+            media={game?.media}
+            gameId={gameId!}
+            gmUid={user?.uid ?? ''}
             busy={busy}
             onArchive={archiveAndExit}
             onDone={() => navigate('/games')}
@@ -316,7 +394,16 @@ function SetupView({
   onDelete: () => void;
 }) {
   const { game, checkpoints, runbookEntries } = useGame();
+  const { user } = useAuth();
   const navigate = useNavigate();
+  // #42 arena overlay authoring.
+  const [overlayUrl, setOverlayUrl] = useState<string | null>(game?.mapOverlay?.url ?? null);
+  const [overlayCorners, setOverlayCorners] = useState<{ latitude: number; longitude: number }[] | null>(
+    game?.mapOverlay?.corners ?? null
+  );
+  const [overlayOpacity, setOverlayOpacity] = useState<number>(game?.mapOverlay?.opacity ?? 0.7);
+  const [editingOverlay, setEditingOverlay] = useState(false);
+  const [overlayBusy, setOverlayBusy] = useState(false);
   const entriesByCp = new Map<string, RunbookEntry[]>();
   for (const e of runbookEntries) {
     const list = entriesByCp.get(e.checkpointId) ?? [];
@@ -353,6 +440,44 @@ function SetupView({
     await run(() => updateGameConfig(gameId, { boundary: b }));
   }
 
+  // --- #42 arena overlay ---
+  async function handleOverlayFile(file: File) {
+    if (!game?.boundary) { window.alert('Draw the play boundary first — the overlay starts framed to it.'); return; }
+    setOverlayBusy(true);
+    try {
+      const url = await uploadArenaOverlay(gameId, file);
+      setOverlayUrl(url);
+      // Seed corners from the boundary bbox (TL,TR,BR,BL) so the GM starts from a sane quad.
+      if (!overlayCorners) setOverlayCorners(boundaryQuad(game.boundary));
+      setEditingOverlay(true);
+    } catch (err) { window.alert(friendlyError(err)); }
+    finally { setOverlayBusy(false); }
+  }
+
+  function updateOverlayCorner(i: number, coord: { latitude: number; longitude: number }) {
+    setOverlayCorners((prev) => {
+      if (!prev) return prev;
+      const next = [...prev];
+      next[i] = coord;
+      return next;
+    });
+  }
+
+  async function saveOverlay() {
+    if (!overlayUrl || !overlayCorners || !user) return;
+    await run(() => setMapOverlay(gameId, { url: overlayUrl, corners: overlayCorners, opacity: overlayOpacity }, user.uid));
+    setEditingOverlay(false);
+  }
+
+  async function removeOverlay() {
+    if (!user) return;
+    if (!window.confirm('Remove the arena overlay from this game?')) return;
+    await run(() => setMapOverlay(gameId, null, user.uid));
+    setOverlayUrl(null);
+    setOverlayCorners(null);
+    setEditingOverlay(false);
+  }
+
   return (
     <div style={{ height: '100%', display: 'flex' }}>
       <div style={{ flex: 1, position: 'relative' }}>
@@ -361,9 +486,16 @@ function SetupView({
           runbookEntries={runbookEntries}
           playerLocations={[]}
           boundary={game?.boundary}
-          editMode={!drawingPoly}
+          editMode={!drawingPoly && !editingOverlay}
           drawingBoundary={drawing}
           drawingPolygon={drawingPoly}
+          mapOverlay={
+            editingOverlay && overlayUrl && overlayCorners
+              ? { url: overlayUrl, corners: overlayCorners, opacity: overlayOpacity, updatedAt: game!.createdAt, updatedBy: '' }
+              : game?.mapOverlay
+          }
+          overlayCorners={editingOverlay ? overlayCorners : null}
+          onOverlayCornerDrag={updateOverlayCorner}
           onMapClick={handleMapClick}
           onCheckpointClick={(cp) => setBehaviorCheckpointId(cp.id)}
           onBoundaryDrawn={handleBoundaryDrawn}
@@ -415,6 +547,53 @@ function SetupView({
           >
             {drawingPoly ? 'Done editing polygon' : game?.boundary?.polygon ? 'Edit polygon' : 'Draw polygon'}
           </button>
+        </div>
+
+        {/* #42: arena map overlay */}
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <strong>Arena overlay</strong>
+          <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+            {overlayUrl
+              ? editingOverlay
+                ? 'Drag the 4 corner handles to fit your map image, then Save.'
+                : 'Overlay set ✓'
+              : 'Upload an arena map image to overlay it on the live map.'}
+          </span>
+          {overlayUrl && (
+            <img src={overlayUrl} alt="Arena overlay" style={{ width: '100%', borderRadius: 8, border: '1px solid var(--border)', maxHeight: 120, objectFit: 'contain', background: 'var(--surface-elevated)' }} />
+          )}
+          <label className="btn btn--ghost" style={{ cursor: 'pointer', textAlign: 'center' }}>
+            {overlayBusy ? 'Uploading…' : overlayUrl ? 'Replace image' : 'Upload image'}
+            <input
+              type="file"
+              accept="image/*"
+              style={{ display: 'none' }}
+              disabled={overlayBusy}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) handleOverlayFile(f); e.target.value = ''; }}
+            />
+          </label>
+          {overlayUrl && (
+            <>
+              <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                Opacity: {Math.round(overlayOpacity * 100)}%
+                <input
+                  type="range" min={0.1} max={1} step={0.05} value={overlayOpacity}
+                  style={{ width: '100%' }}
+                  onChange={(e) => setOverlayOpacity(Number(e.target.value))}
+                />
+              </label>
+              {editingOverlay ? (
+                <button className="btn" onClick={saveOverlay} disabled={overlayBusy}>Save overlay</button>
+              ) : (
+                <button className="btn btn--ghost" onClick={() => { if (!overlayCorners && game?.boundary) setOverlayCorners(boundaryQuad(game.boundary)); setEditingOverlay(true); }}>
+                  Edit corners
+                </button>
+              )}
+              <button className="btn btn--ghost" onClick={removeOverlay} disabled={overlayBusy} style={{ color: 'var(--danger)' }}>
+                Remove overlay
+              </button>
+            </>
+          )}
         </div>
 
         <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -866,11 +1045,13 @@ function LobbyView({
 // --- Play ---
 
 function PlayView({
-  remaining, aliveCount, activeCount, arrivalsCount, notReporting, sosPlayers,
+  phase, remaining, aliveCount, activeCount, arrivalsCount, notReporting, sosPlayers,
   checkpoints, runbookEntries, playerLocations, deathMarkers, boundary, arrivals, entryTrips, members, busy,
-  rationsEnabled, pendingRations, onOpenRations,
+  rationsEnabled, pendingRations, onOpenRations, mapOverlay,
+  placingRally, rallyPoint, rallyDraftSet, onPlaceRally, onStartPlaceRally, onCancelRally, onConfirmEndgame,
   onBroadcast, onAckSos, onClearSos, onOpenPlayers, onEnd,
 }: {
+  phase: string;
   remaining: number | null;
   aliveCount: number;
   activeCount: number;
@@ -888,6 +1069,14 @@ function PlayView({
   busy: boolean;
   rationsEnabled: boolean;
   pendingRations: number;
+  mapOverlay?: Game['mapOverlay'] | null;
+  placingRally: boolean;
+  rallyPoint: { latitude: number; longitude: number } | null;
+  rallyDraftSet: boolean;
+  onPlaceRally: (coord: { latitude: number; longitude: number }) => void;
+  onStartPlaceRally: () => void;
+  onCancelRally: () => void;
+  onConfirmEndgame: () => void;
   onOpenRations: () => void;
   onBroadcast: () => void;
   onAckSos: (userId: string) => void;
@@ -899,8 +1088,29 @@ function PlayView({
   const [showAllNotifs, setShowAllNotifs] = useState(false);
   return (
     <div style={{ height: '100%', display: 'flex' }}>
-      <div style={{ flex: 1 }}>
-        <GameMap checkpoints={checkpoints} runbookEntries={runbookEntries} playerLocations={playerLocations} deathMarkers={deathMarkers} boundary={boundary} />
+      <div style={{ flex: 1, position: 'relative' }}>
+        <GameMap
+          checkpoints={checkpoints}
+          runbookEntries={runbookEntries}
+          playerLocations={playerLocations}
+          deathMarkers={deathMarkers}
+          boundary={boundary}
+          mapOverlay={mapOverlay}
+          placingRally={placingRally}
+          rallyPoint={rallyPoint}
+          onMapClick={placingRally ? onPlaceRally : undefined}
+        />
+        {(phase === 'endgame' || placingRally) && (
+          <div style={{
+            position: 'absolute', top: 12, left: 12, right: 12, textAlign: 'center',
+            background: 'rgba(212,137,63,0.92)', color: '#000', padding: '8px 12px',
+            borderRadius: 8, fontSize: 13, fontWeight: 700,
+          }}>
+            {placingRally
+              ? (rallyDraftSet ? '🔥 Rally placed — confirm in the sidebar, or click again to move it.' : '🔥 Click the map to place the final rally point.')
+              : '🔥 Final showdown — rations off, players rallying to the marked point.'}
+          </div>
+        )}
       </div>
       <aside style={{
         width: 340, borderLeft: '1px solid var(--border)', padding: 20,
@@ -970,6 +1180,15 @@ function PlayView({
         <div style={{ flex: 1, minHeight: 0 }}>
           <NotificationFeed arrivals={arrivals} entryTrips={entryTrips} members={members} max={4} />
         </div>
+        {/* #41: end-game controls */}
+        {placingRally ? (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn--ghost" style={{ flex: 1 }} onClick={onCancelRally} disabled={busy}>Cancel</button>
+            <button className="btn" style={{ flex: 1 }} onClick={onConfirmEndgame} disabled={busy || !rallyDraftSet}>Begin end-game</button>
+          </div>
+        ) : phase === 'play' ? (
+          <button className="btn btn--secondary" onClick={onStartPlaceRally} disabled={busy}>🔥 Start End-Game</button>
+        ) : null}
         <button className="btn btn--danger" onClick={onEnd} disabled={busy}>End Game</button>
       </aside>
 
@@ -996,12 +1215,15 @@ function Stat({ label, value, danger }: { label: string; value: string; danger?:
 // --- Results ---
 
 function ResultsView({
-  totalDuration, players, startedAtMs, endedAtMs, busy, onArchive, onDone,
+  totalDuration, players, startedAtMs, endedAtMs, media, gameId, gmUid, busy, onArchive, onDone,
 }: {
   totalDuration: number | null;
   players: GameMember[];
   startedAtMs: number | null;
   endedAtMs: number | null;
+  media: Game['media'] | null | undefined;
+  gameId: string;
+  gmUid: string;
   busy: boolean;
   onArchive: () => void;
   onDone: () => void;
@@ -1019,6 +1241,9 @@ function ResultsView({
         <div style={{ fontSize: 44, fontWeight: 800 }}>{totalDuration != null ? formatDuration(totalDuration) : '—'}</div>
         <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>total game time</div>
       </div>
+
+      <MediaSection media={media} gameId={gameId} gmUid={gmUid} />
+
       <h3>Players</h3>
       {players.length === 0 && <p style={{ color: 'var(--text-secondary)' }}>No players took part.</p>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -1038,6 +1263,66 @@ function ResultsView({
           Archive game
         </button>
       </div>
+    </div>
+  );
+}
+
+/** #45: post-game media authoring + display on the GM results screen. */
+function MediaSection({ media, gameId, gmUid }: { media: Game['media'] | null | undefined; gameId: string; gmUid: string }) {
+  const [editing, setEditing] = useState(false);
+  const [yt, setYt] = useState(media?.youtubeUrl ?? '');
+  const [ph, setPh] = useState(media?.photosAlbumUrl ?? '');
+  const [busy, setBusy] = useState(false);
+  const hasVideo = !!media?.youtubeUrl;
+  const hasAlbum = !!media?.photosAlbumUrl;
+
+  async function save() {
+    const youtubeUrl = normalizeYoutubeUrl(yt);
+    if (youtubeUrl === null) { window.alert('Enter a valid youtube.com / youtu.be link, or leave it blank.'); return; }
+    const photosAlbumUrl = normalizePhotosUrl(ph);
+    if (photosAlbumUrl === null) { window.alert('Enter a valid photos.google.com / photos.app.goo.gl link, or leave it blank.'); return; }
+    setBusy(true);
+    try {
+      if (!youtubeUrl && !photosAlbumUrl) await setGameMedia(gameId, null, gmUid);
+      else await setGameMedia(gameId, { ...(youtubeUrl ? { youtubeUrl } : {}), ...(photosAlbumUrl ? { photosAlbumUrl } : {}) }, gmUid);
+      setEditing(false);
+    } catch (err) { window.alert(friendlyError(err)); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10, margin: '8px 0' }}>
+      <strong>🎬 Recap &amp; photos</strong>
+      {!editing && (
+        <>
+          {hasVideo && <a className="btn" href={media!.youtubeUrl} target="_blank" rel="noopener noreferrer">▶ Watch the recap</a>}
+          {hasAlbum && <a className="btn btn--secondary" href={media!.photosAlbumUrl} target="_blank" rel="noopener noreferrer">🖼 View the photo album</a>}
+          {!hasVideo && !hasAlbum && (
+            <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+              Add a YouTube recap and/or a Google Photos album to share with everyone (they'll be notified).
+            </span>
+          )}
+          <button className="btn btn--ghost" onClick={() => { setYt(media?.youtubeUrl ?? ''); setPh(media?.photosAlbumUrl ?? ''); setEditing(true); }}>
+            {hasVideo || hasAlbum ? 'Edit links' : 'Add links'}
+          </button>
+        </>
+      )}
+      {editing && (
+        <>
+          <div className="field">
+            <label>YouTube recap URL</label>
+            <input className="input" value={yt} onChange={(e) => setYt(e.target.value)} placeholder="https://youtu.be/…" />
+          </div>
+          <div className="field">
+            <label>Google Photos album URL</label>
+            <input className="input" value={ph} onChange={(e) => setPh(e.target.value)} placeholder="https://photos.app.goo.gl/…" />
+          </div>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <button className="btn btn--ghost" style={{ flex: 1 }} onClick={() => setEditing(false)} disabled={busy}>Cancel</button>
+            <button className="btn" style={{ flex: 1 }} onClick={save} disabled={busy}>Save</button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

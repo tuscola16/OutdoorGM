@@ -76,11 +76,19 @@ export async function createGame(
   name: string,
   displayName: string,
   fcmToken?: string,
-  isTest = false
+  isTest = false,
+  practice = false
 ): Promise<{ id: string }> {
   const callable = functions().httpsCallable('createGame');
-  const res = await callable({ name, displayName, fcmToken: fcmToken ?? null, isTest });
+  const res = await callable({ name, displayName, fcmToken: fcmToken ?? null, isTest, practice });
   return { id: (res.data as { gameId: string }).gameId };
+}
+
+/** Reset a practice game (#43) so it can be re-run: clears runtime data, re-arms the run-sheet,
+ * revives players, and drops the game back to the lobby. GM-only; server-side (resetPracticeGame). */
+export async function resetPracticeGame(gameId: string): Promise<void> {
+  const callable = functions().httpsCallable('resetPracticeGame');
+  await callable({ gameId });
 }
 
 /**
@@ -161,6 +169,37 @@ export async function startGame(gameId: string): Promise<void> {
   });
 }
 
+/** Deterministic marker id for the #41 end-game convergence point. */
+export const ENDGAME_RALLY_ID = 'endgame-rally';
+
+/**
+ * Start the end-game "final showdown" (#41): phase `play → endgame`. Auto-disables the
+ * ration loop (gated on the resolved phase, so no config flip), drops a GM-placed
+ * convergence marker visible to all players (rides the #48 `markers` reveal plumbing), and
+ * broadcasts the rally call. Live systems (tracking, boundary, SOS, geofence) keep running.
+ * #22: a no-op if already in endgame, and refused unless currently in play.
+ */
+export async function startEndgame(
+  gameId: string,
+  rally: { latitude: number; longitude: number }
+): Promise<void> {
+  const phase = await readPhase(gameId);
+  if (phase === 'endgame') return; // already in the showdown — no-op
+  if (phase !== 'play') throw new Error('The end-game can only begin from play.');
+  const gameRef = firestore().collection(Collections.GAMES).doc(gameId);
+  await gameRef.update({ phase: 'endgame' });
+  // Convergence marker — label + location only, visible to all players (audience null).
+  await gameRef.collection(Collections.MARKERS).doc(ENDGAME_RALLY_ID).set({
+    checkpointId: ENDGAME_RALLY_ID,
+    name: 'Final Rally',
+    latitude: rally.latitude,
+    longitude: rally.longitude,
+    audiencePlayerIds: null,
+    revealedAt: firestore.FieldValue.serverTimestamp(),
+  });
+  await sendBroadcast(gameId, '⚔️ Final showdown — converge on the rally point!');
+}
+
 /** Parse a 'YYYY-MM-DD' event-date string into a Firestore Timestamp at that day's local
  * midnight, or null when blank/invalid — for the GM event-date field (#36). */
 export function parseEventDate(ymd: string): FsTimestamp | null {
@@ -177,6 +216,28 @@ export function formatEventDate(ts: FsTimestamp | null | undefined): string {
   const d = ts.toDate();
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
+ * Set (or clear) the post-game media links (#45) on the game doc. Pass `null` to clear. The
+ * `onGameMediaWrite` Cloud Function then pushes every member except `updatedBy`. GM-only via
+ * firestore.rules (the `media` whitelist key). Host-validate the URLs before calling.
+ */
+export async function setGameMedia(
+  gameId: string,
+  media: { youtubeUrl?: string; photosAlbumUrl?: string } | null,
+  updatedBy: string
+): Promise<void> {
+  await firestore().collection(Collections.GAMES).doc(gameId).update({
+    media: media
+      ? {
+          ...(media.youtubeUrl ? { youtubeUrl: media.youtubeUrl } : {}),
+          ...(media.photosAlbumUrl ? { photosAlbumUrl: media.photosAlbumUrl } : {}),
+          updatedBy,
+          updatedAt: firestore.FieldValue.serverTimestamp(),
+        }
+      : firestore.FieldValue.delete(),
+  });
 }
 
 /** Update the play-area boundary, rules text, event date, and/or per-GM config during setup. */
@@ -532,7 +593,8 @@ export async function setGameArchived(
 export async function endGame(gameId: string): Promise<void> {
   const phase = await readPhase(gameId);
   if (phase === 'results') return; // already ended — no-op
-  if (phase !== 'play') throw new Error('Only a game in play can be ended.');
+  // #41: closeable from play OR the end-game showdown.
+  if (phase !== 'play' && phase !== 'endgame') throw new Error('Only a game in play can be ended.');
   await firestore().collection(Collections.GAMES).doc(gameId).update({
     status: 'ended',
     phase: 'results',

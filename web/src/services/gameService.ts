@@ -20,7 +20,8 @@ import {
   type DocumentData,
 } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
-import { db, functions, Collections } from './firebase';
+import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { db, functions, storage, Collections } from './firebase';
 import {
   BASE_GAME_CONFIG,
   GM_BROADCAST_TARGET,
@@ -99,10 +100,21 @@ export function gameConfig(game: { config?: Partial<GameConfig> } | null | undef
  * Create a game via the createGame Cloud Function. Join codes are generated
  * server-side (CSPRNG) and the creator's GM membership is created atomically.
  */
-export async function createGame(name: string, displayName: string): Promise<{ id: string }> {
+export async function createGame(
+  name: string,
+  displayName: string,
+  practice = false
+): Promise<{ id: string }> {
   const callable = httpsCallable(functions, 'createGame');
-  const res = await callable({ name, displayName, fcmToken: null });
+  const res = await callable({ name, displayName, fcmToken: null, practice });
   return { id: (res.data as { gameId: string }).gameId };
+}
+
+/** Reset a practice game (#43) so it can be re-run: clears runtime data, re-arms the run-sheet,
+ * revives players, and drops the game back to the lobby. GM-only; server-side. */
+export async function resetPracticeGame(gameId: string): Promise<void> {
+  const callable = httpsCallable(functions, 'resetPracticeGame');
+  await callable({ gameId });
 }
 
 /**
@@ -184,12 +196,42 @@ export async function startGame(gameId: string): Promise<void> {
 export async function endGame(gameId: string): Promise<void> {
   const phase = await readPhase(gameId);
   if (phase === 'results') return;
-  if (phase !== 'play') throw new Error('Only a game in play can be ended.');
+  // #41: closeable from play OR the end-game showdown.
+  if (phase !== 'play' && phase !== 'endgame') throw new Error('Only a game in play can be ended.');
   await updateDoc(doc(db, Collections.GAMES, gameId), {
     status: 'ended',
     phase: 'results',
     endedAt: serverTimestamp(),
   });
+}
+
+/** Deterministic marker id for the #41 end-game convergence point. */
+export const ENDGAME_RALLY_ID = 'endgame-rally';
+
+/**
+ * Start the end-game "final showdown" (#41): phase `play → endgame`. Auto-disables the
+ * ration loop (gated on the resolved phase), drops a GM-placed convergence marker visible to
+ * all players (rides the #48 `markers` reveal plumbing), and broadcasts the rally call. Live
+ * systems (tracking, boundary, SOS, geofence) keep running. #22: a no-op if already in
+ * endgame, refused unless currently in play. Mirrors the mobile gameService.startEndgame.
+ */
+export async function startEndgame(
+  gameId: string,
+  rally: { latitude: number; longitude: number }
+): Promise<void> {
+  const phase = await readPhase(gameId);
+  if (phase === 'endgame') return;
+  if (phase !== 'play') throw new Error('The end-game can only begin from play.');
+  await updateDoc(doc(db, Collections.GAMES, gameId), { phase: 'endgame' });
+  await setDoc(doc(db, Collections.GAMES, gameId, Collections.MARKERS, ENDGAME_RALLY_ID), {
+    checkpointId: ENDGAME_RALLY_ID,
+    name: 'Final Rally',
+    latitude: rally.latitude,
+    longitude: rally.longitude,
+    audiencePlayerIds: null,
+    revealedAt: serverTimestamp(),
+  });
+  await sendBroadcast(gameId, '⚔️ Final showdown — converge on the rally point!');
 }
 
 /** Parse a 'YYYY-MM-DD' event-date string into a Firestore Timestamp at that day's local
@@ -222,6 +264,56 @@ export async function updateGameConfig(
   }
 ): Promise<void> {
   await updateDoc(doc(db, Collections.GAMES, gameId), updates);
+}
+
+/**
+ * Set (or clear) post-game media links (#45) on the game doc. Pass `null` to clear. The
+ * `onGameMediaWrite` Cloud Function pushes every member except `updatedBy`. GM-only via
+ * firestore.rules. Host-validate the URLs before calling. Mirrors mobile setGameMedia.
+ */
+export async function setGameMedia(
+  gameId: string,
+  media: { youtubeUrl?: string; photosAlbumUrl?: string } | null,
+  updatedBy: string
+): Promise<void> {
+  await updateDoc(doc(db, Collections.GAMES, gameId), {
+    media: media
+      ? {
+          ...(media.youtubeUrl ? { youtubeUrl: media.youtubeUrl } : {}),
+          ...(media.photosAlbumUrl ? { photosAlbumUrl: media.photosAlbumUrl } : {}),
+          updatedBy,
+          updatedAt: serverTimestamp(),
+        }
+      : deleteField(),
+  });
+}
+
+// --- Arena map overlay (#42) ---
+
+/** Upload a GM's arena image to Storage (`games/{gameId}/overlay/arena.<ext>`) and return
+ * its download URL. One image per game (deterministic path → re-upload overwrites). */
+export async function uploadArenaOverlay(gameId: string, file: File): Promise<string> {
+  const ext = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+  const ref = storageRef(storage, `${Collections.GAMES}/${gameId}/overlay/arena.${ext}`);
+  await uploadBytes(ref, file, { contentType: file.type || 'image/jpeg' });
+  return getDownloadURL(ref);
+}
+
+/**
+ * Persist (or clear) the custom arena overlay (#42) on the game doc. Pass `null` to remove
+ * it. GM-only via firestore.rules (the game-doc `mapOverlay` whitelist key). `corners` are
+ * ordered TL, TR, BR, BL.
+ */
+export async function setMapOverlay(
+  gameId: string,
+  overlay: { url: string; corners: { latitude: number; longitude: number }[]; opacity?: number } | null,
+  updatedBy: string
+): Promise<void> {
+  await updateDoc(doc(db, Collections.GAMES, gameId), {
+    mapOverlay: overlay
+      ? { ...overlay, updatedBy, updatedAt: serverTimestamp() }
+      : deleteField(),
+  });
 }
 
 /** Eliminate a player (sets out/outAt + cause). The death broadcast + winner

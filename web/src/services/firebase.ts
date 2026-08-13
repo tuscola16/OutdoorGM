@@ -2,6 +2,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, connectAuthEmulator } from 'firebase/auth';
 import { initializeFirestore, connectFirestoreEmulator } from 'firebase/firestore';
 import { getFunctions, connectFunctionsEmulator } from 'firebase/functions';
+import { getStorage, connectStorageEmulator } from 'firebase/storage';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -23,12 +24,16 @@ export const db = initializeFirestore(app, { ignoreUndefinedProperties: true });
 
 export const functions = getFunctions(app);
 
+// #42: arena-overlay image uploads (the only Storage use on web — GMs only).
+export const storage = getStorage(app);
+
 if (import.meta.env.VITE_USE_EMULATOR === 'true') {
   // Web runs in the browser on the dev machine, so 'localhost' reaches the
   // emulators directly (no Android 10.0.2.2 indirection needed).
   connectAuthEmulator(auth, 'http://localhost:9099', { disableWarnings: true });
   connectFirestoreEmulator(db, 'localhost', 8080);
   connectFunctionsEmulator(functions, 'localhost', 5001);
+  connectStorageEmulator(storage, 'localhost', 9199);
 }
 
 export const Collections = {

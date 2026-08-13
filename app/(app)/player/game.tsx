@@ -14,17 +14,19 @@ import { BroadcastFeed } from '@/components/BroadcastFeed';
 import { AlertOverlay } from '@/components/AlertOverlay';
 import { LobbyPermissions } from '@/components/LobbyPermissions';
 import { RationPanel } from '@/components/RationPanel';
+import { PostGameMedia } from '@/components/PostGameMedia';
 import { Tutorial } from '@/components/Tutorial';
 import { BroadcastsProvider } from '@/context/BroadcastsContext';
 import * as Location from 'expo-location';
 import { startLocationTracking, stopLocationTracking, getTrackingDiagnostics } from '@/services/locationTask';
+import { requestBatteryOptimizationExemption } from '@/services/batteryOptimization';
 import { eliminatePlayer, raiseSos, setDeathLocation, gamePhase, gameConfig } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
 import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
 import { useRationReminders } from '@/hooks/useRationReminders';
 import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
 import { Collections } from '@/services/firebase';
-import type { GameConfig, GamePhase, MapBoundary, RevealedMarker } from '@/types';
+import type { Game, GameConfig, GamePhase, MapBoundary, RevealedMarker } from '@/types';
 
 type Ts = FirebaseFirestoreTypes.Timestamp | null;
 
@@ -37,6 +39,9 @@ export default function PlayerGameScreen() {
   const [phase, setPhase] = useState<GamePhase>('setup');
   const [rules, setRules] = useState<string>('');
   const [boundary, setBoundary] = useState<MapBoundary | null>(null);
+  const [mapOverlay, setMapOverlay] = useState<Game['mapOverlay'] | null>(null);
+  const [media, setMedia] = useState<Game['media'] | null>(null);
+  const [practice, setPractice] = useState(false);
   // Revealed checkpoint markers (#48) this player is allowed to see — the only
   // checkpoint data a player ever gets (the `checkpoints` collection stays GM-only).
   const [markers, setMarkers] = useState<RevealedMarker[]>([]);
@@ -111,6 +116,9 @@ export default function PlayerGameScreen() {
           setPhase(gamePhase(d as any));
           setRules(d.rules ?? '');
           setBoundary(d.boundary ?? null);
+          setMapOverlay(d.mapOverlay ?? null);
+          setMedia(d.media ?? null);
+          setPractice(!!d.practice);
           setStartedAt(d.startedAt ?? null);
           setEndedAt(d.endedAt ?? null);
           setDurationMinutes(gameConfig(d as any).durationMinutes);
@@ -211,7 +219,8 @@ export default function PlayerGameScreen() {
   // Whether we should be sharing location: in the lobby *and* during play (#16), unless
   // out. A single stable boolean so the lifecycle effect below doesn't churn on unrelated
   // re-renders. Lobby fixes don't trigger checkpoints — the geofence fires only in `play`.
-  const shouldTrack = !!gameId && (phase === 'lobby' || phase === 'play') && !out;
+  // #41: tracking continues through the end-game showdown — players are still on the map.
+  const shouldTrack = !!gameId && (phase === 'lobby' || phase === 'play' || phase === 'endgame') && !out;
 
   // Latest tracking params, held in refs so the start/stop lifecycle effect can read them
   // without listing displayName/batterySaver as deps (#35) — a late-arriving displayName or
@@ -410,6 +419,10 @@ export default function PlayerGameScreen() {
     // Tracking is "active" but only via the foreground watcher → the player drops
     // off the GM's map when their screen locks. Worth a loud, fixable warning.
     const fgOnly = tracking && diag.path === 'foreground-watch';
+    // Background service is running, but Android battery optimization (Doze) will still
+    // freeze its location once the screen locks — the player silently goes stale. Only
+    // worth flagging on the background path (it's moot if we're foreground-only anyway).
+    const batteryThrottled = tracking && diag.path === 'background-service' && diag.batteryOptimized === true;
     return (
       <>
         {/* Tab bar: a full-screen Map view vs. a Stats view (#20). */}
@@ -424,6 +437,17 @@ export default function PlayerGameScreen() {
           </TouchableOpacity>
         </View>
 
+        {/* #41: final-showdown banner — converge on the GM's rally marker (shown on the map). */}
+        {phase === 'endgame' && (
+          <View style={styles.showdownBanner}>
+            <Ionicons name="flame" size={20} color={Colors.primary} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.showdownTitle}>Final showdown</Text>
+              <Text style={styles.showdownSub}>Converge on the rally point marked on your map.</Text>
+            </View>
+          </View>
+        )}
+
         {/* Foreground-only warning + tracking error stay pinned above both tabs —
             they're safety-relevant and shouldn't hide behind the Stats tab. */}
         {!out && fgOnly && (
@@ -437,6 +461,21 @@ export default function PlayerGameScreen() {
               </Text>
             </View>
             <TouchableOpacity onPress={() => Linking.openSettings()} style={styles.warnBtn}>
+              <Text style={styles.warnBtnText}>Fix</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+        {!out && !fgOnly && batteryThrottled && (
+          <View style={styles.warnBanner}>
+            <Ionicons name="battery-charging" size={20} color={Colors.warning} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.warnTitle}>You may drop off the map when your screen locks</Text>
+              <Text style={styles.warnSub}>
+                Battery optimization can stop sharing your location in the background. Allow Outdoor
+                GM to run unrestricted so your Game Master always sees you.
+              </Text>
+            </View>
+            <TouchableOpacity onPress={() => requestBatteryOptimizationExemption()} style={styles.warnBtn}>
               <Text style={styles.warnBtnText}>Fix</Text>
             </TouchableOpacity>
           </View>
@@ -458,7 +497,7 @@ export default function PlayerGameScreen() {
               {boundary ? (
                 // Players see the play area, their own blue dot, and any checkpoint
                 // markers revealed to them (#48) — never other players or hidden sites.
-                <GameMap checkpoints={[]} playerLocations={[]} markers={markers} boundary={boundary} showsUserLocation />
+                <GameMap checkpoints={[]} playerLocations={[]} markers={markers} boundary={boundary} mapOverlay={mapOverlay} showsUserLocation />
               ) : (
                 <View style={[styles.map, styles.mapPlaceholder]}>
                   <Ionicons name="map-outline" size={40} color={Colors.textMuted} />
@@ -491,7 +530,8 @@ export default function PlayerGameScreen() {
                 </Text>
               </View>
 
-              {config.rationsEnabled && !out && user && (
+              {/* #41: the ration loop turns off in the end-game showdown. */}
+              {phase === 'play' && config.rationsEnabled && !out && user && (
                 <RationPanel
                   gameId={gameId!}
                   player={{ userId: user.uid, displayName: displayName || 'Player' }}
@@ -523,6 +563,9 @@ export default function PlayerGameScreen() {
                       <Text style={styles.diagRow}>Foreground permission: <Text style={styles.diagVal}>{diag.foreground}</Text></Text>
                       <Text style={styles.diagRow}>Background permission: <Text style={styles.diagVal}>{diag.background}</Text></Text>
                       <Text style={styles.diagRow}>Source: <Text style={styles.diagVal}>{diag.path}</Text></Text>
+                      <Text style={styles.diagRow}>Battery optimization: <Text style={styles.diagVal}>
+                        {diag.batteryOptimized == null ? 'unknown' : diag.batteryOptimized ? 'on (will throttle when locked)' : 'off'}
+                      </Text></Text>
                       <Text style={styles.diagRow}>
                         Last upload: <Text style={styles.diagVal}>
                           {diag.lastUploadAt ? `${Math.round((Date.now() - diag.lastUploadAt) / 1000)}s ago` : 'never'}
@@ -576,6 +619,11 @@ export default function PlayerGameScreen() {
         <Text style={styles.resultLabel}>{out ? 'YOU TAPPED OUT' : 'GAME OVER'}</Text>
         <Text style={styles.resultTime}>{elapsed != null ? formatDuration(elapsed) : '—'}</Text>
         <Text style={styles.waitSub}>That's how long you played, {displayName || 'Player'}. Nice work!</Text>
+        {(media?.youtubeUrl || media?.photosAlbumUrl) && (
+          <View style={{ alignSelf: 'stretch', marginTop: 16 }}>
+            <PostGameMedia media={media} />
+          </View>
+        )}
         <View style={{ height: 24 }} />
         <Button title="Back to My Games" onPress={() => router.replace('/(app)/games')} />
       </View>
@@ -589,7 +637,10 @@ export default function PlayerGameScreen() {
       <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
         <View style={styles.header}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.gameName} numberOfLines={1}>{gameName || 'Game'}</Text>
+            <View style={styles.titleRow}>
+              <Text style={styles.gameName} numberOfLines={1}>{gameName || 'Game'}</Text>
+              {practice && <Text style={styles.practiceTag}>PRACTICE</Text>}
+            </View>
             <Text style={styles.role}>Player · {displayName || 'Player'}</Text>
           </View>
           {phase !== 'results' && (
@@ -601,7 +652,7 @@ export default function PlayerGameScreen() {
         </View>
 
         {isWaiting && renderWaiting()}
-        {phase === 'play' && renderPlay()}
+        {(phase === 'play' || phase === 'endgame') && renderPlay()}
         {phase === 'results' && renderResults()}
 
         {gameId && phase !== 'results' && <AlertOverlay gameId={gameId} />}
@@ -621,7 +672,12 @@ const styles = StyleSheet.create({
     paddingTop: 16,
     paddingBottom: 12,
   },
-  gameName: { fontSize: 20, fontWeight: '800', color: Colors.text },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  gameName: { fontSize: 20, fontWeight: '800', color: Colors.text, flexShrink: 1 },
+  practiceTag: {
+    fontSize: 9, fontWeight: '800', color: Colors.secondary, letterSpacing: 1,
+    borderWidth: 1, borderColor: Colors.secondary, borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1,
+  },
   role: { fontSize: 13, color: Colors.primary, marginTop: 2 },
   leaveBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   leaveText: { color: Colors.danger, fontSize: 14, fontWeight: '600' },
@@ -696,6 +752,14 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.warning + '22', borderRadius: 12, padding: 14,
     borderWidth: 1, borderColor: Colors.warning,
   },
+  showdownBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    marginHorizontal: 16, marginBottom: 12,
+    backgroundColor: Colors.primary + '22', borderRadius: 12, padding: 14,
+    borderWidth: 1, borderColor: Colors.primary,
+  },
+  showdownTitle: { fontSize: 14, fontWeight: '800', color: Colors.text },
+  showdownSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 3, lineHeight: 17 },
   warnTitle: { fontSize: 14, fontWeight: '800', color: Colors.text },
   warnSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 3, lineHeight: 17 },
   warnBtn: {

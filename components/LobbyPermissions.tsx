@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, AppState, Linking } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, AppState, Linking, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Notifications from 'expo-notifications';
 import * as ImagePicker from 'expo-image-picker';
@@ -11,8 +11,9 @@ import {
   type PermState,
   type PlayerPermissions,
 } from '@/services/permissions';
+import { requestBatteryOptimizationExemption } from '@/services/batteryOptimization';
 
-type RowKind = 'location' | 'notifications' | 'camera';
+type RowKind = 'location' | 'battery' | 'notifications' | 'camera';
 
 interface Row {
   kind: RowKind;
@@ -77,6 +78,17 @@ export function LobbyPermissions({ rationsEnabled }: { rationsEnabled: boolean }
       show: true,
     },
     {
+      // Android-only: without the battery-optimization exemption, Doze stops feeding
+      // location to the background service when the screen locks — the player vanishes
+      // from the GM's map a couple of minutes after they pocket their phone.
+      kind: 'battery',
+      icon: 'battery-charging-outline',
+      label: 'Background activity — Unrestricted',
+      state: perms.backgroundUnrestricted,
+      note: 'So your location keeps updating after your screen locks. Without it you drop off the map.',
+      show: Platform.OS === 'android',
+    },
+    {
       kind: 'notifications',
       icon: 'notifications-outline',
       label: 'Notifications',
@@ -107,6 +119,9 @@ export function LobbyPermissions({ rationsEnabled }: { rationsEnabled: boolean }
         // a direct request didn't upgrade it to the background grant.
         const after = await getPlayerPermissions(rationsEnabled);
         if (after.locationAlways !== 'granted') Linking.openSettings();
+      } else if (kind === 'battery') {
+        // Fires the system "run unrestricted in the background?" dialog (Android only).
+        await requestBatteryOptimizationExemption();
       } else if (kind === 'notifications') {
         const r = await Notifications.requestPermissionsAsync();
         if (!r.granted && r.canAskAgain === false) Linking.openSettings();
