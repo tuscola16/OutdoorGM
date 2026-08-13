@@ -76,9 +76,14 @@ service cloud.firestore {
       // *resolved current* phase, so the lobby→play start (which stamps startedAt) and
       // the #21 results→play revive (which the resolver still sees as `results`) are
       // unaffected.
+      // NOTE: `practice` is deliberately NOT in this whitelist. It is set once by the
+      // createGame Cloud Function and must stay server-owned: a client that could flip it
+      // on for a real game would unlock resetPracticeGame (wipes arrivals/rations/locations
+      // and revives everyone) and turn End Game into a recursive delete of the whole game —
+      // routing straight around the #20/#22/#28 integrity invariants.
       allow update: if isGameGM(gameId)
         && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['name', 'phase', 'status', 'rules', 'boundary', 'config', 'startedAt', 'endedAt', 'gameDate', 'isTest', 'testStepIndex', 'mapOverlay', 'media', 'practice'])
+             .hasOnly(['name', 'phase', 'status', 'rules', 'boundary', 'config', 'startedAt', 'endedAt', 'gameDate', 'isTest', 'testStepIndex', 'mapOverlay', 'media'])
         && (
           // #41: the interval trio is frozen once the resolved phase is `play` OR `endgame`
           // (interval edits there are moot, but the freeze should stay closed).

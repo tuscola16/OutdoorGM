@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useGame } from '@/context/GameContext';
 import { useAuth } from '@/context/AuthContext';
@@ -404,6 +404,31 @@ function SetupView({
   const [overlayOpacity, setOverlayOpacity] = useState<number>(game?.mapOverlay?.opacity ?? 0.7);
   const [editingOverlay, setEditingOverlay] = useState(false);
   const [overlayBusy, setOverlayBusy] = useState(false);
+
+  // `gamePhase(null)` resolves to 'setup', so this component mounts before the game doc
+  // has loaded and the initial state above captures `null`. Seed from the overlay the
+  // first time it actually arrives — without this, a GM returning to a game that already
+  // has an overlay sees it drawn on the map but "no overlay set" in the sidebar, with no
+  // way to edit or remove it. Only seeds once, so it never clobbers in-progress edits.
+  const overlaySeededRef = useRef(false);
+  useEffect(() => {
+    const ov = game?.mapOverlay;
+    if (overlaySeededRef.current || !ov?.url) return;
+    overlaySeededRef.current = true;
+    setOverlayUrl(ov.url);
+    setOverlayCorners(ov.corners ?? null);
+    setOverlayOpacity(ov.opacity ?? 0.7);
+  }, [game?.mapOverlay]);
+
+  // Stable identity for the live authoring preview — a fresh object literal here would
+  // re-run the map's overlay sync on every render.
+  const previewOverlay = useMemo(
+    () =>
+      editingOverlay && overlayUrl && overlayCorners
+        ? { url: overlayUrl, corners: overlayCorners, opacity: overlayOpacity }
+        : null,
+    [editingOverlay, overlayUrl, overlayCorners, overlayOpacity]
+  );
   const entriesByCp = new Map<string, RunbookEntry[]>();
   for (const e of runbookEntries) {
     const list = entriesByCp.get(e.checkpointId) ?? [];
@@ -443,9 +468,10 @@ function SetupView({
   // --- #42 arena overlay ---
   async function handleOverlayFile(file: File) {
     if (!game?.boundary) { window.alert('Draw the play boundary first — the overlay starts framed to it.'); return; }
+    if (!user) return;
     setOverlayBusy(true);
     try {
-      const url = await uploadArenaOverlay(gameId, file);
+      const url = await uploadArenaOverlay(gameId, user.uid, file);
       setOverlayUrl(url);
       // Seed corners from the boundary bbox (TL,TR,BR,BL) so the GM starts from a sane quad.
       if (!overlayCorners) setOverlayCorners(boundaryQuad(game.boundary));
@@ -489,11 +515,7 @@ function SetupView({
           editMode={!drawingPoly && !editingOverlay}
           drawingBoundary={drawing}
           drawingPolygon={drawingPoly}
-          mapOverlay={
-            editingOverlay && overlayUrl && overlayCorners
-              ? { url: overlayUrl, corners: overlayCorners, opacity: overlayOpacity, updatedAt: game!.createdAt, updatedBy: '' }
-              : game?.mapOverlay
-          }
+          mapOverlay={previewOverlay ?? game?.mapOverlay}
           overlayCorners={editingOverlay ? overlayCorners : null}
           onOverlayCornerDrag={updateOverlayCorner}
           onMapClick={handleMapClick}

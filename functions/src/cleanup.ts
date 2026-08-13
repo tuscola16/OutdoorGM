@@ -60,6 +60,10 @@ export const cleanupRationPhotosOnGameEnd = functions.firestore
     // going past any individual error; absent photos/subcollections are fine.
     await Promise.allSettled([
       admin.storage().bucket().deleteFiles({ prefix: `games/${gameId}/rations/`, force: true }),
+      // #42 arena overlay — a GM-uploaded image of up to 15 MB per game. Nothing renders it
+      // after the game ends, and no other path deletes it, so without this every finished
+      // game leaves its overlay in Storage permanently.
+      admin.storage().bucket().deleteFiles({ prefix: `games/${gameId}/overlay/`, force: true }),
       db.recursiveDelete(gameRef.collection('locations')),
       db.recursiveDelete(gameRef.collection('arrivals')),
       // Per-player crossing/entry latches (#50/#55/#67) — transient, tied to play.

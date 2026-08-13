@@ -232,7 +232,10 @@ export default function GMGameScreen() {
   function handleDropTestCheckpoint() {
     if (!gameId) return;
     runPhaseAction(async () => {
-      let pos = await Location.getLastKnownPositionAsync();
+      // `maxAge` matters: an unbounded last-known fix can be hours old and miles away
+      // (the GM's kitchen table), which would silently drop the "test checkpoint HERE"
+      // marker somewhere they can't walk to. Fall back to a live fix instead.
+      let pos = await Location.getLastKnownPositionAsync({ maxAge: 30000 });
       if (!pos) pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       if (!pos) { Alert.alert('No location', 'Could not get your current location. Try again outside.'); return; }
       const n = checkpoints.filter((c) => c.test).length + 1;

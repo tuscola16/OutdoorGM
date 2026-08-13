@@ -290,11 +290,16 @@ export async function setGameMedia(
 
 // --- Arena map overlay (#42) ---
 
-/** Upload a GM's arena image to Storage (`games/{gameId}/overlay/arena.<ext>`) and return
- * its download URL. One image per game (deterministic path → re-upload overwrites). */
-export async function uploadArenaOverlay(gameId: string, file: File): Promise<string> {
-  const ext = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
-  const ref = storageRef(storage, `${Collections.GAMES}/${gameId}/overlay/arena.${ext}`);
+/**
+ * Upload a GM's arena image to Storage and return its download URL.
+ *
+ * Path is `games/{gameId}/overlay/{uid}/arena` — namespaced by uploader so storage.rules can
+ * stop anyone from overwriting a published overlay, and extension-free so "Replace image"
+ * always overwrites the same object instead of orphaning the old one when the file type
+ * changes. The stored contentType is what browsers/Mapbox read, not the name.
+ */
+export async function uploadArenaOverlay(gameId: string, uid: string, file: File): Promise<string> {
+  const ref = storageRef(storage, `${Collections.GAMES}/${gameId}/overlay/${uid}/arena`);
   await uploadBytes(ref, file, { contentType: file.type || 'image/jpeg' });
   return getDownloadURL(ref);
 }

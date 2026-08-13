@@ -11,30 +11,27 @@ import { sendPushToTokens } from './notifications';
 
 type MediaDoc = { youtubeUrl?: string; photosAlbumUrl?: string; updatedBy?: string } | undefined;
 
-/** Did the media links meaningfully change (one was added or swapped)? */
-function mediaChanged(before: MediaDoc, after: MediaDoc): boolean {
-  if (!after) return false;
-  const b = before ?? {};
-  return (after.youtubeUrl ?? '') !== (b.youtubeUrl ?? '')
-    || (after.photosAlbumUrl ?? '') !== (b.photosAlbumUrl ?? '');
-}
-
 export const onGameMediaWrite = functions.firestore
   .document('games/{gameId}')
   .onUpdate(async (change, context) => {
     const { gameId } = context.params as { gameId: string };
-    const before = change.before.data()?.media as MediaDoc;
+    const before = (change.before.data()?.media as MediaDoc) ?? {};
     const after = change.after.data()?.media as MediaDoc;
-    if (!mediaChanged(before, after) || !after) return;
+    if (!after) return; // media cleared — nothing to announce
 
-    const hasVideo = !!after.youtubeUrl;
-    const hasAlbum = !!after.photosAlbumUrl;
-    if (!hasVideo && !hasAlbum) return; // media cleared — nothing to announce
+    // Announce only what was ADDED or swapped for a new link in this write. Keying off
+    // "a link is present" instead would re-announce the surviving link every time the GM
+    // removes the *other* one, so deleting a bad YouTube URL would push everyone a fresh
+    // "the photo album is up". An unchanged link is also not news (the GM may just be
+    // re-saving), so equality against `before` is the test, not mere presence.
+    const addedVideo = !!after.youtubeUrl && after.youtubeUrl !== before.youtubeUrl;
+    const addedAlbum = !!after.photosAlbumUrl && after.photosAlbumUrl !== before.photosAlbumUrl;
+    if (!addedVideo && !addedAlbum) return;
 
     const message =
-      hasVideo && hasAlbum
+      addedVideo && addedAlbum
         ? '🎬 The recap video and photo album are up — see the results screen!'
-        : hasVideo
+        : addedVideo
           ? '🎬 The game recap video is up — see the results screen!'
           : '📸 The game photo album is up — see the results screen!';
 

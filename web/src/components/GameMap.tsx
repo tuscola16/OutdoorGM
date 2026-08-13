@@ -32,8 +32,10 @@ interface GameMapProps {
   placingRally?: boolean;
   /** #41: the end-game convergence point, drawn as a distinct flame pin (draft or live). */
   rallyPoint?: { latitude: number; longitude: number } | null;
-  /** #42: custom arena image overlay — rendered as a true quad (Mapbox image source). */
-  mapOverlay?: Game['mapOverlay'] | null;
+  /** #42: custom arena image overlay — rendered as a true quad (Mapbox image source).
+   * Only the render-relevant fields, so a live authoring draft (no updatedAt/updatedBy yet)
+   * satisfies it just as well as a saved overlay. */
+  mapOverlay?: Pick<NonNullable<Game['mapOverlay']>, 'url' | 'corners' | 'opacity'> | null;
   /** #42 authoring: when set, draw draggable handles at these 4 corners (TL,TR,BR,BL). */
   overlayCorners?: { latitude: number; longitude: number }[] | null;
   /** #42 authoring: called as a corner handle is dragged. */
@@ -130,12 +132,17 @@ export function GameMap({
   // #42: arena overlay state — whether the image source/layer is added, and the draggable
   // corner handles while authoring.
   const overlayAddedRef = useRef(false);
+  /** URL currently loaded into the image source — lets a placement-only change skip a refetch. */
+  const overlayUrlRef = useRef<string | null>(null);
   const overlayHandleMarkers = useRef<mapboxgl.Marker[]>([]);
+  /** Index of the corner handle the pointer is holding, so a sync doesn't fight the drag. */
+  const draggingHandleRef = useRef<number | null>(null);
   const onOverlayCornerDragRef = useRef(onOverlayCornerDrag);
   onOverlayCornerDragRef.current = onOverlayCornerDrag;
   const didFit = useRef(false);
   const fitToDataRef = useRef<() => boolean>(() => false);
   const syncSourcesRef = useRef<() => void>(() => {});
+  const syncOverlaysRef = useRef<() => void>(() => {});
 
   // Keep latest callbacks/data in refs so the map's own event handlers (bound
   // once) always see current values without re-subscribing.
@@ -210,6 +217,7 @@ export function GameMap({
 
       readyRef.current = true;
       syncSourcesRef.current();
+      syncOverlaysRef.current();
       if (fitToDataRef.current()) didFit.current = true;
     });
 
@@ -360,11 +368,19 @@ export function GameMap({
       features: circleFeatures,
     });
 
-    syncOverlay();
-    syncOverlayHandles();
     syncCheckpointMarkers();
     syncPlayerMarkers();
     syncDeathMarkers();
+  }
+
+  /**
+   * Overlay + rally sync, deliberately kept OUT of `syncSources`. Corner dragging fires
+   * ~60×/s, and rebuilding every checkpoint/player marker on each frame is both a visible
+   * stutter and pointless work — these three are driven by their own effect instead.
+   */
+  function syncOverlays() {
+    syncOverlay();
+    syncOverlayHandles();
     syncRallyMarker();
   }
 
@@ -383,6 +399,7 @@ export function GameMap({
         if (map.getLayer('arena-overlay-raster')) map.removeLayer('arena-overlay-raster');
         if (map.getSource('arena-overlay')) map.removeSource('arena-overlay');
         overlayAddedRef.current = false;
+        overlayUrlRef.current = null;
       }
       return;
     }
@@ -401,33 +418,69 @@ export function GameMap({
         paint: { 'raster-opacity': opacity, 'raster-fade-duration': 0 },
       }, beforeId);
       overlayAddedRef.current = true;
+      overlayUrlRef.current = ov!.url;
     } else {
       const src = map.getSource('arena-overlay') as mapboxgl.ImageSource | undefined;
-      src?.updateImage({ url: ov!.url, coordinates });
+      if (src) {
+        if (overlayUrlRef.current !== ov!.url) {
+          // The image itself changed — this refetches it from the network.
+          src.updateImage({ url: ov!.url, coordinates });
+          overlayUrlRef.current = ov!.url;
+        } else {
+          // Same image, new placement. `setCoordinates` re-projects the existing texture;
+          // `updateImage` would re-download it on every corner-drag frame.
+          src.setCoordinates(coordinates);
+        }
+      }
       if (map.getLayer('arena-overlay-raster')) {
         map.setPaintProperty('arena-overlay-raster', 'raster-opacity', opacity);
       }
     }
   }
 
-  /** #42 authoring: draggable corner handles (TL,TR,BR,BL) while editing the overlay. */
+  /**
+   * #42 authoring: draggable corner handles (TL,TR,BR,BL) while editing the overlay.
+   *
+   * Handles are REUSED across syncs, never torn down and rebuilt. Mapbox routes a marker's
+   * drag through listeners it registers on the map and unregisters in `Marker.remove()`, so
+   * recreating handles mid-drag (this runs on every `drag` event, via the corner state it
+   * updates) would drop the gesture after its first frame — the handle would jump once and
+   * then stop following the pointer. The handle currently under the pointer is also skipped
+   * on reposition: Mapbox is already moving it, and re-setting its position mid-drag fights
+   * the gesture.
+   */
   function syncOverlayHandles() {
     const map = mapRef.current;
     if (!map) return;
-    overlayHandleMarkers.current.forEach((m) => m.remove());
-    overlayHandleMarkers.current = [];
-    if (!overlayCorners || overlayCorners.length !== 4) return;
-    const labels = ['TL', 'TR', 'BR', 'BL'];
-    overlayCorners.forEach((c, i) => {
-      const el = document.createElement('div');
-      el.style.cssText = `width:22px;height:22px;border-radius:50%;background:${COLORS.primary};border:2px solid #fff;cursor:grab;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:#000;box-shadow:0 1px 3px rgba(0,0,0,.6)`;
-      el.textContent = labels[i];
-      const marker = new mapboxgl.Marker({ element: el, draggable: true }).setLngLat([c.longitude, c.latitude]).addTo(map);
-      marker.on('drag', () => {
-        const ll = marker.getLngLat();
-        onOverlayCornerDragRef.current?.(i, { latitude: ll.lat, longitude: ll.lng });
+    const corners = overlayCorners;
+    if (!corners || corners.length !== 4) {
+      overlayHandleMarkers.current.forEach((m) => m.remove());
+      overlayHandleMarkers.current = [];
+      draggingHandleRef.current = null;
+      return;
+    }
+    if (overlayHandleMarkers.current.length !== 4) {
+      overlayHandleMarkers.current.forEach((m) => m.remove());
+      overlayHandleMarkers.current = ['TL', 'TR', 'BR', 'BL'].map((label, i) => {
+        const el = document.createElement('div');
+        el.style.cssText = `width:22px;height:22px;border-radius:50%;background:${COLORS.primary};border:2px solid #fff;cursor:grab;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:#000;box-shadow:0 1px 3px rgba(0,0,0,.6)`;
+        el.textContent = label;
+        const marker = new mapboxgl.Marker({ element: el, draggable: true })
+          .setLngLat([corners[i].longitude, corners[i].latitude])
+          .addTo(map);
+        marker.on('dragstart', () => { draggingHandleRef.current = i; });
+        marker.on('drag', () => {
+          const ll = marker.getLngLat();
+          onOverlayCornerDragRef.current?.(i, { latitude: ll.lat, longitude: ll.lng });
+        });
+        marker.on('dragend', () => { draggingHandleRef.current = null; });
+        return marker;
       });
-      overlayHandleMarkers.current.push(marker);
+      return;
+    }
+    corners.forEach((c, i) => {
+      if (draggingHandleRef.current === i) return;
+      overlayHandleMarkers.current[i].setLngLat([c.longitude, c.latitude]);
     });
   }
 
@@ -590,12 +643,20 @@ export function GameMap({
   // boundary was still empty).
   fitToDataRef.current = fitToData;
   syncSourcesRef.current = syncSources;
+  syncOverlaysRef.current = syncOverlays;
 
   // Re-sync sources/markers whenever data changes.
   useEffect(() => {
     syncSources();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checkpoints, playerLocations, boundary, deathMarkers, rallyPoint, mapOverlay, overlayCorners]);
+  }, [checkpoints, playerLocations, boundary, deathMarkers]);
+
+  // Overlay/rally get their own effect: corner dragging updates `overlayCorners` on every
+  // pointer frame, and that must not drag the whole marker layer along with it.
+  useEffect(() => {
+    syncOverlays();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapOverlay, overlayCorners, rallyPoint]);
 
   // Fit once when the first data arrives. Only mark the one-time fit as done if
   // it actually fit — if the data lands before the map's `load` event, fitToData

@@ -478,44 +478,62 @@ export const resetPracticeGame = functions.https.onCall(async (data, context) =>
     db.recursiveDelete(gameRef.collection('rationWindowPings')),
     db.recursiveDelete(gameRef.collection('starvationSweeps')),
     db.recursiveDelete(gameRef.collection('markers')),
+    // Broadcasts must go too, and not only to clear the feed: death tolls are written at
+    // the deterministic id `${userId}_death` inside a transaction that no-ops when the doc
+    // already exists (#26). Leaving them behind would silently suppress the death
+    // broadcast + push for every player who died in the previous run — exactly the path a
+    // rehearsal exists to exercise. (revivePlayer deletes the toll for the same reason.)
+    db.recursiveDelete(gameRef.collection('broadcasts')),
   ]);
 
-  // Re-arm run-sheet rows + revive players, in batched writes.
-  const [eventsSnap, membersSnap] = await Promise.all([
+  // Re-arm run-sheet rows, revive players, and drop the latched checkpoint reveals so a
+  // fresh run re-reveals from scratch. Chunked at Firestore's 500-op batch limit.
+  const [eventsSnap, membersSnap, cpSnap] = await Promise.all([
     gameRef.collection('scheduledEvents').get(),
     gameRef.collection('members').get(),
+    gameRef.collection('checkpoints').get(),
   ]);
-  const batch = db.batch();
-  for (const d of eventsSnap.docs) batch.update(d.ref, { firedAt: null });
+
+  const writes: { ref: FirebaseFirestore.DocumentReference; data: Record<string, unknown> }[] = [];
+  for (const d of eventsSnap.docs) writes.push({ ref: d.ref, data: { firedAt: null } });
   for (const d of membersSnap.docs) {
     if (d.data().role === 'gm') continue;
-    batch.update(d.ref, {
-      out: false,
-      outAt: null,
-      cause: admin.firestore.FieldValue.delete(),
-      sos: false,
-      sosAt: null,
-      sosAckAt: null,
-      outOfBounds: false,
-      deathLocation: admin.firestore.FieldValue.delete(),
+    writes.push({
+      ref: d.ref,
+      data: {
+        out: false,
+        outAt: null,
+        cause: admin.firestore.FieldValue.delete(),
+        sos: false,
+        sosAt: null,
+        sosAckAt: null,
+        outOfBounds: false,
+        deathLocation: admin.firestore.FieldValue.delete(),
+      },
     });
   }
-  // Drop the latched checkpoint reveals so a fresh run re-reveals from scratch.
-  const cpSnap = await gameRef.collection('checkpoints').get();
   for (const d of cpSnap.docs) {
-    batch.update(d.ref, {
-      revealedAt: admin.firestore.FieldValue.delete(),
-      revealedTo: admin.firestore.FieldValue.delete(),
+    writes.push({
+      ref: d.ref,
+      data: {
+        revealedAt: admin.firestore.FieldValue.delete(),
+        revealedTo: admin.firestore.FieldValue.delete(),
+      },
     });
   }
-  // Back to the lobby with cleared timers, ready to start again.
-  batch.update(gameRef, {
-    phase: 'lobby',
-    status: 'active',
-    startedAt: null,
-    endedAt: null,
+  // Back to the lobby with cleared timers, ready to start again. Last, so a partial run
+  // never leaves the game in the lobby with stale per-doc state.
+  writes.push({
+    ref: gameRef,
+    data: { phase: 'lobby', status: 'active', startedAt: null, endedAt: null },
   });
-  await batch.commit();
+
+  const BATCH_LIMIT = 500;
+  for (let i = 0; i < writes.length; i += BATCH_LIMIT) {
+    const batch = db.batch();
+    for (const w of writes.slice(i, i + BATCH_LIMIT)) batch.update(w.ref, w.data);
+    await batch.commit();
+  }
 
   return { reset: true };
 });
