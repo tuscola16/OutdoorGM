@@ -1,11 +1,12 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import auth, { FirebaseAuthTypes } from '@react-native-firebase/auth';
-import firestore from '@react-native-firebase/firestore';
+import { onAuthStateChanged, signOut as fbSignOut, type User } from '@react-native-firebase/auth';
+import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from '@react-native-firebase/firestore';
+import { auth, db } from '@/services/firebase';
 import { Collections } from '@/services/firebase';
 import type { UserProfile } from '@/types';
 
 interface AuthContextValue {
-  user: FirebaseAuthTypes.User | null;
+  user: User | null;
   profile: UserProfile | null;
   loading: boolean;
   signOut: () => Promise<void>;
@@ -15,25 +16,25 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<FirebaseAuthTypes.User | null>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribeAuth = auth().onAuthStateChanged(async (firebaseUser) => {
+    const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
       setUser(firebaseUser);
       try {
         if (firebaseUser) {
           // Ensure user profile document exists
-          const profileRef = firestore().collection(Collections.USERS).doc(firebaseUser.uid);
-          const snap = await profileRef.get();
-          if (!snap.exists) {
+          const profileRef = doc(db, Collections.USERS, firebaseUser.uid);
+          const snap = await getDoc(profileRef);
+          if (!snap.exists()) {
             const newProfile: Omit<UserProfile, 'id'> = {
               email: firebaseUser.email ?? '',
               displayName: '',
-              createdAt: firestore.FieldValue.serverTimestamp() as any,
+              createdAt: serverTimestamp() as any,
             };
-            await profileRef.set(newProfile);
+            await setDoc(profileRef, newProfile);
             setProfile({ id: firebaseUser.uid, ...newProfile } as UserProfile);
           } else {
             setProfile({ id: snap.id, ...snap.data() } as UserProfile);
@@ -62,12 +63,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   async function signOut() {
-    await auth().signOut();
+    await auth.signOut();
   }
 
   async function updateProfile(updates: Partial<Pick<UserProfile, 'displayName' | 'fcmToken'>>) {
     if (!user) return;
-    await firestore().collection(Collections.USERS).doc(user.uid).update(updates);
+    await updateDoc(doc(db, Collections.USERS, user.uid), updates);
     setProfile((prev) => (prev ? { ...prev, ...updates } : prev));
   }
 

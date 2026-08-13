@@ -4,7 +4,7 @@ import * as Battery from 'expo-battery';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { updatePlayerLocation } from './gameService';
 import { isBatteryOptimized } from './batteryOptimization';
-import auth from '@react-native-firebase/auth';
+import { auth } from './firebase';
 
 export const LOCATION_TASK_NAME = 'hgl-background-location';
 export const ACTIVE_GAME_KEY = 'hgl_active_game';
@@ -81,7 +81,7 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
   const location = locations[0];
   if (!location) return;
 
-  const user = auth().currentUser;
+  const user = auth.currentUser;
   if (!user) return;
 
   const gameId = await AsyncStorage.getItem(ACTIVE_GAME_KEY);
@@ -272,7 +272,7 @@ export async function startLocationTracking(
         // distanceInterval 0 → time-based updates even while stationary (see above).
         { accuracy, timeInterval, distanceInterval: 0 },
         async (pos) => {
-          const user = auth().currentUser;
+          const user = auth.currentUser;
           if (!user) return;
           try {
             await updatePlayerLocation(gameId, user.uid, displayName, {

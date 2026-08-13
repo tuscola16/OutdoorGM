@@ -1,4 +1,5 @@
-import storage from '@react-native-firebase/storage';
+import { ref as storageRef, putFile, getDownloadURL } from '@react-native-firebase/storage';
+import { storage } from './firebase';
 
 /**
  * Upload a ration-card photo to Firebase Storage and return its download URL
@@ -15,9 +16,9 @@ export async function uploadRationPhoto(
   intervalIndex: number,
   localUri: string
 ): Promise<string> {
-  const ref = storage().ref(`games/${gameId}/rations/${playerId}/${intervalIndex}.jpg`);
+  const ref = storageRef(storage, `games/${gameId}/rations/${playerId}/${intervalIndex}.jpg`);
   // Set contentType explicitly: putFile doesn't always infer it from the camera's
   // cache file, and an unset contentType trips the Storage rules' image check.
-  await ref.putFile(localUri, { contentType: 'image/jpeg' });
-  return ref.getDownloadURL();
+  await putFile(ref, localUri, { contentType: 'image/jpeg' });
+  return getDownloadURL(ref);
 }

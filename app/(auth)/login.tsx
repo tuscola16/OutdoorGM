@@ -4,7 +4,8 @@ import {
   Platform, ScrollView, TouchableOpacity, Linking, Image
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import auth from '@react-native-firebase/auth';
+import { createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail } from '@react-native-firebase/auth';
+import { auth } from '@/services/firebase';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { Colors } from '@/constants/colors';
@@ -34,9 +35,9 @@ export default function LoginScreen() {
     setLoading(true);
     try {
       if (isSignUp) {
-        await auth().createUserWithEmailAndPassword(email.trim(), password);
+        await createUserWithEmailAndPassword(auth, email.trim(), password);
       } else {
-        await auth().signInWithEmailAndPassword(email.trim(), password);
+        await signInWithEmailAndPassword(auth, email.trim(), password);
       }
       router.replace('/(app)/games');
     } catch (err) {
@@ -55,7 +56,7 @@ export default function LoginScreen() {
       return;
     }
     try {
-      await auth().sendPasswordResetEmail(email.trim());
+      await sendPasswordResetEmail(auth, email.trim());
       setError('');
       setNotice('Password reset email sent. Check your inbox.');
     } catch (err) {

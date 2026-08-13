@@ -1,6 +1,26 @@
-import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
-import auth from '@react-native-firebase/auth';
-import { Collections, functions } from './firebase';
+import {
+  collection,
+  collectionGroup,
+  doc,
+  query,
+  where,
+  getDoc,
+  getDocs,
+  onSnapshot,
+  addDoc,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  serverTimestamp,
+  deleteField,
+  arrayUnion,
+  writeBatch,
+  Timestamp,
+  type DocumentReference,
+} from '@react-native-firebase/firestore';
+import { EmailAuthProvider, reauthenticateWithCredential } from '@react-native-firebase/auth';
+import { httpsCallable } from '@react-native-firebase/functions';
+import { Collections, db, auth, functions } from './firebase';
 import {
   BASE_GAME_CONFIG,
   GM_BROADCAST_TARGET,
@@ -79,7 +99,7 @@ export async function createGame(
   isTest = false,
   practice = false
 ): Promise<{ id: string }> {
-  const callable = functions().httpsCallable('createGame');
+  const callable = httpsCallable(functions, 'createGame');
   const res = await callable({ name, displayName, fcmToken: fcmToken ?? null, isTest, practice });
   return { id: (res.data as { gameId: string }).gameId };
 }
@@ -87,7 +107,7 @@ export async function createGame(
 /** Reset a practice game (#43) so it can be re-run: clears runtime data, re-arms the run-sheet,
  * revives players, and drops the game back to the lobby. GM-only; server-side (resetPracticeGame). */
 export async function resetPracticeGame(gameId: string): Promise<void> {
-  const callable = functions().httpsCallable('resetPracticeGame');
+  const callable = httpsCallable(functions, 'resetPracticeGame');
   await callable({ gameId });
 }
 
@@ -102,14 +122,14 @@ export async function cloneGame(
   name?: string,
   fcmToken?: string
 ): Promise<{ id: string }> {
-  const callable = functions().httpsCallable('cloneGame');
+  const callable = httpsCallable(functions, 'cloneGame');
   const res = await callable({ sourceGameId, displayName, name: name ?? null, fcmToken: fcmToken ?? null });
   return { id: (res.data as { gameId: string }).gameId };
 }
 
 /** Persist the GM's position in the Test Runner walkthrough (a resumable cursor). */
 export async function setTestStep(gameId: string, index: number): Promise<void> {
-  await firestore().collection(Collections.GAMES).doc(gameId).update({ testStepIndex: index });
+  await updateDoc(doc(db, Collections.GAMES, gameId), { testStepIndex: index });
 }
 
 /** Re-arm a Test Event checkpoint so the GM can walk its arrival-order queue with a
@@ -120,7 +140,7 @@ export async function rearmCheckpoint(
   playerId: string,
   checkpointId: string
 ): Promise<void> {
-  const callable = functions().httpsCallable('rearmCheckpoint');
+  const callable = httpsCallable(functions, 'rearmCheckpoint');
   await callable({ gameId, playerId, checkpointId });
 }
 
@@ -128,7 +148,7 @@ export async function rearmCheckpoint(
 
 /** Read a game's resolved phase (for the #22 monotonic-transition guards). */
 async function readPhase(gameId: string): Promise<GamePhase> {
-  const snap = await firestore().collection(Collections.GAMES).doc(gameId).get();
+  const snap = await getDoc(doc(db, Collections.GAMES, gameId));
   return gamePhase(snap.data() as { phase?: GamePhase; status?: GameStatus } | undefined);
 }
 
@@ -140,7 +160,7 @@ export async function openLobby(gameId: string): Promise<void> {
   const phase = await readPhase(gameId);
   if (phase === 'lobby') return; // already open — no-op
   if (phase !== 'setup') throw new Error('This game has already started.');
-  await firestore().collection(Collections.GAMES).doc(gameId).update({ phase: 'lobby' });
+  await updateDoc(doc(db, Collections.GAMES, gameId), { phase: 'lobby' });
 }
 
 /**
@@ -151,7 +171,7 @@ export async function reopenSetup(gameId: string): Promise<void> {
   const phase = await readPhase(gameId);
   if (phase === 'setup') return; // already there — no-op
   if (phase !== 'lobby') throw new Error('Only a game waiting in the lobby can return to setup.');
-  await firestore().collection(Collections.GAMES).doc(gameId).update({ phase: 'setup' });
+  await updateDoc(doc(db, Collections.GAMES, gameId), { phase: 'setup' });
 }
 
 /**
@@ -163,9 +183,9 @@ export async function startGame(gameId: string): Promise<void> {
   const phase = await readPhase(gameId);
   if (phase === 'play') return; // already started — don't re-stamp startedAt
   if (phase !== 'lobby') throw new Error('The game can only be started from the lobby.');
-  await firestore().collection(Collections.GAMES).doc(gameId).update({
+  await updateDoc(doc(db, Collections.GAMES, gameId), {
     phase: 'play',
-    startedAt: firestore.FieldValue.serverTimestamp(),
+    startedAt: serverTimestamp(),
   });
 }
 
@@ -186,16 +206,15 @@ export async function startEndgame(
   const phase = await readPhase(gameId);
   if (phase === 'endgame') return; // already in the showdown — no-op
   if (phase !== 'play') throw new Error('The end-game can only begin from play.');
-  const gameRef = firestore().collection(Collections.GAMES).doc(gameId);
-  await gameRef.update({ phase: 'endgame' });
+  await updateDoc(doc(db, Collections.GAMES, gameId), { phase: 'endgame' });
   // Convergence marker — label + location only, visible to all players (audience null).
-  await gameRef.collection(Collections.MARKERS).doc(ENDGAME_RALLY_ID).set({
+  await setDoc(doc(db, Collections.GAMES, gameId, Collections.MARKERS, ENDGAME_RALLY_ID), {
     checkpointId: ENDGAME_RALLY_ID,
     name: 'Final Rally',
     latitude: rally.latitude,
     longitude: rally.longitude,
     audiencePlayerIds: null,
-    revealedAt: firestore.FieldValue.serverTimestamp(),
+    revealedAt: serverTimestamp(),
   });
   await sendBroadcast(gameId, '⚔️ Final showdown — converge on the rally point!');
 }
@@ -207,7 +226,7 @@ export function parseEventDate(ymd: string): FsTimestamp | null {
   if (!m) return null;
   const date = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
   if (isNaN(date.getTime())) return null;
-  return firestore.Timestamp.fromDate(date) as unknown as FsTimestamp;
+  return Timestamp.fromDate(date) as unknown as FsTimestamp;
 }
 
 /** Format a stored event-date timestamp back to 'YYYY-MM-DD' for the editor ('' if unset). */
@@ -228,15 +247,15 @@ export async function setGameMedia(
   media: { youtubeUrl?: string; photosAlbumUrl?: string } | null,
   updatedBy: string
 ): Promise<void> {
-  await firestore().collection(Collections.GAMES).doc(gameId).update({
+  await updateDoc(doc(db, Collections.GAMES, gameId), {
     media: media
       ? {
           ...(media.youtubeUrl ? { youtubeUrl: media.youtubeUrl } : {}),
           ...(media.photosAlbumUrl ? { photosAlbumUrl: media.photosAlbumUrl } : {}),
           updatedBy,
-          updatedAt: firestore.FieldValue.serverTimestamp(),
+          updatedAt: serverTimestamp(),
         }
-      : firestore.FieldValue.delete(),
+      : deleteField(),
   });
 }
 
@@ -251,7 +270,7 @@ export async function updateGameConfig(
     gameDate?: FsTimestamp | null;
   }
 ): Promise<void> {
-  await firestore().collection(Collections.GAMES).doc(gameId).update(updates);
+  await updateDoc(doc(db, Collections.GAMES, gameId), updates);
 }
 
 /**
@@ -265,12 +284,7 @@ export async function eliminatePlayer(
   userId: string,
   cause: EliminationCause = 'self'
 ): Promise<void> {
-  await firestore()
-    .collection(Collections.GAMES)
-    .doc(gameId)
-    .collection(Collections.MEMBERS)
-    .doc(userId)
-    .update({ out: true, outAt: firestore.FieldValue.serverTimestamp(), cause });
+  await updateDoc(doc(db, Collections.GAMES, gameId, Collections.MEMBERS, userId), { out: true, outAt: serverTimestamp(), cause });
 }
 
 /** Back-compat alias — the "I'm Out" button now reports an honor-system death. */
@@ -289,33 +303,33 @@ export async function markPlayerOut(gameId: string, userId: string): Promise<voi
  * the same player can toll afresh.
  */
 export async function revivePlayer(gameId: string, userId: string): Promise<void> {
-  const gameRef = firestore().collection(Collections.GAMES).doc(gameId);
-  const memberRef = gameRef.collection(Collections.MEMBERS).doc(userId);
-  const [memberSnap, gameSnap] = await Promise.all([memberRef.get(), gameRef.get()]);
+  const gameRef = doc(db, Collections.GAMES, gameId);
+  const memberRef = doc(db, Collections.GAMES, gameId, Collections.MEMBERS, userId);
+  const [memberSnap, gameSnap] = await Promise.all([getDoc(memberRef), getDoc(gameRef)]);
   const name = memberSnap.data()?.displayName ?? 'A tribute';
   const game = gameSnap.data() as Game | undefined;
 
-  await memberRef.update({
+  await updateDoc(memberRef, {
     out: false,
     outAt: null,
-    cause: firestore.FieldValue.delete(),
+    cause: deleteField(),
   });
 
   // Drop the deterministic death toll so a future re-elimination tolls again (#26).
-  await gameRef.collection(Collections.BROADCASTS).doc(`${userId}_death`).delete().catch(() => {});
+  await deleteDoc(doc(db, Collections.GAMES, gameId, Collections.BROADCASTS, `${userId}_death`)).catch(() => {});
 
   // Correcting broadcast so players see the reversal (the original toll already went out).
-  await gameRef.collection(Collections.BROADCASTS).add({
+  await addDoc(collection(db, Collections.GAMES, gameId, Collections.BROADCASTS), {
     kind: 'gm-message',
     message: `${name} is back in the game.`,
     targetPlayerId: null,
-    createdAt: firestore.FieldValue.serverTimestamp(),
+    createdAt: serverTimestamp(),
   });
 
   // If this death had ended the game, reopen play. (The stale winner broadcast is left
   // as-is — the correcting broadcast covers it; don't try to retract it.)
   if (gamePhase(game) === 'results' && game?.status === 'ended') {
-    await gameRef.update({ phase: 'play', status: 'active', endedAt: null });
+    await updateDoc(gameRef, { phase: 'play', status: 'active', endedAt: null });
   }
 }
 
@@ -325,12 +339,7 @@ export async function setDeathLocation(
   userId: string,
   coords: { latitude: number; longitude: number }
 ): Promise<void> {
-  await firestore()
-    .collection(Collections.GAMES)
-    .doc(gameId)
-    .collection(Collections.MEMBERS)
-    .doc(userId)
-    .update({ deathLocation: coords });
+  await updateDoc(doc(db, Collections.GAMES, gameId, Collections.MEMBERS, userId), { deathLocation: coords });
 }
 
 /** Raise a safety alert to the GM (Rules 22, 27, 28). The onMemberWrite function
@@ -341,14 +350,9 @@ export async function raiseSos(
   userId: string,
   coords?: { latitude: number; longitude: number }
 ): Promise<void> {
-  await firestore()
-    .collection(Collections.GAMES)
-    .doc(gameId)
-    .collection(Collections.MEMBERS)
-    .doc(userId)
-    .update({
+  await updateDoc(doc(db, Collections.GAMES, gameId, Collections.MEMBERS, userId), {
       sos: true,
-      sosAt: firestore.FieldValue.serverTimestamp(),
+      sosAt: serverTimestamp(),
       sosLocation: coords ?? null,
       sosAckAt: null,
     });
@@ -358,23 +362,13 @@ export async function raiseSos(
  * escalating state but the SOS record stays open (the GM still resolves it with
  * `clearSos`). GM-write-only — players can't forge an ack (firestore.rules). */
 export async function ackSos(gameId: string, userId: string): Promise<void> {
-  await firestore()
-    .collection(Collections.GAMES)
-    .doc(gameId)
-    .collection(Collections.MEMBERS)
-    .doc(userId)
-    .update({ sosAckAt: firestore.FieldValue.serverTimestamp() });
+  await updateDoc(doc(db, Collections.GAMES, gameId, Collections.MEMBERS, userId), { sosAckAt: serverTimestamp() });
 }
 
 /** GM stands down a resolved safety alert: clears the flag and the acknowledgement so
  * the next SOS starts clean (#5). */
 export async function clearSos(gameId: string, userId: string): Promise<void> {
-  await firestore()
-    .collection(Collections.GAMES)
-    .doc(gameId)
-    .collection(Collections.MEMBERS)
-    .doc(userId)
-    .update({ sos: false, sosAckAt: null });
+  await updateDoc(doc(db, Collections.GAMES, gameId, Collections.MEMBERS, userId), { sos: false, sosAckAt: null });
 }
 
 /** GM sends a one-way message to players. Omit `targetPlayerId` to broadcast to
@@ -385,17 +379,13 @@ export async function sendBroadcast(
   message: string,
   targetPlayerId?: string
 ): Promise<void> {
-  await firestore()
-    .collection(Collections.GAMES)
-    .doc(gameId)
-    .collection(Collections.BROADCASTS)
-    .add({
+  await addDoc(collection(db, Collections.GAMES, gameId, Collections.BROADCASTS), {
       kind: 'gm-message',
       message,
       // Always written (null = global) so players can query `targetPlayerId == null`;
       // Firestore can't match on an absent field.
       targetPlayerId: targetPlayerId ?? null,
-      createdAt: firestore.FieldValue.serverTimestamp(),
+      createdAt: serverTimestamp(),
     });
 }
 
@@ -407,14 +397,9 @@ export async function sendBroadcast(
  * {@link AlertOverlay} pop has its own device-local ack (#70).
  */
 export async function dismissBroadcast(gameId: string, broadcastId: string): Promise<void> {
-  const uid = auth().currentUser?.uid;
+  const uid = auth.currentUser?.uid;
   if (!uid) return;
-  await firestore()
-    .collection(Collections.GAMES)
-    .doc(gameId)
-    .collection(Collections.BROADCASTS)
-    .doc(broadcastId)
-    .update({ dismissedBy: firestore.FieldValue.arrayUnion(uid) });
+  await updateDoc(doc(db, Collections.GAMES, gameId, Collections.BROADCASTS, broadcastId), { dismissedBy: arrayUnion(uid) });
 }
 
 /**
@@ -428,17 +413,13 @@ export async function sendGmMessage(
   message: string,
   senderName: string
 ): Promise<void> {
-  await firestore()
-    .collection(Collections.GAMES)
-    .doc(gameId)
-    .collection(Collections.BROADCASTS)
-    .add({
+  await addDoc(collection(db, Collections.GAMES, gameId, Collections.BROADCASTS), {
       kind: 'gm-message',
       message,
       targetPlayerId: GM_BROADCAST_TARGET,
       audience: 'gm-only',
       senderName,
-      createdAt: firestore.FieldValue.serverTimestamp(),
+      createdAt: serverTimestamp(),
     });
 }
 
@@ -448,19 +429,14 @@ export function subscribeGmMessages(
   gameId: string,
   onChange: (messages: import('@/types').Broadcast[]) => void
 ): () => void {
-  return firestore()
-    .collection(Collections.GAMES)
-    .doc(gameId)
-    .collection(Collections.BROADCASTS)
-    .where('audience', '==', 'gm-only')
-    .onSnapshot(
+  return onSnapshot(query(collection(db, Collections.GAMES, gameId, Collections.BROADCASTS), where('audience', '==', 'gm-only')), 
       (snap) => {
         const msgs = snap.docs
           .map((d) => ({ id: d.id, ...d.data() }) as import('@/types').Broadcast)
           .sort((a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0));
         onChange(msgs);
       },
-      (err) => console.error('[GmMessages] subscription error', err)
+      (err: Error) => console.error('[GmMessages] subscription error', err)
     );
 }
 
@@ -479,7 +455,7 @@ export async function submitRation(
   photoUrl: string,
   cardNumber?: string
 ): Promise<void> {
-  const callable = functions().httpsCallable('submitRation');
+  const callable = httpsCallable(functions, 'submitRation');
   await callable({
     gameId,
     displayName: player.displayName,
@@ -495,12 +471,7 @@ export async function reviewRation(
   rationId: string,
   status: 'valid' | 'rejected'
 ): Promise<void> {
-  await firestore()
-    .collection(Collections.GAMES)
-    .doc(gameId)
-    .collection(Collections.RATIONS)
-    .doc(rationId)
-    .update({ status, reviewedAt: firestore.FieldValue.serverTimestamp() });
+  await updateDoc(doc(db, Collections.GAMES, gameId, Collections.RATIONS, rationId), { status, reviewedAt: serverTimestamp() });
 }
 
 /**
@@ -514,18 +485,13 @@ export async function joinGameByCode(
   displayName: string,
   fcmToken?: string
 ): Promise<{ gameId: string; role: 'player' | 'gm' }> {
-  const callable = functions().httpsCallable('joinGameByCode');
+  const callable = httpsCallable(functions, 'joinGameByCode');
   const res = await callable({ code, displayName, fcmToken: fcmToken ?? null });
   return res.data as { gameId: string; role: 'player' | 'gm' };
 }
 
 export async function updateFcmToken(gameId: string, userId: string, fcmToken: string): Promise<void> {
-  await firestore()
-    .collection(Collections.GAMES)
-    .doc(gameId)
-    .collection(Collections.MEMBERS)
-    .doc(userId)
-    .update({ fcmToken });
+  await updateDoc(doc(db, Collections.GAMES, gameId, Collections.MEMBERS, userId), { fcmToken });
 }
 
 export interface MyGameEntry {
@@ -537,10 +503,7 @@ export interface MyGameEntry {
 
 export async function getMyGames(userId: string): Promise<MyGameEntry[]> {
   // Query all member subcollections where the userId field matches
-  const snap = await firestore()
-    .collectionGroup(Collections.MEMBERS)
-    .where('userId', '==', userId)
-    .get();
+  const snap = await getDocs(query(collectionGroup(db, Collections.MEMBERS), where('userId', '==', userId)));
 
   // Fetch each parent game doc in parallel rather than serially — this runs on every
   // focus of the Games screen, so a user in N games shouldn't pay N round-trips of latency.
@@ -549,8 +512,8 @@ export async function getMyGames(userId: string): Promise<MyGameEntry[]> {
       // Parent path: games/{gameId}/members/{userId}
       const gameId = memberDoc.ref.parent.parent?.id;
       if (!gameId) return null;
-      const gameSnap = await firestore().collection(Collections.GAMES).doc(gameId).get();
-      if (!gameSnap.exists) return null;
+      const gameSnap = await getDoc(doc(db, Collections.GAMES, gameId));
+      if (!gameSnap.exists()) return null;
       return {
         game: { id: gameSnap.id, ...gameSnap.data() } as Game,
         role: memberDoc.data().role as 'player' | 'gm',
@@ -565,7 +528,7 @@ export async function getMyGames(userId: string): Promise<MyGameEntry[]> {
  * doc and all its subcollections are removed atomically — see the deleteGame
  * Cloud Function. */
 export async function deleteGame(gameId: string): Promise<void> {
-  const callable = functions().httpsCallable('deleteGame');
+  const callable = httpsCallable(functions, 'deleteGame');
   await callable({ gameId });
 }
 
@@ -577,12 +540,7 @@ export async function setGameArchived(
   userId: string,
   archived: boolean
 ): Promise<void> {
-  await firestore()
-    .collection(Collections.GAMES)
-    .doc(gameId)
-    .collection(Collections.MEMBERS)
-    .doc(userId)
-    .update({ archived });
+  await updateDoc(doc(db, Collections.GAMES, gameId, Collections.MEMBERS, userId), { archived });
 }
 
 /**
@@ -595,10 +553,10 @@ export async function endGame(gameId: string): Promise<void> {
   if (phase === 'results') return; // already ended — no-op
   // #41: closeable from play OR the end-game showdown.
   if (phase !== 'play' && phase !== 'endgame') throw new Error('Only a game in play can be ended.');
-  await firestore().collection(Collections.GAMES).doc(gameId).update({
+  await updateDoc(doc(db, Collections.GAMES, gameId), {
     status: 'ended',
     phase: 'results',
-    endedAt: firestore.FieldValue.serverTimestamp(),
+    endedAt: serverTimestamp(),
   });
 }
 
@@ -607,12 +565,8 @@ export async function addCheckpoint(
   gameId: string,
   checkpoint: Omit<Checkpoint, 'id'>
 ): Promise<Checkpoint> {
-  const ref = firestore()
-    .collection(Collections.GAMES)
-    .doc(gameId)
-    .collection(Collections.CHECKPOINTS)
-    .doc();
-  await ref.set(checkpoint);
+  const ref = doc(collection(db, Collections.GAMES, gameId, Collections.CHECKPOINTS));
+  await setDoc(ref, checkpoint);
   return { id: ref.id, ...checkpoint };
 }
 
@@ -621,27 +575,17 @@ export async function updateCheckpoint(
   checkpointId: string,
   updates: Partial<Omit<Checkpoint, 'id'>>
 ): Promise<void> {
-  await firestore()
-    .collection(Collections.GAMES)
-    .doc(gameId)
-    .collection(Collections.CHECKPOINTS)
-    .doc(checkpointId)
-    .update(updates);
+  await updateDoc(doc(db, Collections.GAMES, gameId, Collections.CHECKPOINTS, checkpointId), updates);
 }
 
 export async function deleteCheckpoint(gameId: string, checkpointId: string): Promise<void> {
-  await firestore()
-    .collection(Collections.GAMES)
-    .doc(gameId)
-    .collection(Collections.CHECKPOINTS)
-    .doc(checkpointId)
-    .delete();
+  await deleteDoc(doc(db, Collections.GAMES, gameId, Collections.CHECKPOINTS, checkpointId));
   // Drop any paired timed reveal row (#60) so a deleted checkpoint can't be revealed.
-  await scheduledEventsCol(gameId).doc(revealEventId(checkpointId)).delete().catch(() => {});
+  await deleteDoc(doc(scheduledEventsCol(gameId), revealEventId(checkpointId))).catch(() => {});
   // Cascade-delete the checkpoint's runbook entries so none are left dangling (#60).
   const entries = await runbookCol(gameId).where('checkpointId', '==', checkpointId).get();
   if (!entries.empty) {
-    const batch = firestore().batch();
+    const batch = writeBatch(db);
     entries.docs.forEach((d) => batch.delete(d.ref));
     await batch.commit();
   }
@@ -650,31 +594,31 @@ export async function deleteCheckpoint(gameId: string, checkpointId: string): Pr
 // --- Runbook entries (#60) ---
 
 const runbookCol = (gameId: string) =>
-  firestore().collection(Collections.GAMES).doc(gameId).collection(Collections.RUNBOOK);
+  collection(db, Collections.GAMES, gameId, Collections.RUNBOOK);
 
 /** Create a runbook entry attached to a checkpoint. */
 export async function addRunbookEntry(
   gameId: string,
   entry: Omit<RunbookEntry, 'id' | 'createdAt'>
 ): Promise<RunbookEntry> {
-  const ref = runbookCol(gameId).doc();
-  const data = { ...entry, createdAt: firestore.FieldValue.serverTimestamp() };
-  await ref.set(data);
+  const ref = doc(runbookCol(gameId));
+  const data = { ...entry, createdAt: serverTimestamp() };
+  await setDoc(ref, data);
   return { id: ref.id, ...entry, createdAt: data.createdAt as unknown as FsTimestamp };
 }
 
-/** Update a runbook entry. Pass `firestore.FieldValue.delete()` to drop trigger-specific
+/** Update a runbook entry. Pass `deleteField()` to drop trigger-specific
  * fields (e.g. clearing `queueSlots` when switching away from fixed-order). */
 export async function updateRunbookEntry(
   gameId: string,
   entryId: string,
   updates: Record<string, unknown>
 ): Promise<void> {
-  await runbookCol(gameId).doc(entryId).update(updates);
+  await updateDoc(doc(runbookCol(gameId), entryId), updates);
 }
 
 export async function deleteRunbookEntry(gameId: string, entryId: string): Promise<void> {
-  await runbookCol(gameId).doc(entryId).delete();
+  await deleteDoc(doc(runbookCol(gameId), entryId));
 }
 
 /**
@@ -688,7 +632,7 @@ export async function fireRunbookEntry(
   entryId: string,
   targetPlayerIds?: string[]
 ): Promise<void> {
-  const callable = functions().httpsCallable('fireRunbookEntry');
+  const callable = httpsCallable(functions, 'fireRunbookEntry');
   await callable({ gameId, entryId, targetPlayerIds: targetPlayerIds ?? null });
 }
 
@@ -708,17 +652,17 @@ export async function setRevealSchedule(
   checkpointId: string,
   offsetMinutes: number | null
 ): Promise<void> {
-  const ref = scheduledEventsCol(gameId).doc(revealEventId(checkpointId));
+  const ref = doc(scheduledEventsCol(gameId), revealEventId(checkpointId));
   if (offsetMinutes == null) {
-    await ref.delete().catch(() => {});
+    await deleteDoc(ref).catch(() => {});
     return;
   }
-  await ref.set({
+  await setDoc(ref, {
     type: 'reveal-checkpoint',
     checkpointId,
     offsetMinutes,
     firedAt: null,
-    createdAt: firestore.FieldValue.serverTimestamp(),
+    createdAt: serverTimestamp(),
   });
 }
 
@@ -740,8 +684,8 @@ function revealAudienceIds(cp: Checkpoint): string[] | null {
  */
 export async function revealCheckpointNow(gameId: string, cp: Checkpoint): Promise<void> {
   const audience = revealAudienceIds(cp);
-  const gameRef = firestore().collection(Collections.GAMES).doc(gameId);
-  await gameRef.collection(Collections.MARKERS).doc(cp.id).set(
+  const gameRef = doc(db, Collections.GAMES, gameId);
+  await setDoc(doc(gameRef, Collections.MARKERS, cp.id),
     {
       checkpointId: cp.id,
       name: cp.name,
@@ -752,15 +696,15 @@ export async function revealCheckpointNow(gameId: string, cp: Checkpoint): Promi
           ? null
           : audience.length === 0
             ? []
-            : firestore.FieldValue.arrayUnion(...audience),
-      revealedAt: firestore.FieldValue.serverTimestamp(),
+            : arrayUnion(...audience),
+      revealedAt: serverTimestamp(),
     },
     { merge: true }
   );
-  await gameRef.collection(Collections.CHECKPOINTS).doc(cp.id).update({
-    revealedAt: firestore.FieldValue.serverTimestamp(),
+  await updateDoc(doc(gameRef, Collections.CHECKPOINTS, cp.id), {
+    revealedAt: serverTimestamp(),
     ...(audience && audience.length > 0
-      ? { revealedTo: firestore.FieldValue.arrayUnion(...audience) }
+      ? { revealedTo: arrayUnion(...audience) }
       : {}),
   });
 }
@@ -768,7 +712,7 @@ export async function revealCheckpointNow(gameId: string, cp: Checkpoint): Promi
 // --- Run-sheet / scheduled events (#11) ---
 
 const scheduledEventsCol = (gameId: string) =>
-  firestore().collection(Collections.GAMES).doc(gameId).collection(Collections.SCHEDULED_EVENTS);
+  collection(db, Collections.GAMES, gameId, Collections.SCHEDULED_EVENTS);
 
 /** GM adds a timed action to the run-sheet. `firedAt` starts null so the sweep
  * (collectionGroup where firedAt == null) can find it. */
@@ -782,10 +726,10 @@ export async function addScheduledEvent(
     template?: 'player-count' | null;
   }
 ): Promise<void> {
-  await scheduledEventsCol(gameId).add({
+  await addDoc(scheduledEventsCol(gameId), {
     ...data,
     firedAt: null,
-    createdAt: firestore.FieldValue.serverTimestamp(),
+    createdAt: serverTimestamp(),
   });
 }
 
@@ -794,15 +738,15 @@ export async function updateScheduledEvent(
   eventId: string,
   updates: Partial<Omit<ScheduledEvent, 'id' | 'createdAt'>>
 ): Promise<void> {
-  await scheduledEventsCol(gameId).doc(eventId).update(updates);
+  await updateDoc(doc(scheduledEventsCol(gameId), eventId), updates);
 }
 
 export async function deleteScheduledEvent(gameId: string, eventId: string): Promise<void> {
-  await scheduledEventsCol(gameId).doc(eventId).delete();
+  await deleteDoc(doc(scheduledEventsCol(gameId), eventId));
 }
 
 export async function deleteAccount(userId: string, password: string): Promise<void> {
-  const current = auth().currentUser;
+  const current = auth.currentUser;
   if (!current || !current.email) {
     throw new Error('You must be signed in to delete your account.');
   }
@@ -812,8 +756,8 @@ export async function deleteAccount(userId: string, password: string): Promise<v
   // currentUser.delete() fail with `auth/requires-recent-login` at the end, the
   // user's data would already be gone but their account would remain — a broken,
   // unrecoverable state. Reauthenticating up front guarantees delete() will succeed.
-  const credential = auth.EmailAuthProvider.credential(current.email, password);
-  await current.reauthenticateWithCredential(credential);
+  const credential = EmailAuthProvider.credential(current.email, password);
+  await reauthenticateWithCredential(current, credential);
 
   // #29 Sole-GM rescue — run *before* we strip the caller's memberships (the callable
   // resolves them via the still-present member docs). For any active game this user solely
@@ -821,16 +765,13 @@ export async function deleteAccount(userId: string, password: string): Promise<v
   // membership cleanup below can't orphan a game. Best-effort: a failure here must not block
   // the rest of account deletion (the hourly orphan sweep is the backstop).
   try {
-    await functions().httpsCallable('transferGmOrEndGame')({});
+    await httpsCallable(functions, 'transferGmOrEndGame')({});
   } catch (err) {
     console.error('[deleteAccount] sole-GM transfer failed (orphan sweep will backstop):', err);
   }
 
   // Remove user from all game member + location subcollections
-  const memberSnap = await firestore()
-    .collectionGroup(Collections.MEMBERS)
-    .where('userId', '==', userId)
-    .get();
+  const memberSnap = await getDocs(query(collectionGroup(db, Collections.MEMBERS), where('userId', '==', userId)));
 
   // Resolve each game's phase first so we know which member docs we may hard-delete.
   // Member docs are delete-locked during `play` (#20) to preserve elimination history —
@@ -839,19 +780,19 @@ export async function deleteAccount(userId: string, password: string): Promise<v
     new Set(memberSnap.docs.map((d) => d.ref.parent.parent?.id).filter((id): id is string => !!id))
   );
   const gameSnaps = await Promise.all(
-    gameIds.map((id) => firestore().collection(Collections.GAMES).doc(id).get())
+    gameIds.map((id) => getDoc(doc(db, Collections.GAMES, id)))
   );
   const phaseByGame = new Map<string, GamePhase>();
   gameSnaps.forEach((snap) => {
-    if (snap.exists) phaseByGame.set(snap.id, gamePhase(snap.data() as Game));
+    if (snap.exists()) phaseByGame.set(snap.id, gamePhase(snap.data() as Game));
   });
 
   // A scrub op preserves the eliminated-member record while erasing the departing
   // user's identity (no name/email/token retained), so live games keep accurate
   // timing + death history without orphaning their roster.
   type Op =
-    | { kind: 'delete'; ref: FirebaseFirestoreTypes.DocumentReference }
-    | { kind: 'scrub'; ref: FirebaseFirestoreTypes.DocumentReference };
+    | { kind: 'delete'; ref: DocumentReference }
+    | { kind: 'scrub'; ref: DocumentReference };
   const ops: Op[] = [];
   for (const memberDoc of memberSnap.docs) {
     const gameId = memberDoc.ref.parent.parent?.id;
@@ -865,30 +806,26 @@ export async function deleteAccount(userId: string, password: string): Promise<v
     if (gameId) {
       ops.push({
         kind: 'delete',
-        ref: firestore()
-          .collection(Collections.GAMES)
-          .doc(gameId)
-          .collection(Collections.LOCATIONS)
-          .doc(userId),
+        ref: doc(db, Collections.GAMES, gameId, Collections.LOCATIONS, userId),
       });
     }
   }
-  ops.push({ kind: 'delete', ref: firestore().collection(Collections.USERS).doc(userId) });
+  ops.push({ kind: 'delete', ref: doc(db, Collections.USERS, userId) });
 
   const CHUNK = 450; // safe margin under the 500-op batch limit
   for (let i = 0; i < ops.length; i += CHUNK) {
-    const batch = firestore().batch();
+    const batch = writeBatch(db);
     for (const op of ops.slice(i, i + CHUNK)) {
       if (op.kind === 'delete') {
         batch.delete(op.ref);
       } else {
         batch.update(op.ref, {
           out: true,
-          outAt: firestore.FieldValue.serverTimestamp(),
+          outAt: serverTimestamp(),
           cause: 'self',
           email: '',
           displayName: '(left)',
-          fcmToken: firestore.FieldValue.delete(),
+          fcmToken: deleteField(),
         });
       }
     }
@@ -908,12 +845,7 @@ export async function updateMemberRole(
   userId: string,
   role: 'player' | 'gm'
 ): Promise<void> {
-  await firestore()
-    .collection(Collections.GAMES)
-    .doc(gameId)
-    .collection(Collections.MEMBERS)
-    .doc(userId)
-    .update({ role });
+  await updateDoc(doc(db, Collections.GAMES, gameId, Collections.MEMBERS, userId), { role });
 }
 
 /** GM sets (or clears, when `district` is null/empty) a member's district/tribute
@@ -926,31 +858,18 @@ export async function setMemberDistrict(
   district: string | null
 ): Promise<void> {
   const trimmed = district?.trim() ?? '';
-  await firestore()
-    .collection(Collections.GAMES)
-    .doc(gameId)
-    .collection(Collections.MEMBERS)
-    .doc(userId)
-    .update({
-      district: trimmed === '' ? firestore.FieldValue.delete() : trimmed,
+  await updateDoc(doc(db, Collections.GAMES, gameId, Collections.MEMBERS, userId), {
+      district: trimmed === '' ? deleteField() : trimmed,
     });
 }
 
 export async function removePlayer(gameId: string, userId: string): Promise<void> {
-  const batch = firestore().batch();
+  const batch = writeBatch(db);
   batch.delete(
-    firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .collection(Collections.MEMBERS)
-      .doc(userId)
+    doc(db, Collections.GAMES, gameId, Collections.MEMBERS, userId)
   );
   batch.delete(
-    firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .collection(Collections.LOCATIONS)
-      .doc(userId)
+    doc(db, Collections.GAMES, gameId, Collections.LOCATIONS, userId)
   );
   await batch.commit();
 }
@@ -968,12 +887,7 @@ export async function updatePlayerLocation(
     battery?: number;
   }
 ): Promise<void> {
-  await firestore()
-    .collection(Collections.GAMES)
-    .doc(gameId)
-    .collection(Collections.LOCATIONS)
-    .doc(userId)
-    .set({
+  await setDoc(doc(db, Collections.GAMES, gameId, Collections.LOCATIONS, userId), {
       userId,
       displayName,
       latitude: coords.latitude,
@@ -983,6 +897,6 @@ export async function updatePlayerLocation(
       // #35: only write battery when we have a real reading, so a fix never clobbers a
       // prior good level with null on a device that can't report it.
       ...(typeof coords.battery === 'number' ? { battery: coords.battery } : {}),
-      updatedAt: firestore.FieldValue.serverTimestamp(),
+      updatedAt: serverTimestamp(),
     });
 }

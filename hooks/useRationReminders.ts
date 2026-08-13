@@ -1,9 +1,9 @@
 import { useEffect } from 'react';
 import * as Notifications from 'expo-notifications';
 import type { GameConfig } from '@/types';
-import type { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
+import { Timestamp } from '@react-native-firebase/firestore';
 
-type Ts = FirebaseFirestoreTypes.Timestamp | null;
+type Ts = Timestamp | null;
 
 /**
  * Schedule eat-window open notifications for all future ration intervals. Must be

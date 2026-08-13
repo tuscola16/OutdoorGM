@@ -24,11 +24,12 @@ import { eliminatePlayer, raiseSos, setDeathLocation, gamePhase, gameConfig } fr
 import { friendlyError } from '@/services/errorUtils';
 import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
 import { useRationReminders } from '@/hooks/useRationReminders';
-import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
+import { collection, doc, onSnapshot, query, where, Timestamp, type QuerySnapshot } from '@react-native-firebase/firestore';
+import { db } from '@/services/firebase';
 import { Collections } from '@/services/firebase';
 import type { Game, GameConfig, GamePhase, MapBoundary, RevealedMarker } from '@/types';
 
-type Ts = FirebaseFirestoreTypes.Timestamp | null;
+type Ts = Timestamp | null;
 
 export default function PlayerGameScreen() {
   const { gameId } = useLocalSearchParams<{ gameId: string }>();
@@ -105,10 +106,7 @@ export default function PlayerGameScreen() {
   // Subscribe to the game doc (phase, timing, rules) and own member doc.
   useEffect(() => {
     if (!gameId || !user) return;
-    const unsubGame = firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .onSnapshot(
+    const unsubGame = onSnapshot(doc(db, Collections.GAMES, gameId), 
         (snap) => {
           const d = snap.data();
           if (!d) return;
@@ -125,15 +123,10 @@ export default function PlayerGameScreen() {
           setBatterySaver(gameConfig(d as any).batterySaver);
           setConfig(gameConfig(d as any));
         },
-        (err) => console.error('[PlayerGame] game listener error', err)
+        (err: Error) => console.error('[PlayerGame] game listener error', err)
       );
 
-    const unsubMember = firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .collection(Collections.MEMBERS)
-      .doc(user.uid)
-      .onSnapshot(
+    const unsubMember = onSnapshot(doc(db, Collections.GAMES, gameId, Collections.MEMBERS, user.uid), 
         (snap) => {
           // The membership doc vanishing means the GM removed us from the game.
           // Stop sharing location immediately and leave — without this, the
@@ -145,7 +138,7 @@ export default function PlayerGameScreen() {
           // reconciles. Treating that as a removal bounced a flaky-signal player back
           // to "My Games" every few seconds even though she was never actually removed.
           // `metadata.fromCache` is false only once the server has spoken.
-          if (!snap.exists) {
+          if (!snap.exists()) {
             if (sawMemberRef.current && !snap.metadata.fromCache) {
               stopLocationTracking().catch(() => {});
               Alert.alert('Removed from game', 'The Game Master has removed you from this game.');
@@ -160,7 +153,7 @@ export default function PlayerGameScreen() {
           setOut(!!d.out);
           setOutAt(d.outAt ?? null);
         },
-        (err) => console.error('[PlayerGame] member listener error', err)
+        (err: Error) => console.error('[PlayerGame] member listener error', err)
       );
 
     return () => { unsubGame(); unsubMember(); };
@@ -173,10 +166,7 @@ export default function PlayerGameScreen() {
   // (defense-in-depth against stale pre-written markers).
   useEffect(() => {
     if (!gameId || !user) return;
-    const col = firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .collection(Collections.MARKERS);
+    const col = collection(db, Collections.GAMES, gameId, Collections.MARKERS);
     const merged = new Map<string, RevealedMarker>();
     const emit = () => {
       const nowMs = Date.now();
@@ -186,7 +176,7 @@ export default function PlayerGameScreen() {
         )
       );
     };
-    const handle = (snap: FirebaseFirestoreTypes.QuerySnapshot) => {
+    const handle = (snap: QuerySnapshot) => {
       snap.docChanges().forEach((c) => {
         if (c.type === 'removed') merged.delete(c.doc.id);
         else merged.set(c.doc.id, { ...c.doc.data() } as RevealedMarker);
@@ -195,10 +185,10 @@ export default function PlayerGameScreen() {
     };
     const unsubGlobal = col
       .where('audiencePlayerIds', '==', null)
-      .onSnapshot(handle, (err) => console.error('[PlayerGame] global markers error', err));
+      .onSnapshot(handle, (err: Error) => console.error('[PlayerGame] global markers error', err));
     const unsubMine = col
       .where('audiencePlayerIds', 'array-contains', user.uid)
-      .onSnapshot(handle, (err) => console.error('[PlayerGame] my markers error', err));
+      .onSnapshot(handle, (err: Error) => console.error('[PlayerGame] my markers error', err));
     return () => { unsubGlobal(); unsubMine(); };
   }, [gameId, user]);
 
@@ -364,7 +354,7 @@ export default function PlayerGameScreen() {
             // Fire-and-persist (#4): Firestore offline persistence durably queues the
             // write and delivers it on reconnect, so confirm immediately rather than
             // blocking on the network — a safety alert must feel instant in a dead zone.
-            raiseSos(gameId, user.uid).catch((err) => console.error('[SOS] raiseSos failed', err));
+            raiseSos(gameId, user.uid).catch((err: Error) => console.error('[SOS] raiseSos failed', err));
             Alert.alert(
               'Alert sent',
               "The Game Master has been notified and can see your location. If you're offline, it sends the moment you reconnect."
