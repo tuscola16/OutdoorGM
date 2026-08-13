@@ -342,6 +342,28 @@ eas submit --platform ios     # or android
 
 See [RUNNING.md](RUNNING.md) for local-dev startup and [SETUP_ANDROID.md](SETUP_ANDROID.md) for one-time Android SDK/environment setup.
 
+### iOS config gotchas (don't undo these)
+
+These `app.json` choices exist for App Review or build reasons. Verify any change with
+`npx expo config --type introspect --json`, which runs the config plugins and shows the
+Info.plist that will actually be generated (a full `expo prebuild --platform ios` needs macOS).
+
+- **`@react-native-firebase/auth` is deliberately absent from `plugins`.** Its *only* job is
+  adding a phone-auth reCAPTCHA URL scheme, and it hard-throws when `GoogleService-Info.plist`
+  has no `REVERSED_CLIENT_ID`. This project has no iOS OAuth client (email/password auth only),
+  so Firebase doesn't emit that key — re-adding the plugin fails `expo prebuild`, and therefore
+  every iOS EAS build, with "Failed to parse your GoogleService-Info.plist". The auth *module*
+  is still autolinked and works fine; only the plugin is dropped.
+- **`plugins/withoutBackgroundFetch.js` must stay last.** `expo-task-manager`'s autolinked
+  plugin unconditionally adds the `fetch` background mode; we only use background *location*,
+  and guideline 2.5.4 rejects unused background modes.
+- **`photosPermission: false` / `microphonePermission: false`** on `expo-image-picker`: ration
+  capture goes through `expo-camera` (`components/CameraCapture.tsx`), and image-picker is only
+  read for camera *permission state*. The library and mic are never touched, so declaring them
+  would be an unused-permission rejection vector (and RECORD_AUDIO on Android).
+- **`ios.privacyManifests`** feeds the generated `PrivacyInfo.xcprivacy`. Missing required-reason
+  API declarations get the automated ITMS-91053 bounce on upload.
+
 ## Common Patterns
 
 ### Adding a New Screen
