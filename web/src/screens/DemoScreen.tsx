@@ -18,7 +18,7 @@ import {
   IoTimeOutline, IoPeopleOutline, IoMap, IoStatsChart, IoWarning, IoWarningOutline,
   IoFlag, IoScanOutline, IoDocumentTextOutline, IoSettingsOutline, IoSkullOutline,
   IoAlertCircle, IoChatbubbleEllipsesOutline, IoHourglassOutline, IoBookOutline,
-  IoEllipseOutline,
+  IoEllipseOutline, IoFlame, IoFlameOutline, IoFilmOutline,
 } from 'react-icons/io5';
 
 // ─── Palette (exact values from constants/colors.ts) ───────────────────────────
@@ -58,6 +58,10 @@ const ICONS: Record<string, IconType> = {
   location: IoLocation,
   'notifications-outline': IoNotificationsOutline,
   notifications: IoNotifications,
+  // #41 end-game showdown + #45 post-game media.
+  flame: IoFlame,
+  'flame-outline': IoFlameOutline,
+  'film-outline': IoFilmOutline,
   'camera-outline': IoCameraOutline,
   'shield-checkmark': IoShieldCheckmark,
   'megaphone-outline': IoMegaphoneOutline,
@@ -95,7 +99,9 @@ type DemoState =
   | 'player-map'
   | 'player-stats'
   | 'player-alert'
+  | 'player-showdown'
   | 'gm-play'
+  | 'gm-endgame'
   | 'gm-alerts'
   | 'results';
 
@@ -106,7 +112,9 @@ const STATE_LABELS: Record<DemoState, string> = {
   'player-map': 'Player · Map',
   'player-stats': 'Player · Stats',
   'player-alert': 'Player · Alert',
+  'player-showdown': 'Player · Showdown',
   'gm-play': 'GM · Map',
+  'gm-endgame': 'GM · End-Game',
   'gm-alerts': 'GM · Alerts',
   results: 'Results',
 };
@@ -161,6 +169,10 @@ const CHECKPOINTS = [
   { id: 'c3', name: 'Supply Cache', x: 318, y: 208, color: C.secondary, revealed: true  },
 ];
 
+// #41 end-game rally point — the GM-placed convergence marker, visible to every player.
+// Sits clear of the checkpoints so the flame pin reads cleanly in a screenshot.
+const RALLY = { x: 148, y: 232 };
+
 // The GM notification feed (#73) distinguishes runbook *events* that actually fired —
 // themed by their effect kind — from neutral *arrivals* ("reached X"). The behavior lives
 // in the Runbook (#60), not on the checkpoint, so an event row carries the delivered kind.
@@ -188,7 +200,7 @@ const BROADCASTS = [
 
 // ─── Terrain map SVG (kept — high-quality, no real tiles needed) ───────────────
 
-function MapSVG({ mode }: { mode: 'player' | 'gm' }) {
+function MapSVG({ mode, rally = false }: { mode: 'player' | 'gm'; rally?: boolean }) {
   const alive = PLAYERS.filter((p) => p.alive);
   const dead = PLAYERS.filter((p) => !p.alive);
   const revealed = CHECKPOINTS.filter((c) => c.revealed);
@@ -281,6 +293,20 @@ function MapSVG({ mode }: { mode: 'player' | 'gm' }) {
             fill={C.player} opacity="0.7" />
         </>
       )}
+
+      {/* #41 end-game rally point — the flame pin both roles converge on. */}
+      {rally && (
+        <g>
+          <circle cx={RALLY.x} cy={RALLY.y} r="34" fill="rgba(212,137,63,0.10)" stroke="rgba(212,137,63,0.35)" strokeWidth="1.5" />
+          <circle cx={RALLY.x} cy={RALLY.y + 1} r="17" fill="rgba(0,0,0,0.4)" />
+          <circle cx={RALLY.x} cy={RALLY.y} r="16" fill={C.primary} stroke={C.white} strokeWidth="2" />
+          <text x={RALLY.x} y={RALLY.y + 6} fontSize="16" textAnchor="middle">🔥</text>
+          <text x={RALLY.x} y={RALLY.y + 34} fontSize="10" fontWeight="700" fill={C.white}
+            textAnchor="middle" style={{ paintOrder: 'stroke', stroke: '#000', strokeWidth: 2 }}>
+            Final Rally
+          </text>
+        </g>
+      )}
     </svg>
   );
 }
@@ -312,7 +338,7 @@ const sectionLabel: CSSProperties = {
 };
 
 function PhaseChip({ phase }: { phase: string }) {
-  const labels: Record<string, string> = { setup: 'SETUP', lobby: 'LOBBY', play: 'IN PLAY', results: 'RESULTS' };
+  const labels: Record<string, string> = { setup: 'SETUP', lobby: 'LOBBY', play: 'IN PLAY', endgame: 'END-GAME', results: 'RESULTS' };
   return (
     <span style={{
       fontSize: 10, fontWeight: 800, letterSpacing: 1, padding: '1px 6px', borderRadius: 6,
@@ -630,11 +656,12 @@ function PlayerAlertView() {
 
 // ─── GM header + tab bar (← gm/[gameId]/index.tsx) ─────────────────────────────
 
-function GMHeader({ phase = 'play' }: { phase?: 'setup' | 'lobby' | 'play' | 'results' }) {
+function GMHeader({ phase = 'play' }: { phase?: 'setup' | 'lobby' | 'play' | 'endgame' | 'results' }) {
   // Mirror the real header's conditional icon buttons.
   const icons: { name: string; badge?: number }[] = [];
-  if (phase === 'lobby' || phase === 'play') icons.push({ name: 'megaphone-outline' });
+  if (phase === 'lobby' || phase === 'play' || phase === 'endgame') icons.push({ name: 'megaphone-outline' });
   icons.push({ name: 'qr-code-outline' });
+  // Rations turn off in the end-game showdown (#41), so the review badge goes with them.
   if (phase === 'play') icons.push({ name: 'restaurant-outline', badge: 2 });
   if (phase !== 'results') icons.push({ name: 'time-outline' });
   icons.push({ name: 'people-outline' });
@@ -736,11 +763,90 @@ function GMPlayView() {
         <MapSVG mode="gm" />
       </div>
 
+      {/* Footer mirrors the real play-phase footer: Start End-Game (#41) sits above End Game. */}
+      <div style={{ padding: '12px 16px 36px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 6, padding: '10px 24px', borderRadius: 20,
+          border: `1px solid ${C.primary}`, color: C.primary, fontWeight: 700, fontSize: 14,
+        }}>
+          <Icon name="flame-outline" size={16} color={C.primary} />
+          Start End-Game
+        </div>
+        <div style={{ padding: '10px 24px', borderRadius: 20, border: `1px solid ${C.danger}`, color: C.danger, fontWeight: 600, fontSize: 14 }}>
+          End Game
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Screen: GM — end-game showdown (← gm/[gameId]/index.tsx, #41) ─────────────
+
+function GMEndgameView() {
+  const alive = PLAYERS.filter((p) => p.alive).length;
+  return (
+    <div style={{ height: '100%', background: C.bg, display: 'flex', flexDirection: 'column' }}>
+      <GMHeader phase="endgame" />
+      <StatsBar items={[
+        { label: 'Remaining', value: fmtDuration(REMAINING_SEC) },
+        { label: 'Alive', value: String(alive) },
+        { label: 'Active', value: String(alive) },
+        { label: 'Arrivals', value: String(ARRIVALS.length) },
+      ]} />
+      <GMTabBar active="map" />
+
+      <div style={{
+        margin: '0 16px 8px', display: 'flex', alignItems: 'center', gap: 8,
+        background: a(C.primary, '1A'), border: `1px solid ${C.primary}`, borderRadius: 8, padding: '8px 12px',
+      }}>
+        <Icon name="flame" size={18} color={C.primary} />
+        <span style={{ color: C.text, fontSize: 13, fontWeight: 600, flex: 1 }}>
+          Final showdown — rations off, players rallying to the marked point.
+        </span>
+      </div>
+
+      <div style={{ flex: 1, margin: '0 16px', borderRadius: 12, overflow: 'hidden', border: `1px solid ${C.border}` }}>
+        <MapSVG mode="gm" rally />
+      </div>
+
       <div style={{ padding: '12px 16px 36px', display: 'flex', justifyContent: 'center' }}>
         <div style={{ padding: '10px 24px', borderRadius: 20, border: `1px solid ${C.danger}`, color: C.danger, fontWeight: 600, fontSize: 14 }}>
           End Game
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Screen: Player — end-game showdown (← player/game.tsx, #41) ───────────────
+
+function PlayerShowdownView() {
+  return (
+    <div style={{ height: '100%', background: C.bg, display: 'flex', flexDirection: 'column' }}>
+      <div style={{
+        margin: '52px 16px 12px', display: 'flex', alignItems: 'center', gap: 12,
+        background: a(C.primary, '22'), border: `1px solid ${C.primary}`, borderRadius: 12, padding: 14,
+      }}>
+        <Icon name="flame" size={20} color={C.primary} />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 14, fontWeight: 800, color: C.text }}>Final showdown</div>
+          <div style={{ fontSize: 12, color: C.textSec, marginTop: 3, lineHeight: 1.4 }}>
+            Converge on the rally point marked on your map.
+          </div>
+        </div>
+      </div>
+      <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+        <MapSVG mode="player" rally />
+        <div style={{
+          position: 'absolute', top: 16, left: '50%', transform: 'translateX(-50%)',
+          background: 'rgba(0,0,0,0.72)', borderRadius: 20, padding: '7px 14px',
+          display: 'flex', alignItems: 'center', gap: 7, whiteSpace: 'nowrap',
+        }}>
+          <Icon name="time-outline" size={15} color={C.text} />
+          <span style={{ color: C.text, fontSize: 15, fontWeight: 800, letterSpacing: 0.5 }}>{fmtDuration(REMAINING_SEC)}</span>
+        </div>
+      </div>
+      <PlayerTabBar active="map" />
     </div>
   );
 }
@@ -808,6 +914,16 @@ function ResultsView() {
           <div style={{ fontSize: 13, color: C.textSec, marginTop: 6 }}>total game time</div>
         </div>
 
+        {/* #45 post-game media — the results screen carries these outbound links. */}
+        <div style={{ ...card, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Icon name="film-outline" size={18} color={C.primary} />
+            <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Recap &amp; photos</span>
+          </div>
+          <button style={btn('primary')}>▶ Watch the recap</button>
+          <button style={btn('secondary')}>🖼 View the photo album</button>
+        </div>
+
         <div>
           <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 8 }}>Players</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -856,7 +972,9 @@ export function DemoScreen() {
     'player-map': <PlayerMapView />,
     'player-stats': <PlayerStatsView />,
     'player-alert': <PlayerAlertView />,
+    'player-showdown': <PlayerShowdownView />,
     'gm-play': <GMPlayView />,
+    'gm-endgame': <GMEndgameView />,
     'gm-alerts': <GMAlertsFeedView />,
     results: <ResultsView />,
   };
