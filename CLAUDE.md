@@ -363,16 +363,17 @@ Info.plist that will actually be generated (a full `expo prebuild --platform ios
   would be an unused-permission rejection vector (and RECORD_AUDIO on Android).
 - **`ios.privacyManifests`** feeds the generated `PrivacyInfo.xcprivacy`. Missing required-reason
   API declarations get the automated ITMS-91053 bounce on upload.
-- **`expo-build-properties` must set `ios.useFrameworks: "dynamic"`.** RNFirebase 26 resolves
-  Firebase through **Swift Package Manager**, and firebase-ios-sdk's SPM products are
-  *automatic* libraries — so under static linkage every RNFirebase pod embeds its own copy and
-  they collide as duplicate symbols. `Install pods` fails with *"[react-native-firebase] SPM +
-  static linkage is not supported"*. Expo SDK 57 links statically **by default**, so simply
-  omitting the setting is not enough — dynamic has to be set explicitly. (The documented
-  alternative is `$RNFirebaseDisableSPM = true` in the Podfile, which would need a dangerous-mod
-  config plugin; dynamic linkage is the one-line fix.)
-  Note this is the exact inverse of the SDK 51 requirement, where `"static"` was mandatory to
-  get past *"Swift pods cannot yet be integrated as static libraries"*.
+- **`@react-native-firebase/app` must be configured with `ios.disableSPM: true`.** RNFirebase 26
+  resolves Firebase through **Swift Package Manager**, but firebase-ios-sdk's SPM products are
+  *automatic* libraries, so under static linkage every RNFirebase pod embeds its own copy and
+  they collide as duplicate symbols — `Install pods` fails with *"[react-native-firebase] SPM +
+  static linkage is not supported"*. Expo SDK 57 links **statically by default**, so this is
+  structural, not something the app opts into.
+  `disableSPM` forces CocoaPods resolution instead, keeping Expo's default linkage and letting
+  every pod share one FirebaseCore/FirebaseApp. The alternative — `expo-build-properties` with
+  `ios.useFrameworks: "dynamic"` — also builds, but flips linkage for the *whole* app and still
+  embeds a private Firebase copy per pod (see `firebase_spm.rb` in the package). Prefer
+  `disableSPM`.
 - **`ios.config.googleMapsApiKey` must stay absent.** `@expo/config-plugins` injects
   `pod 'react-native-google-maps'` whenever that key is set, but `react-native-maps` 1.27
   no longer ships that podspec (iOS Google Maps support was dropped upstream), so the pod

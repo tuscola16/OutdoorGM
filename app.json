@@ -165,7 +165,14 @@
           "recordAudioAndroid": false
         }
       ],
-      "@react-native-firebase/app",
+      [
+        "@react-native-firebase/app",
+        {
+          "ios": {
+            "disableSPM": true
+          }
+        }
+      ],
       "@react-native-firebase/crashlytics",
       "@react-native-firebase/messaging",
       [
@@ -174,14 +181,6 @@
           "image": "./assets/splash.png",
           "resizeMode": "contain",
           "backgroundColor": "#0D0D0D"
-        }
-      ],
-      [
-        "expo-build-properties",
-        {
-          "ios": {
-            "useFrameworks": "dynamic"
-          }
         }
       ],
       "./plugins/withoutBackgroundFetch"
