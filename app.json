@@ -13,9 +13,6 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.bagelrun.outdoorgm",
       "googleServicesFile": "./GoogleService-Info.plist",
-      "config": {
-        "googleMapsApiKey": "AIzaSyAeGFyRZRl1CqVDOb1P7C0gal4ZjEjD5T0"
-      },
       "infoPlist": {
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Outdoor GM tracks your location in the background so your Game Master can see your position and get alerts when you reach checkpoints.",
         "NSLocationAlwaysUsageDescription": "Outdoor GM needs background location so tracking continues while you play, even with the app closed.",

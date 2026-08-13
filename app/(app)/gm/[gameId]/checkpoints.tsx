@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, Alert, Modal, FlatList, ActivityIndicator,
+  View, Text, StyleSheet, TouchableOpacity, Alert, Modal, FlatList, ActivityIndicator, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -311,7 +311,7 @@ export default function CheckpointsScreen() {
                 key={String(renderKey)}
                 ref={mapRef}
                 style={StyleSheet.absoluteFill}
-                provider={PROVIDER_GOOGLE}
+                provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
                 mapType="none"
                 initialRegion={displayRegion}
                 showsUserLocation
