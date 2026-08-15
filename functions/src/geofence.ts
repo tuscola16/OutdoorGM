@@ -494,17 +494,33 @@ export const onLocationUpdate = functions
       // bypasses the #50 confirm-fixes streak and latches as already-exited below.
       let passThrough = false;
       if (!inRadius && prevLoc && !trip?.inside) {
-        const segLen = distanceMeters(
+        // BOTH endpoints must be outside the radius. `pointToSegmentMeters` returns
+        // <= radius whenever *either* endpoint is inside it, so a player DEPARTING a
+        // checkpoint (prev inside → current outside) is geometrically identical to one
+        // passing through it. `!trip.inside` was the only guard against that, and it is
+        // legitimately false in several states — a partial confirm-streak, right after a
+        // previous pass-through (which latches inside:false itself), or once a jittery
+        // outside fix has reset it — so departures were being recorded as fresh arrivals
+        // at the *current* fix, i.e. a checkpoint "arrival" logged 120m from the
+        // checkpoint. Requiring prev to be outside makes this a true crossing test:
+        // the path clips the circle strictly *between* two fixes.
+        const prevDist = distanceMeters(
           prevLoc.latitude, prevLoc.longitude,
-          location.latitude, location.longitude
+          cp.latitude, cp.longitude
         );
-        if (segLen > 0 && segLen <= MAX_SEGMENT_METERS) {
-          const segDist = pointToSegmentMeters(
-            cp.latitude, cp.longitude,
+        if (prevDist > cp.radius) {
+          const segLen = distanceMeters(
             prevLoc.latitude, prevLoc.longitude,
             location.latitude, location.longitude
           );
-          passThrough = segDist <= cp.radius;
+          if (segLen > 0 && segLen <= MAX_SEGMENT_METERS) {
+            const segDist = pointToSegmentMeters(
+              cp.latitude, cp.longitude,
+              prevLoc.latitude, prevLoc.longitude,
+              location.latitude, location.longitude
+            );
+            passThrough = segDist <= cp.radius;
+          }
         }
       }
 
