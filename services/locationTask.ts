@@ -38,6 +38,16 @@ export interface TrackingDiagnostics {
   lastGeofenceWakeAt: number | null;
   /** How many checkpoint regions the OS is currently watching (0 = geofencing off). */
   geofencedRegions: number;
+  /**
+   * Why geofencing isn't armed, or null when it is (or was never attempted).
+   *
+   * Separate from `lastError` on purpose: the upload path clears `lastError` on every
+   * successful write, which happens every few seconds. A geofence failure written there
+   * was reliably erased before anyone could read it — field-observed 2026-08-15, where
+   * the card showed "none armed" alongside "Last error: none" and the actual cause
+   * (permission not yet granted on a fresh install) was invisible.
+   */
+  geofenceError: string | null;
   updatedAt: number;
 }
 
@@ -51,6 +61,7 @@ let _diag: TrackingDiagnostics = {
   lastError: null,
   lastGeofenceWakeAt: null,
   geofencedRegions: 0,
+  geofenceError: null,
   updatedAt: Date.now(),
 };
 
@@ -175,16 +186,20 @@ export async function startCheckpointGeofencing(
   try {
     if (regions.length === 0) {
       await stopCheckpointGeofencing();
+      setDiag({ geofenceError: 'no checkpoints to watch' });
       return false;
     }
     const { status } = await Location.getBackgroundPermissionsAsync();
     if (status !== 'granted') {
       // Previously a bare `return false`: geofencing silently never armed, `geofencedRegions`
-      // stayed 0, `lastError` stayed 'none', and the caller discards the return value — so
-      // there was no way, on the device or in Firestore, to tell "armed and didn't fire" from
-      // "never armed". Record it.
+      // stayed 0, and the caller discards the return value — so there was no way, on the
+      // device or in Firestore, to tell "armed and didn't fire" from "never armed".
+      //
+      // This is the single most likely failure in practice, and it is transient: on a fresh
+      // install the player screen mounts before "Always" location has been granted. The
+      // caller retries, so this is a status, not a dead end.
       setDiag({
-        lastError: `geofence: background permission is '${status}', regions not armed`,
+        geofenceError: `background permission is '${status}' — waiting for the grant`,
         geofencedRegions: 0,
       });
       return false;
@@ -208,14 +223,30 @@ export async function startCheckpointGeofencing(
     // actually armed is worse than none at all.
     const armed = await Location.hasStartedGeofencingAsync(GEOFENCE_TASK_NAME).catch(() => false);
     if (!armed) {
-      setDiag({ lastError: 'geofence: startGeofencingAsync resolved but nothing is armed', geofencedRegions: 0 });
+      setDiag({
+        geofenceError: 'startGeofencingAsync resolved but nothing is armed',
+        geofencedRegions: 0,
+      });
       return false;
     }
-    setDiag({ geofencedRegions: regions.length, lastError: null });
+    setDiag({ geofencedRegions: regions.length, geofenceError: null });
     return true;
   } catch (err) {
     console.error('[Geofence] could not start geofencing:', err);
-    setDiag({ lastError: `geofence start: ${errMsg(err)}`, geofencedRegions: 0 });
+    setDiag({ geofenceError: `start failed: ${errMsg(err)}`, geofencedRegions: 0 });
+    return false;
+  }
+}
+
+/**
+ * Is the OS currently watching our checkpoint regions? Asks the OS rather than reporting a
+ * cached flag, so the retry loop notices if the system drops the regions out from under us
+ * (and so a stale in-memory `true` can't suppress a re-registration that is actually needed).
+ */
+export async function isCheckpointGeofencingArmed(): Promise<boolean> {
+  try {
+    return await Location.hasStartedGeofencingAsync(GEOFENCE_TASK_NAME);
+  } catch {
     return false;
   }
 }

@@ -168,9 +168,10 @@ export interface GameConfig {
 
   // --- Geofence quality (#50/#55) ---
   /**
-   * GPS fix quality gate for checkpoint evaluation. Fixes with reported accuracy (m)
-   * worse than this threshold are skipped for checkpoint eval — the map dot still
-   * updates. Default 100 m.
+   * GPS fix quality gate for checkpoint evaluation. Fixes whose reported accuracy (m) is
+   * this value **or worse** are skipped for checkpoint eval — the map dot still updates.
+   * Default 100 m. The comparison is `>=` because Android's fused provider emits coarse
+   * network fixes at exactly 100.0 m, which a `>` test let through by one unit.
    *
    * NOTE: this gates the *claimed* accuracy, which a wifi-derived fix can understate —
    * field-measured 2026-08-15, a stationary Pixel 8 reported 22 m accuracy while being

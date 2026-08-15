@@ -397,7 +397,14 @@ export const onLocationUpdate = functions
 
     // Does this fix clear the GPS quality gate? Computed here rather than at the gate itself
     // so the breadcrumb below can record the verdict for fixes that are about to be dropped.
-    const accuracyRejected = location.accuracy != null && location.accuracy > minFixAccuracy;
+    //
+    // `>=`, not `>`. Android's fused provider emits coarse network fixes with an accuracy of
+    // exactly 100.0 m, which under `>` cleared a 100 m threshold by a single unit. Field-
+    // measured 2026-08-15: those fixes repeated the previous position verbatim (0 m moved)
+    // while the player was walking, i.e. precisely the stale positions this gate exists to
+    // drop. Read the threshold as "must be better than this", so a fix that merely ties it
+    // is rejected.
+    const accuracyRejected = location.accuracy != null && location.accuracy >= minFixAccuracy;
 
     // A rejected fix is invisible everywhere else: the map dot still moves (the location
     // write happens above this trigger) while checkpoint evaluation is silently skipped.

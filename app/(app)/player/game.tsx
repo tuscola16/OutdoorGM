@@ -24,6 +24,7 @@ import {
   getTrackingDiagnostics,
   startCheckpointGeofencing,
   stopCheckpointGeofencing,
+  isCheckpointGeofencingArmed,
 } from '@/services/locationTask';
 import { requestBatteryOptimizationExemption } from '@/services/batteryOptimization';
 import { eliminatePlayer, raiseSos, setDeathLocation, gamePhase, gameConfig } from '@/services/gameService';
@@ -274,21 +275,46 @@ export default function PlayerGameScreen() {
       return;
     }
     let active = true;
+    let regions: { id: string; latitude: number; longitude: number; radius: number }[] = [];
+
     const unsub = onSnapshot(
       collection(db, Collections.GAMES, gameId, Collections.CHECKPOINTS),
       (snap: QuerySnapshot) => {
         if (!active) return;
-        const regions = snap.docs
+        regions = snap.docs
           .map((d) => {
             const c = d.data() as { latitude?: number; longitude?: number; radius?: number };
             return { id: d.id, latitude: c.latitude!, longitude: c.longitude!, radius: c.radius ?? 30 };
           })
           .filter((r) => typeof r.latitude === 'number' && typeof r.longitude === 'number');
+        // The region set changed — re-register unconditionally, replacing whatever is armed.
         startCheckpointGeofencing(regions).catch(() => {});
       },
       (err: Error) => console.error('[PlayerGame] checkpoint geofence listener error', err)
     );
-    return () => { active = false; unsub(); stopCheckpointGeofencing().catch(() => {}); };
+
+    // Registration used to be one-shot, and its most common failure is transient: on a fresh
+    // install this effect runs before the player has finished granting "Always" location, so
+    // the single attempt fails and nothing ever retries. Nothing else re-runs it either —
+    // `shouldTrack` is already true during the lobby, so the lobby->play transition doesn't
+    // change this effect's deps, and the checkpoint snapshot won't fire again on its own.
+    //
+    // Field-observed 2026-08-15: geofencing sat unarmed through an entire test walk and only
+    // came up when the player happened to reopen the app, which remounted this effect. Poll
+    // until it takes, asking the OS each time so we also recover if the system drops them.
+    const retry = async () => {
+      if (!active || regions.length === 0) return;
+      if (await isCheckpointGeofencingArmed()) return;
+      await startCheckpointGeofencing(regions).catch(() => false);
+    };
+    const retryId = setInterval(retry, 15000);
+
+    return () => {
+      active = false;
+      clearInterval(retryId);
+      unsub();
+      stopCheckpointGeofencing().catch(() => {});
+    };
   }, [gameId, shouldTrack]);
 
   // Propagate param changes (displayName arriving, battery-saver toggle) to a running
@@ -608,7 +634,9 @@ export default function PlayerGameScreen() {
                           made "did the wake-up trigger even arm?" unanswerable in the field. */}
                       <Text style={styles.diagRow}>
                         OS geofences: <Text style={styles.diagVal}>
-                          {diag.geofencedRegions > 0 ? `${diag.geofencedRegions} armed` : 'none armed'}
+                          {diag.geofencedRegions > 0
+                            ? `${diag.geofencedRegions} armed`
+                            : `none armed${diag.geofenceError ? ` — ${diag.geofenceError}` : ''}`}
                         </Text>
                       </Text>
                       <Text style={styles.diagRow}>
