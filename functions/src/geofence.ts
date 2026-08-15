@@ -337,7 +337,16 @@ export const onLocationUpdate = functions
       reNotifyAwayCooldownMinutes?: number;
       tripIntervalMinutes?: number;
     };
-    const minFixAccuracy = rawConfig.minFixAccuracyMeters ?? 30;
+    // Field-measured 2026-08-14: a pocketed Android phone with the screen locked reports
+    // ~52m accuracy while walking, and ~16m only when stationary with the app open. The old
+    // 30m default therefore rejected essentially every real gameplay fix — checkpoints never
+    // fired in the field while the GM map kept updating, because the location write happens
+    // ABOVE this gate and only checkpoint evaluation is skipped.
+    // 100m accepts pocketed fixes. It is deliberately blunt: a fix accurate to only 100m can
+    // trigger a smaller checkpoint from outside it, so `geofenceConfirmFixes` (2) is doing
+    // real work here. The better fix is a per-checkpoint gate judged against that
+    // checkpoint's own radius; this default is the stopgap until then.
+    const minFixAccuracy = rawConfig.minFixAccuracyMeters ?? 100;
     const confirmFixes = rawConfig.geofenceConfirmFixes ?? 2;
     const reNotifyAwayCooldownMs = (rawConfig.reNotifyAwayCooldownMinutes ?? 5) * 60_000;
     // #67: re-evaluate a lingering player's runbook entries at most this often (default 2 min).
