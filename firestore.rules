@@ -100,8 +100,24 @@ service cloud.firestore {
 
       // Checkpoints — GM only. Players intentionally cannot see checkpoint
       // locations (it would reveal the objectives), so reads are GM-scoped too.
+      // Checkpoints — GM-writable; readable by any member of the game.
+      //
+      // Players read these ONLY to register OS geofences (services/locationTask.ts), which
+      // wake the app on arrival even in Doze and cut checkpoint latency from ~2 min to
+      // near-immediate. The OS cannot watch a region it hasn't been told, so the
+      // coordinates have to reach the device — there is no leak-free way to do this.
+      //
+      // Deliberate trade, made 2026-08-14: this is an honor-system game (players
+      // self-report deaths, GMs verify ration photos by eye), so a player who digs the
+      // coordinates out of local storage is out of scope. The player UI still renders only
+      // *revealed* markers (#48) — hidden checkpoints remain invisible in-app.
+      //
+      // The secret payloads are NOT exposed: effects, hazards, boons, timed triggers and
+      // queue slots all live in `runbook` below, which stays GM-only. A player learns
+      // where something is, never what happens there.
       match /checkpoints/{checkpointId} {
-        allow read, write: if isGameGM(gameId);
+        allow read: if isGameMember(gameId);
+        allow write: if isGameGM(gameId);
       }
 
       // Runbook (#60) — the behavior attached to checkpoints (effects, triggers,

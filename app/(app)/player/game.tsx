@@ -18,7 +18,13 @@ import { PostGameMedia } from '@/components/PostGameMedia';
 import { Tutorial } from '@/components/Tutorial';
 import { BroadcastsProvider } from '@/context/BroadcastsContext';
 import * as Location from 'expo-location';
-import { startLocationTracking, stopLocationTracking, getTrackingDiagnostics } from '@/services/locationTask';
+import {
+  startLocationTracking,
+  stopLocationTracking,
+  getTrackingDiagnostics,
+  startCheckpointGeofencing,
+  stopCheckpointGeofencing,
+} from '@/services/locationTask';
 import { requestBatteryOptimizationExemption } from '@/services/batteryOptimization';
 import { eliminatePlayer, raiseSos, setDeathLocation, gamePhase, gameConfig } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
@@ -246,6 +252,36 @@ export default function PlayerGameScreen() {
         }
       });
     return () => { active = false; stopLocationTracking().catch(console.error); };
+  }, [gameId, shouldTrack]);
+
+  // OS geofences for this game's checkpoints. Purely a latency device: the OS wakes the app
+  // on region entry even in Doze, and the task forces a location upload so the SERVER can
+  // detect the arrival on a fresh fix instead of waiting out a ~90s throttled gap. Arrival
+  // detection itself is unchanged and stays server-side.
+  //
+  // Registered only while tracking, and torn down on leave/elimination so a finished game
+  // doesn't keep waking the device.
+  useEffect(() => {
+    if (!shouldTrack || !gameId) {
+      stopCheckpointGeofencing().catch(() => {});
+      return;
+    }
+    let active = true;
+    const unsub = onSnapshot(
+      collection(db, Collections.GAMES, gameId, Collections.CHECKPOINTS),
+      (snap: QuerySnapshot) => {
+        if (!active) return;
+        const regions = snap.docs
+          .map((d) => {
+            const c = d.data() as { latitude?: number; longitude?: number; radius?: number };
+            return { id: d.id, latitude: c.latitude!, longitude: c.longitude!, radius: c.radius ?? 30 };
+          })
+          .filter((r) => typeof r.latitude === 'number' && typeof r.longitude === 'number');
+        startCheckpointGeofencing(regions).catch(() => {});
+      },
+      (err: Error) => console.error('[PlayerGame] checkpoint geofence listener error', err)
+    );
+    return () => { active = false; unsub(); stopCheckpointGeofencing().catch(() => {}); };
   }, [gameId, shouldTrack]);
 
   // Propagate param changes (displayName arriving, battery-saver toggle) to a running
