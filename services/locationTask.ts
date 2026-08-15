@@ -163,8 +163,26 @@ export async function startLocationTracking(
   isBatteryOptimized().then((opt) => setDiag({ batteryOptimized: opt })).catch(() => {});
 
   // Tracking cadence: tighter when accuracy matters, looser to save battery.
-  const accuracy = options.batterySaver ? Location.Accuracy.Balanced : Location.Accuracy.High;
-  const timeInterval = options.batterySaver ? 15000 : 5000;
+  //
+  // BestForNavigation (not High) in normal mode: field-measured 2026-08-14, a pocketed
+  // phone reported ~52m accuracy while walking and 40.1m while standing AT a 40m-radius
+  // checkpoint — i.e. fixes were landing just outside the circle and the crossing only
+  // registered via #49 segment detection. BestForNavigation keeps the GPS hot instead of
+  // letting the fused provider fall back to network positioning, which is what produces
+  // those 40-50m fixes. It costs battery, so batterySaver still uses Balanced.
+  const accuracy = options.batterySaver
+    ? Location.Accuracy.Balanced
+    : Location.Accuracy.BestForNavigation;
+  // 3s requested (was 5s). Observed cadence has been ~15s with ~90s gaps once the device
+  // idles, so the request is NOT currently the binding constraint — Android is coalescing.
+  // Asking for less can only help, but the real fix for the gaps is elsewhere; measure
+  // before assuming this changed anything.
+  const timeInterval = options.batterySaver ? 15000 : 3000;
+  // Never let the OS batch/defer updates: deferred delivery is exactly the "player stands
+  // still and stops reporting" failure we keep hitting. Explicit rather than relying on
+  // the library default staying 0.
+  const deferredUpdatesInterval = 0;
+  const deferredUpdatesDistance = 0;
   // distanceInterval MUST be 0 (purely time-based updates). A non-zero displacement
   // filter means the OS delivers nothing while the player stands still — so a player
   // waiting at a checkpoint (or just standing) stops uploading: the geofence never gets
@@ -227,8 +245,10 @@ export async function startLocationTracking(
         await withTimeout(
           Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
             accuracy,
-            timeInterval,             // 5s normally, 15s in battery saver
-            distanceInterval,         // 10m normally, 30m in battery saver
+            timeInterval,             // 3s normally, 15s in battery saver
+            distanceInterval,         // always 0 — see the note above
+            deferredUpdatesInterval,  // 0 — no OS batching
+            deferredUpdatesDistance,  // 0 — no OS batching
             // Fitness activity + never auto-pause: iOS otherwise suspends updates
             // when it thinks the player is stationary, dropping them off the map.
             activityType: Location.ActivityType.Fitness,
