@@ -206,7 +206,13 @@ function MapSVG({ mode, rally = false }: { mode: 'player' | 'gm'; rally?: boolea
   const revealed = CHECKPOINTS.filter((c) => c.revealed);
 
   return (
-    <svg viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg"
+    // Canvas is 400x620 (phone-tall) while the detailed terrain is authored at 400x300.
+    // Rather than redraw every coordinate, the artwork is centred in the taller canvas over
+    // an out-of-bounds base — which is also what the real map shows: a lit play area sitting
+    // inside a darker wider landscape. Without this the map letterboxed into the top third
+    // of a phone frame and store screenshots came out mostly empty.
+    <svg viewBox="0 0 400 620" xmlns="http://www.w3.org/2000/svg"
+      preserveAspectRatio="xMidYMid slice"
       style={{ width: '100%', height: '100%', display: 'block' }} aria-hidden="true">
       <defs>
         <radialGradient id="lake" cx="50%" cy="45%" r="50%">
@@ -215,6 +221,15 @@ function MapSVG({ mode, rally = false }: { mode: 'player' | 'gm'; rally?: boolea
         </radialGradient>
       </defs>
 
+      {/* Out-of-bounds surround, plus tree cover so the extra space isn't flat. */}
+      <rect width="400" height="620" fill="#121c0f" />
+      {[[40, 60], [150, 34], [270, 72], [355, 44], [70, 560], [190, 590], [310, 552], [368, 596]].map(
+        ([cx, cy], i) => (
+          <ellipse key={`t${i}`} cx={cx} cy={cy} rx={i % 3 === 0 ? 30 : 22} ry={i % 2 === 0 ? 20 : 15} fill="#0d1509" />
+        )
+      )}
+
+      <g transform="translate(0, 160)">
       <rect width="400" height="300" fill="#1c2819" />
       <rect x="0" y="0" width="400" height="22" fill="#121c0f" />
       <rect x="0" y="22" width="38" height="256" fill="#121c0f" />
@@ -307,6 +322,7 @@ function MapSVG({ mode, rally = false }: { mode: 'player' | 'gm'; rally?: boolea
           </text>
         </g>
       )}
+      </g>
     </svg>
   );
 }
@@ -981,7 +997,7 @@ export function DemoScreen() {
 
   const state = raw && raw in views ? (raw as DemoState) : null;
 
-  return (
+  const frame = (
     <div style={{
       height: '100%', background: C.bg, overflow: 'hidden', position: 'relative',
       fontFamily: "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
@@ -989,7 +1005,44 @@ export function DemoScreen() {
       {state ? views[state] : <DemoPicker />}
     </div>
   );
+
+  // App Store screenshot mode: `?shot=6.7` renders the phone-sized layout scaled up to
+  // Apple's exact pixel dimensions, so a plain viewport-sized browser capture is already
+  // submission-ready — no upscaling (which blurs) and no DevTools DPR fiddling.
+  //
+  // The layout is authored at a logical phone width; we render it at that width and then
+  // `transform: scale()` the whole frame, so text and SVG rasterise at full device
+  // resolution rather than being stretched after the fact.
+  const shot = params.get('shot');
+  const spec = shot ? SHOT_SIZES[shot] : null;
+  if (!spec) return frame;
+
+  const scale = spec.w / spec.logicalW;
+  return (
+    <div style={{
+      width: spec.w, height: spec.h, overflow: 'hidden', background: C.bg,
+      position: 'relative',
+    }}>
+      <div style={{
+        width: spec.logicalW, height: Math.round(spec.h / scale),
+        transform: `scale(${scale})`, transformOrigin: 'top left',
+      }}>
+        {frame}
+      </div>
+    </div>
+  );
 }
+
+/**
+ * Apple's required App Store screenshot dimensions, keyed by the display size Apple names
+ * them by. `logicalW` is the CSS width the layout is authored against — the scale factor is
+ * derived, so adding a new size needs only its pixel dimensions.
+ */
+const SHOT_SIZES: Record<string, { w: number; h: number; logicalW: number }> = {
+  '6.9': { w: 1320, h: 2868, logicalW: 440 }, // iPhone 16 Pro Max
+  '6.7': { w: 1290, h: 2796, logicalW: 430 }, // iPhone 15 Pro Max
+  '6.5': { w: 1242, h: 2688, logicalW: 414 }, // iPhone 11 Pro Max / XS Max
+};
 
 // ─── State picker (shown at /demo with no state param) ─────────────────────────
 

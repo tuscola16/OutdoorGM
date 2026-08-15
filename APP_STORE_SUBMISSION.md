@@ -59,30 +59,23 @@ play — bring a power bank for long events.
 
 ---
 
-## 2. Required URLs
+## 2. Required URLs — LIVE
 
-Both are **mandatory** for a location-tracking app. Neither exists yet — these must
-be live pages before submission.
+Both are now deployed and public (no auth):
 
-| Field | Needed |
-|---|---|
-| Privacy policy URL | Required. Must cover precise-location collection, background collection, retention, and deletion. |
-| Support URL | Required. A contact page or email is enough. |
-| Marketing URL | Optional. |
+| Field | URL | Status |
+|---|---|---|
+| Privacy policy | https://outdoor-gm.web.app/privacy | live |
+| Support | https://outdoor-gm.web.app/support | live |
 
-The Firebase Hosting site (`outdoor-gm.web.app`) already serves the GM dashboard and is
-the cheapest place to host both — add `/privacy` and `/support` routes.
+The privacy page is written against what the code actually does — background GPS during
+lobby/play/endgame, automatic deletion of location and arrival data on game end, ration
+photos visible to that game's GMs, in-app account deletion. **If those behaviours change,
+`web/src/screens/LegalScreens.tsx` has to change with them**, because App Review reads this
+page for a location-tracking app.
 
-**Privacy policy must state**, to match what the code actually does:
-- Precise GPS location is collected continuously while a game is in the `lobby`, `play`,
-  or `endgame` phase, including in the background with the screen locked.
-- Location stops when the player taps out, is eliminated, or the game ends.
-- Email address and display name are collected at signup.
-- Ration photos are uploaded and visible to that game's Game Masters.
-- Location and arrival history are **deleted automatically when a game ends**
-  (`cleanupRationPhotosOnGameEnd`), as are ration photos and arena overlays.
-- Users can delete their account and data in-app (Profile → Delete account).
-- Crash diagnostics go to Firebase Crashlytics.
+The contact address in both pages is `support@outdoorgm.app` — make sure that mailbox
+exists and is monitored before submitting.
 
 ---
 
@@ -148,29 +141,42 @@ the alert lands, phone locks and the dot keeps moving.
 
 ---
 
-## 5. Screenshots
+## 5. Screenshots — GENERATED
 
-Required at 6.7" (1290x2796) and 6.5" (1242x2688). These must come from a real device or
-simulator — they cannot be mocked up from the web dashboard.
+15 files, checked in at `store-screenshots/`, at Apple's exact dimensions:
 
-Suggested set, in order:
-1. GM live map with several players and checkpoints visible
-2. Checkpoint arrival alert / notification feed
-3. Player view: play boundary and own position
-4. Run sheet or checkpoint behavior editor
-5. Results screen with player times
+| Folder | Pixels | Device class |
+|---|---|---|
+| `6.9/` | 1320 × 2868 | iPhone 16 Pro Max |
+| `6.7/` | 1290 × 2796 | iPhone 15 Pro Max |
+| `6.5/` | 1242 × 2688 | iPhone 11 Pro Max / XS Max |
+
+Display order (the first two do the selling):
+
+1. **gm-play** — live GM map, players and checkpoints, stale-player warning
+2. **gm-endgame** — final showdown with the rally point
+3. **gm-alerts** — notification feed: arrivals, hazards, boons
+4. **player-map** — the player's restricted view
+5. **results** — final times plus the post-game recap card
+
+No iPad sizes needed — `ios.supportsTablet` is `false`.
+
+Regenerate with the recipe in `store-screenshots/README.md`. They are browser-rendered
+mocks, not device captures, so check them against the real app before each submission.
 
 ---
 
 ## 6. Pre-submission checklist
 
+- [x] ~~Privacy policy URL live~~ — https://outdoor-gm.web.app/privacy
+- [x] ~~Support URL live~~ — https://outdoor-gm.web.app/support
+- [x] ~~Screenshots generated~~ — `store-screenshots/`, all three sizes
+- [x] ~~APNs auth key uploaded to Firebase~~ — `UTTR598W4P`, verified in console
 - [ ] Version string in App Store Connect matches the binary — record says `1.0`, build is `1.0.0`
 - [ ] Duplicate listing "Outdoor Game Master" (`com.outdoorgamemaster.app`, ID 6775019774) removed
-- [ ] APNs auth key uploaded to Firebase → Project Settings → Cloud Messaging (iOS push is dead without it)
-- [ ] App Store Connect API key created so `eas submit` can run
-- [ ] Privacy policy URL live
-- [ ] Support URL live
-- [ ] Screenshots uploaded
+- [ ] App Store Connect API key wired to `eas submit` — key `9DN225MYUH` already exists with Admin access
+- [ ] `support@outdoorgm.app` mailbox exists and is monitored
+- [ ] Screenshots uploaded to App Store Connect
 - [ ] Nutrition labels completed
 - [ ] Review notes + demo account + recording attached
 - [ ] Google Maps API keys restricted by bundle ID (repo is public; the iOS Maps key doubles as the Firebase `API_KEY`)
