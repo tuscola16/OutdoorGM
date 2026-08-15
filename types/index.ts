@@ -170,9 +170,31 @@ export interface GameConfig {
   /**
    * GPS fix quality gate for checkpoint evaluation. Fixes with reported accuracy (m)
    * worse than this threshold are skipped for checkpoint eval — the map dot still
-   * updates. Default 30 m.
+   * updates. Default 100 m.
+   *
+   * NOTE: this gates the *claimed* accuracy, which a wifi-derived fix can understate —
+   * field-measured 2026-08-15, a stationary Pixel 8 reported 22 m accuracy while being
+   * ~64 m from its true position, so it sailed through a 100 m gate while being wrong.
+   * Raising this further will not help that case; see `locationTrail`.
    */
   minFixAccuracyMeters?: number;
+
+  /**
+   * Diagnostic breadcrumb trail (debugging only, opt-in, no UI to set it).
+   *
+   * The `locations/{playerId}` doc is overwritten by every fix, so a finished game leaves
+   * a handful of arrival records and no track at all — three field tests in a row had to
+   * be diagnosed by inference from four surviving points. When this is true,
+   * `onLocationUpdate` appends every fix it receives to `games/{gameId}/locationTrail`,
+   * **including fixes the accuracy gate rejects**, with the distance to each checkpoint
+   * and the gate verdict.
+   *
+   * Deliberately excluded from the game-end cleanup that purges `locations`/`arrivals`,
+   * because the whole point is reading it after the game is over. That makes it a
+   * retention liability: only enable it on a throwaway test game, and delete the
+   * subcollection once you've analysed the run.
+   */
+  locationTrail?: boolean;
   /**
    * Consecutive in-radius location fixes required before recording a checkpoint arrival.
    * Debounces a lone jumpy fix. Default 2.

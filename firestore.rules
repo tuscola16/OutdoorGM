@@ -254,6 +254,15 @@ service cloud.firestore {
         allow read, write: if false;
       }
 
+      // Diagnostic breadcrumb trail (config.locationTrail). Written only by the
+      // onLocationUpdate Cloud Function (admin SDK), and only on games that opt in.
+      // GM-readable so a trail can be pulled without admin credentials; players never
+      // read it (it holds every fix, which is far more than the map ever shows).
+      match /locationTrail/{crumbId} {
+        allow read: if isGameGM(gameId);
+        allow write: if false;
+      }
+
       // Per-window ration-open push latch (#72). Written only by the rationPings Cloud
       // Function (admin SDK) to fire the "window open" push exactly once per interval;
       // never client-readable or writable.

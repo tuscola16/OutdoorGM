@@ -178,7 +178,17 @@ export async function startCheckpointGeofencing(
       return false;
     }
     const { status } = await Location.getBackgroundPermissionsAsync();
-    if (status !== 'granted') return false;
+    if (status !== 'granted') {
+      // Previously a bare `return false`: geofencing silently never armed, `geofencedRegions`
+      // stayed 0, `lastError` stayed 'none', and the caller discards the return value — so
+      // there was no way, on the device or in Firestore, to tell "armed and didn't fire" from
+      // "never armed". Record it.
+      setDiag({
+        lastError: `geofence: background permission is '${status}', regions not armed`,
+        geofencedRegions: 0,
+      });
+      return false;
+    }
     await Location.startGeofencingAsync(
       GEOFENCE_TASK_NAME,
       regions.slice(0, 100).map((r) => ({
@@ -193,7 +203,15 @@ export async function startCheckpointGeofencing(
         notifyOnExit: false,
       }))
     );
-    setDiag({ geofencedRegions: regions.length });
+    // Confirm with the OS rather than assuming the call above took effect — `geofencedRegions`
+    // is a diagnostic, and a diagnostic that reports what we *asked for* instead of what is
+    // actually armed is worse than none at all.
+    const armed = await Location.hasStartedGeofencingAsync(GEOFENCE_TASK_NAME).catch(() => false);
+    if (!armed) {
+      setDiag({ lastError: 'geofence: startGeofencingAsync resolved but nothing is armed', geofencedRegions: 0 });
+      return false;
+    }
+    setDiag({ geofencedRegions: regions.length, lastError: null });
     return true;
   } catch (err) {
     console.error('[Geofence] could not start geofencing:', err);

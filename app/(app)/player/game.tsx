@@ -86,8 +86,15 @@ export default function PlayerGameScreen() {
   // startup stalled: permission states, which source engaged, last upload, last error.
   const [diag, setDiag] = useState(getTrackingDiagnostics());
   const [showDiag, setShowDiag] = useState(false);
+  // The "…s ago" rows need a clock, but reading Date.now() during render is impure — it
+  // makes the output depend on when React happens to re-render. Sample it on the same tick
+  // as the diagnostics instead, so both move together and render stays a pure function.
+  const [diagNow, setDiagNow] = useState(() => Date.now());
   useEffect(() => {
-    const id = setInterval(() => setDiag(getTrackingDiagnostics()), 2000);
+    const id = setInterval(() => {
+      setDiag(getTrackingDiagnostics());
+      setDiagNow(Date.now());
+    }, 2000);
     return () => clearInterval(id);
   }, []);
 
@@ -594,7 +601,21 @@ export default function PlayerGameScreen() {
                       </Text></Text>
                       <Text style={styles.diagRow}>
                         Last upload: <Text style={styles.diagVal}>
-                          {diag.lastUploadAt ? `${Math.round((Date.now() - diag.lastUploadAt) / 1000)}s ago` : 'never'}
+                          {diag.lastUploadAt ? `${Math.round((diagNow - diag.lastUploadAt) / 1000)}s ago` : 'never'}
+                        </Text>
+                      </Text>
+                      {/* Collected since the OS-geofencing change but never rendered, which
+                          made "did the wake-up trigger even arm?" unanswerable in the field. */}
+                      <Text style={styles.diagRow}>
+                        OS geofences: <Text style={styles.diagVal}>
+                          {diag.geofencedRegions > 0 ? `${diag.geofencedRegions} armed` : 'none armed'}
+                        </Text>
+                      </Text>
+                      <Text style={styles.diagRow}>
+                        Last geofence wake: <Text style={styles.diagVal}>
+                          {diag.lastGeofenceWakeAt
+                            ? `${Math.round((diagNow - diag.lastGeofenceWakeAt) / 1000)}s ago`
+                            : 'never'}
                         </Text>
                       </Text>
                       <Text style={styles.diagRow}>Last error: <Text style={styles.diagVal}>{diag.lastError ?? 'none'}</Text></Text>
