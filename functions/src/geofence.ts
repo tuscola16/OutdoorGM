@@ -31,6 +31,8 @@ interface RunbookEntry {
   defaultNone?: boolean;
   startAt?: TimedBound;
   endAt?: TimedBound;
+  playerIds?: string[] | null; // #80: only these players can trip it (empty/absent = anyone)
+  revealOnFire?: 'none' | 'triggerer' | 'targeted' | 'all'; // #80: reveal the checkpoint on fire
   createdAt?: admin.firestore.Timestamp;
 }
 
@@ -95,6 +97,33 @@ function eligibleEffect(
     return e.defaultNone ? null : (e.effect ?? null); // default / revisit
   }
   return null; // gm-prompted — fired manually, never on a crossing
+}
+
+/**
+ * #80: may this player trip this entry? An untargeted entry (no `playerIds`, or an empty
+ * array) is open to everyone; a targeted one only fires for the named members — anyone else
+ * crossing falls through to the next-highest-priority entry.
+ */
+function entryTargetsPlayer(e: RunbookEntry, playerId: string): boolean {
+  return !Array.isArray(e.playerIds) || e.playerIds.length === 0 || e.playerIds.includes(playerId);
+}
+
+/**
+ * #80: the marker audience for an entry's reveal-on-fire, or `undefined` when it reveals
+ * nothing. `null` = every player; an array = only those uids. `targeted` falls back to the
+ * triggerer when the entry isn't targeted, so a reveal is never silently a no-op.
+ */
+function revealAudienceForEntry(e: RunbookEntry, triggererId: string): string[] | null | undefined {
+  switch (e.revealOnFire) {
+    case 'all':
+      return null;
+    case 'targeted':
+      return Array.isArray(e.playerIds) && e.playerIds.length > 0 ? e.playerIds : [triggererId];
+    case 'triggerer':
+      return [triggererId];
+    default:
+      return undefined; // 'none' / absent
+  }
 }
 
 /** Stable per-checkpoint firing order: highest priority first, ties → earliest createdAt. */
@@ -425,9 +454,11 @@ export const onLocationUpdate = functions
       entries: RunbookEntry[],
       ordinal: number | null,
       cpId: string,
-      cpName: string
+      cp: { name: string; latitude: number; longitude: number }
     ): Promise<number> {
+      const cpName = cp.name;
       for (const e of [...entries].sort(byPriorityThenAge)) {
+        if (!entryTargetsPlayer(e, userId)) continue; // #80: not this player's entry
         const effect = eligibleEffect(e, ordinal, nowMs, startedMs);
         if (!effect) continue;
         try {
@@ -448,6 +479,13 @@ export const onLocationUpdate = functions
           continue; // already tripped this entry — try the next-highest priority
         }
         newArrivals.push({ checkpointName: cpName, playerName: location.displayName, event: effect });
+
+        // #80: the entry can also put the checkpoint on the player map for good — the
+        // marker carries only the label + location, never the effect body.
+        const revealTo = revealAudienceForEntry(e, userId);
+        if (revealTo !== undefined) {
+          await projectMarker(db, gameId, cpId, cp, revealTo);
+        }
         return 1; // one per tick — the next eligible entry fires on the next re-eval
       }
       return 0;
@@ -530,7 +568,7 @@ export const onLocationUpdate = functions
           { merge: true }
         );
         const ordinal = typeof trip.arrivalOrdinal === 'number' ? trip.arrivalOrdinal : null;
-        await fireEligibleEntries(entries, ordinal, checkpointId, cp.name);
+        await fireEligibleEntries(entries, ordinal, checkpointId, cp);
         processedIds.add(checkpointId);
         continue;
       }
@@ -622,7 +660,7 @@ export const onLocationUpdate = functions
       // re-eval tick, once the co-arrival window has passed).
       const firedCount = result.suppressed
         ? 0
-        : await fireEligibleEntries(entries, result.ordinal, checkpointId, cp.name);
+        : await fireEligibleEntries(entries, result.ordinal, checkpointId, cp);
 
       if (result.suppressed) {
         newArrivals.push({

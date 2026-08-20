@@ -62,6 +62,12 @@ field-test findings has shipped** (see the callout) — the only outstanding wor
 >   voucher-site run-sheet preset (scaffolds open/close/announce rows); post-game `media` (GM
 >   attaches host-validated YouTube + Google Photos links on results, `onGameMediaWrite` pushes
 >   all-but-setter, results screens link out). Schema in `types/index.ts`; `common/mediaLinks.ts`.
+> - **80** — **per-entry player targeting + reveal-on-fire**: a runbook entry can name the players
+>   who may trip it (`RunbookEntry.playerIds`; anyone else crossing falls through to the next entry,
+>   and a `gm-prompted` entry defaults its recipients to that list), and can reveal its checkpoint on
+>   the player map when it fires (`revealOnFire: 'triggerer'|'targeted'|'all'` → the existing
+>   `markers` projection, so the site stays visible for the rest of the game). Geofence +
+>   `fireRunbookEntry` honor both; authored in the web Runbook editor, read-only on mobile.
 > - **77, 78, 79** — **2026-06-18 field fixes**: #77 closed-phone tracking traced to Android battery
 >   optimization/Doze (reproduced on a stock Pixel 8) — added a battery-optimization exemption flow
 >   (`services/batteryOptimization.ts`, `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, lobby "Background
