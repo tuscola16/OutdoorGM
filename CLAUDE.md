@@ -128,7 +128,9 @@ games/{gameId}/runbook/{entryId}
   // On a crossing the geofence delivers the single highest-`priority` matching entry.
   checkpointId, name, priority, trigger ('fixed-order'|'always-on'|'timed'|'gm-prompted'),
   effect ({ kind: 'hazard'|'boon'|'notify'|'gm-notify', message?, audience? }),
-  queueSlots? (fixed-order), startAt?/endAt? (timed), firedAt? (gm-prompted), createdAt
+  queueSlots? (fixed-order), startAt?/endAt? (timed), firedAt? (gm-prompted),
+  playerIds? (#80: only these players trip it), revealOnFire? (#80: 'none'|'triggerer'|
+  'targeted'|'all' — reveal the checkpoint's marker when the entry fires), createdAt
 
 games/{gameId}/members/{userId}
   userId, role ('player'|'gm'), displayName, email, fcmToken, out?, outAt?, archived?, joinedAt
@@ -159,6 +161,11 @@ games/{gameId}/arrivals/{arrivalId}
   matching `runbook` entries (always-on; timed in-window; fixed-order slot for the arrival ordinal —
   `gm-prompted` never fires on a crossing) and delivers the single **highest-`priority`** effect
   (ties → earliest `createdAt`). The GM-only arrival ping is independent.
+- **Per-entry player targeting + reveal (#80)**: an entry with `playerIds` only fires for those
+  members — anyone else crossing falls through to the next-highest entry. An entry with
+  `revealOnFire` also projects its checkpoint into the player-readable `markers` collection when it
+  fires (`triggerer` / `targeted` / `all`), so those players keep seeing the site for the rest of the
+  game. Same plumbing as the checkpoint-level reveal — the marker carries name + location only.
 - Deduplication: prevents duplicate arrivals for the same player-checkpoint pair within a time window
 - GMs only: non-players (GMs) don't trigger checkpoint arrivals even if their location is updated
 - **GM-prompted entries** are fired on demand via the `fireRunbookEntry` callable (GM picks targets)

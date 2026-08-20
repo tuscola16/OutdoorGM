@@ -24,7 +24,10 @@ collection); the server-only `checkpointTrips`, `entryTrips` (GM-readable, #67/#
 `RevealedMarker.visibleFrom` (#48); `PlayerLocation.battery` (#35); the `cloneGame`/`submitRation`/
 `fireRunbookEntry`/`rationPings`/`starvationSweep`/`transferGmOrEndGame` (#29) callables/functions;
 and the shared `common/` helpers `pointInBoundary`, `validateGameConfig`, `startPreflight`
-(#63/#64/#23). Tier 7 (#20–28) added **no** new schema.
+(#63/#64/#23); `RunbookEntry.playerIds` + `RunbookEntry.revealOnFire` (#80 — per-entry player
+targeting and the entry-driven reveal into the existing `markers` projection; both optional, so
+untargeted legacy entries still fire for everyone and reveal nothing). Tier 7 (#20–28) added **no**
+new schema.
 
 ---
 

@@ -71,6 +71,15 @@ export async function projectMarker(
     // with zero args throws, so set the empty array directly.)
     await ref.set({ ...base, audiencePlayerIds: [] }, { merge: true });
   } else {
+    // Never narrow a marker everyone can already see (#80): a per-player reveal on top of a
+    // global one (e.g. a `shown` checkpoint that also carries a reveal-on-fire entry) must
+    // stay global — arrayUnion on a null field would otherwise replace it with a subset and
+    // hide the site from every other player. Refresh the label/location instead.
+    const existing = await ref.get();
+    if (existing.exists && (existing.get('audiencePlayerIds') ?? null) === null) {
+      await ref.set(base, { merge: true });
+      return;
+    }
     await ref.set(
       {
         ...base,

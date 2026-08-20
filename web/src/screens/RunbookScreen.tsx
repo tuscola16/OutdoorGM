@@ -14,7 +14,7 @@ import { friendlyError } from '@/services/errorUtils';
 import { requirePositiveInt } from '@shared/common/gameConfigValidation';
 import type {
   RunbookEntry, RunbookEffect, RunbookTriggerType, CheckpointKind, NotifyAudience, TimedBound,
-  ScheduledEvent, ScheduledActionType, Checkpoint,
+  RunbookRevealScope, ScheduledEvent, ScheduledActionType, Checkpoint,
 } from '@shared/types';
 
 // Standalone full-page runbook editor (ROADMAP #60). Left sidebar lists entries in two
@@ -417,7 +417,11 @@ function Group({
                 {timed ? ` · ${timedLabel(e.startAt, e.endAt)}` : ''}
               </div>
             </div>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>P{e.priority ?? 0}</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>
+              {(e.playerIds?.length ?? 0) > 0 && <span title={`Only ${e.playerIds!.length} player(s)`}>🎯 </span>}
+              {e.revealOnFire && e.revealOnFire !== 'none' && <span title="Reveals the checkpoint when it fires">👁 </span>}
+              P{e.priority ?? 0}
+            </span>
           </button>
         );
       })}
@@ -487,6 +491,29 @@ function EffectEditor({ value, onChange }: { value: RunbookEffect; onChange: (e:
 
 // --- Entry editor ---
 
+/** #80: reveal-on-fire options, in authoring order. */
+const REVEAL_SCOPES: { v: RunbookRevealScope; label: string; emoji: string }[] = [
+  { v: 'none', label: 'Stays hidden', emoji: '🙈' },
+  { v: 'triggerer', label: 'The player who trips it', emoji: '🧭' },
+  { v: 'targeted', label: 'The targeted players', emoji: '🎯' },
+  { v: 'all', label: 'Everyone', emoji: '🌐' },
+];
+
+function revealScopeHint(scope: RunbookRevealScope, targeted: boolean): string {
+  switch (scope) {
+    case 'triggerer':
+      return 'When this entry fires, the checkpoint appears on that player’s map — name and location only — and stays there for the rest of the game.';
+    case 'targeted':
+      return targeted
+        ? 'When this entry fires, the checkpoint appears on every targeted player’s map for the rest of the game.'
+        : 'This entry isn’t targeted, so this reveals to whoever trips it.';
+    case 'all':
+      return 'When this entry fires, the checkpoint appears on every player’s map for the rest of the game.';
+    default:
+      return 'Firing this entry doesn’t put the checkpoint on anyone’s map.';
+  }
+}
+
 function EntryEditor({
   gameId, entry, newCheckpointId, checkpoints, players, onSaved, onDeleted,
 }: {
@@ -507,16 +534,34 @@ function EntryEditor({
   const [defaultNone, setDefaultNone] = useState(entry?.defaultNone ?? false);
   const [startAt, setStartAt] = useState<TimedBound>(entry?.startAt ?? { kind: 'game-start' });
   const [endAt, setEndAt] = useState<TimedBound>(entry?.endAt ?? { kind: 'game-end' });
+  // #80: player targeting + reveal-on-fire.
+  const [targeted, setTargeted] = useState((entry?.playerIds ?? []).length > 0);
+  const [playerIds, setPlayerIds] = useState<string[]>(entry?.playerIds ?? []);
+  const [revealOnFire, setRevealOnFire] = useState<RunbookRevealScope>(entry?.revealOnFire ?? 'none');
   const [busy, setBusy] = useState(false);
+  const togglePlayer = (id: string) =>
+    setPlayerIds((r) => (r.includes(id) ? r.filter((x) => x !== id) : [...r, id]));
 
   // GM-prompted fire
   const [fireTargets, setFireTargets] = useState<string[]>([]);
   const toggleFire = (id: string) => setFireTargets((r) => (r.includes(id) ? r.filter((x) => x !== id) : [...r, id]));
+  // #80: firing can only narrow a targeted entry's audience, so offer just those players.
+  // Read from the *saved* entry — unsaved target edits aren't what the server will resolve.
+  const savedTargets = entry?.playerIds ?? [];
+  const fireCandidates = savedTargets.length > 0
+    ? players.filter((p) => savedTargets.includes(p.userId))
+    : players;
 
   async function save() {
     if (!checkpointId) { window.alert('Pick a checkpoint.'); return; }
     if (!name.trim()) { window.alert('Name this runbook entry.'); return; }
     const prio = Math.round(Number(priority) || 0);
+
+    // #80: an empty target list means "anyone" — don't store a list that fires for nobody.
+    if (targeted && playerIds.length === 0) {
+      window.alert('Pick at least one player, or switch this entry back to “Any player”.');
+      return;
+    }
 
     const base: Record<string, unknown> = {
       checkpointId,
@@ -524,6 +569,9 @@ function EntryEditor({
       priority: prio,
       trigger,
       effect: cleanEffect(effect),
+      // #80: who may trip it, and whether firing puts the checkpoint on their map.
+      playerIds: targeted ? playerIds : null,
+      revealOnFire,
     };
     // Trigger-specific fields (set the relevant ones; clear the rest on update).
     if (trigger === 'fixed-order') {
@@ -609,6 +657,53 @@ function EntryEditor({
         </div>
       </div>
 
+      {/* Who can trip it (#80) */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <span style={labelStyle}>Who can trip it</span>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button type="button" className={!targeted ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 12px' }} onClick={() => setTargeted(false)}>Any player</button>
+          <button type="button" className={targeted ? 'btn' : 'btn btn--ghost'} style={{ flex: 1, padding: '8px 12px' }} onClick={() => setTargeted(true)}>Specific players</button>
+        </div>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+          {trigger === 'gm-prompted'
+            ? targeted
+              ? 'Firing this entry reaches these players by default.'
+              : 'Firing this entry reaches every living player by default.'
+            : targeted
+              ? 'Only these players trip it on a crossing. Anyone else falls through to the next entry.'
+              : 'Anyone who crosses the checkpoint can trip it.'}
+        </span>
+        {targeted && (
+          players.length === 0 ? (
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No players have joined yet.</span>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {players.map((p) => (
+                <label key={p.userId} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={playerIds.includes(p.userId)} onChange={() => togglePlayer(p.userId)} />
+                  <span>{p.displayName}</span>
+                </label>
+              ))}
+            </div>
+          )
+        )}
+      </div>
+
+      {/* Reveal the checkpoint when it fires (#80) */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <span style={labelStyle}>Reveal the checkpoint</span>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {REVEAL_SCOPES.map((o) => (
+            <button key={o.v} type="button" className={revealOnFire === o.v ? 'btn' : 'btn btn--ghost'} style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => setRevealOnFire(o.v)}>
+              {o.emoji} {o.label}
+            </button>
+          ))}
+        </div>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+          {revealScopeHint(revealOnFire, targeted)}
+        </span>
+      </div>
+
       {/* Effect (the default for fixed-order) */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <span style={labelStyle}>{trigger === 'fixed-order' ? 'Default effect' : 'Effect'}</span>
@@ -676,12 +771,17 @@ function EntryEditor({
             <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Save the entry first, then fire it from here.</span>
           ) : (
             <>
-              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Leave all unchecked to send to every living player.</span>
-              {players.length === 0 ? (
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                {/* #80: a targeted entry already has a recipient set — picking here narrows it. */}
+                {savedTargets.length > 0
+                  ? 'Leave all unchecked to send to this entry’s targeted players.'
+                  : 'Leave all unchecked to send to every living player.'}
+              </span>
+              {fireCandidates.length === 0 ? (
                 <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No players have joined yet.</span>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {players.map((p) => (
+                  {fireCandidates.map((p) => (
                     <label key={p.userId} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
                       <input type="checkbox" checked={fireTargets.includes(p.userId)} onChange={() => toggleFire(p.userId)} />
                       <span>{p.displayName}</span>

@@ -21,7 +21,7 @@ import {
 import { CHECKPOINT_ICONS, DEFAULT_CHECKPOINT_ICON } from '@/constants/checkpointIcons';
 import type {
   Checkpoint, CheckpointVisibility, RevealTrigger, RevealAudience, CheckpointReveal,
-  RunbookEntry, TimedBound,
+  RunbookEntry, RunbookRevealScope, TimedBound,
 } from '@/types';
 
 export default function CheckpointEditorScreen() {
@@ -180,6 +180,12 @@ export default function CheckpointEditorScreen() {
 
   const isRevealed = !!cp?.revealedAt;
 
+  // #80: firing can only narrow a targeted entry's audience, so offer just those players.
+  const fireEntryTargets = fireEntry?.playerIds ?? [];
+  const fireCandidates = fireEntryTargets.length > 0
+    ? players.filter((p) => fireEntryTargets.includes(p.userId))
+    : players;
+
   if (!cp) {
     return (
       <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
@@ -333,6 +339,13 @@ export default function CheckpointEditorScreen() {
                     {trig.label} · {kindMeta.label} · priority {e.priority ?? 0}
                     {e.trigger === 'fixed-order' && e.queueSlots ? ` · ${e.queueSlots.length} slots` : ''}
                     {e.trigger === 'timed' ? ` · ${timedSummary(e.startAt, e.endAt)}` : ''}
+                    {/* #80: player targeting + reveal-on-fire, read-only here. */}
+                    {(e.playerIds?.length ?? 0) > 0
+                      ? ` · 🎯 ${targetSummary(e.playerIds ?? [], players)}`
+                      : ''}
+                    {e.revealOnFire && e.revealOnFire !== 'none'
+                      ? ` · 👁 reveals to ${REVEAL_SCOPE_LABELS[e.revealOnFire]}`
+                      : ''}
                   </Text>
                 </View>
                 {e.trigger === 'gm-prompted' && (
@@ -370,13 +383,16 @@ export default function CheckpointEditorScreen() {
                 </Text>
               )}
               <Text style={styles.hintSmall}>
-                Leave everyone unchecked to send to all living players, or pick specific recipients.
+                {/* #80: a targeted entry already has a recipient set — picking here narrows it. */}
+                {(fireEntry?.playerIds?.length ?? 0) > 0
+                  ? 'Leave everyone unchecked to send to this entry’s targeted players, or pick a narrower set.'
+                  : 'Leave everyone unchecked to send to all living players, or pick specific recipients.'}
               </Text>
-              {players.length === 0 ? (
+              {fireCandidates.length === 0 ? (
                 <Text style={styles.hintSmall}>No players have joined yet.</Text>
               ) : (
                 <View style={styles.recipientList}>
-                  {players.map((p) => {
+                  {fireCandidates.map((p) => {
                     const on = fireTargets.includes(p.userId);
                     return (
                       <TouchableOpacity key={p.userId} style={styles.recipientRow} onPress={() => toggleFireTarget(p.userId)}>
@@ -409,6 +425,20 @@ function timedSummary(start?: TimedBound, end?: TimedBound): string {
     return fallback;
   };
   return `${label(start, 'start')}→${label(end, 'end')}`;
+}
+
+/** #80: how a runbook entry's reveal-on-fire reads in the read-only entry list. */
+const REVEAL_SCOPE_LABELS: Record<Exclude<RunbookRevealScope, 'none'>, string> = {
+  triggerer: 'the player who trips it',
+  targeted: 'its targeted players',
+  all: 'everyone',
+};
+
+/** #80: "Aaron & Bree" / "3 players" for an entry's target list. */
+function targetSummary(ids: string[], players: { userId: string; displayName: string }[]): string {
+  if (ids.length > 2) return `${ids.length} players`;
+  const names = ids.map((id) => players.find((p) => p.userId === id)?.displayName ?? 'unknown');
+  return names.join(' & ');
 }
 
 const styles = StyleSheet.create({

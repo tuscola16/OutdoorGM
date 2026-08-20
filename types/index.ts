@@ -345,8 +345,34 @@ export interface RunbookEntry {
    * Cleared/reset on re-arm. Not used by crossing resolution.
    */
   firedAt?: FsTimestamp | null;
+  /**
+   * Restrict this entry to specific players (ROADMAP #80). Absent/null/empty = anyone who
+   * crosses can trip it. Set = only these member uids; another player crossing simply
+   * falls through to the next eligible entry (or the bare GM arrival ping). On a
+   * `gm-prompted` entry it is the default recipient set when the GM fires without
+   * picking targets.
+   */
+  playerIds?: string[] | null;
+  /**
+   * Reveal the entry's checkpoint on the player map when this entry fires (ROADMAP #80),
+   * so the player keeps seeing the site for the rest of the game. Absent/`'none'` = no
+   * reveal. The marker carries only the checkpoint's name + location, never the effect.
+   */
+  revealOnFire?: RunbookRevealScope;
   createdAt: FsTimestamp;
 }
+
+/**
+ * Who a fired runbook entry reveals its checkpoint to (ROADMAP #80). Orthogonal to the
+ * checkpoint's own `visibility`/`reveal`: this is a reveal the *entry* performs when it
+ * fires, and it merges into the same player-readable `markers` projection.
+ * - `none`      — fire the effect, reveal nothing (the default).
+ * - `triggerer` — only the player who tripped it (on a GM-prompted fire: the recipients).
+ * - `targeted`  — every player in the entry's `playerIds` (falls back to the triggerer
+ *                 when the entry isn't targeted).
+ * - `all`       — every player in the game.
+ */
+export type RunbookRevealScope = 'none' | 'triggerer' | 'targeted' | 'all';
 
 /**
  * Whether (and when) a checkpoint's marker is shown to players (ROADMAP #60, formerly #48).

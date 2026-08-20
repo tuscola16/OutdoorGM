@@ -1,6 +1,8 @@
 import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
 import { sendPushToTokens } from './notifications';
+import { projectMarker } from './markers';
+import type { CheckpointDoc } from './markers';
 
 // Fire a `gm-prompted` runbook entry on demand (ROADMAP #60). The GM taps an entry in the
 // dashboard and (optionally) picks target players; this resolves the entry server-side,
@@ -63,7 +65,13 @@ export const fireRunbookEntry = functions.https.onCall(async (data, context) => 
   if (!entrySnap.exists) {
     throw new functions.https.HttpsError('not-found', 'That runbook entry no longer exists.');
   }
-  const entry = entrySnap.data() as { trigger?: string; effect?: RunbookEffect };
+  const entry = entrySnap.data() as {
+    trigger?: string;
+    effect?: RunbookEffect;
+    checkpointId?: string;
+    playerIds?: string[] | null;
+    revealOnFire?: 'none' | 'triggerer' | 'targeted' | 'all';
+  };
   if (entry.trigger !== 'gm-prompted') {
     throw new functions.https.HttpsError('failed-precondition', 'Only GM-prompted entries can be fired manually.');
   }
@@ -81,10 +89,19 @@ export const fireRunbookEntry = functions.https.onCall(async (data, context) => 
     .map((d) => ({ id: d.id, data: d.data() as admin.firestore.DocumentData }))
     .filter((m) => m.data.role !== 'gm' && !m.data.out);
 
+  // #80: an entry targeted at specific players is the default recipient set — the GM only
+  // has to pick targets when they want to narrow it further for this one firing.
+  const entryTargets = Array.isArray(entry.playerIds) && entry.playerIds.length > 0
+    ? entry.playerIds
+    : null;
+  const defaults = entryTargets
+    ? livingPlayers.filter((m) => entryTargets.includes(m.id))
+    : livingPlayers;
+
   const recipients =
     targetPlayerIds && targetPlayerIds.length > 0
-      ? livingPlayers.filter((m) => targetPlayerIds.includes(m.id))
-      : livingPlayers;
+      ? defaults.filter((m) => targetPlayerIds.includes(m.id))
+      : defaults;
 
   const work: Promise<unknown>[] = [];
 
@@ -123,6 +140,23 @@ export const fireRunbookEntry = functions.https.onCall(async (data, context) => 
       );
       const token = m.data.fcmToken as string | undefined;
       if (token) work.push(sendPushToTokens([token], title, body, 'broadcasts'));
+    }
+  }
+
+  // #80: reveal the entry's checkpoint on the player map. There's no crossing player here,
+  // so `triggerer` means "the players this firing reached"; `targeted` uses the entry's own
+  // player list (falling back to the recipients when it isn't targeted).
+  if (entry.revealOnFire && entry.revealOnFire !== 'none' && entry.checkpointId) {
+    const cpSnap = await gameRef.collection('checkpoints').doc(entry.checkpointId).get();
+    const cp = cpSnap.data() as CheckpointDoc | undefined;
+    if (cp) {
+      const audience: string[] | null =
+        entry.revealOnFire === 'all'
+          ? null
+          : entry.revealOnFire === 'targeted' && entryTargets
+            ? entryTargets
+            : recipients.map((m) => m.id);
+      work.push(projectMarker(db, gameId, entry.checkpointId, cp, audience));
     }
   }
 
