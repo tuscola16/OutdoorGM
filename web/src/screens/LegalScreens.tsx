@@ -14,7 +14,11 @@
  * If any of those behaviours change, this page has to change with them.
  */
 
-const CONTACT = 'support@outdoorgm.app';
+// Both stores require a contact address that actually receives mail; neither requires a
+// branded one. `support@outdoorgm.app` was aspirational — outdoorgm.app has never been
+// registered and returns NXDOMAIN, so mail to it hard-bounced. This is the same address
+// eatMyPack ships on its own privacy/support pages and in `eas submit`.
+const CONTACT = 'tuscola16@gmail.com';
 const UPDATED = '15 August 2026';
 const TERMS_UPDATED = '29 August 2026';
 
