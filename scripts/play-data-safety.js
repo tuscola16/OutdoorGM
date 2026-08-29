@@ -85,7 +85,10 @@ const TOP = {
   'PSL_SUPPORT_DATA_DELETION_BY_USER|DATA_DELETION_YES': 'true',
   PSL_ACCOUNT_DELETION_URL: SUPPORT_URL,
   PSL_DATA_DELETION_URL: SUPPORT_URL,
-  PSL_HAS_OUTSIDE_APP_ACCOUNTS: 'false',                  // email/password created in-app
+  // PSL_HAS_OUTSIDE_APP_ACCOUNTS is deliberately left blank. It is listed OPTIONAL in the
+  // template, but the API rejects the whole submission with "You cannot answer
+  // PSL_HAS_OUTSIDE_APP_ACCOUNTS" if it carries a value — it is gated on answers we don't
+  // give (accounts are email/password, created in-app). Same for its follow-ups.
 };
 
 // ── CSV round-trip ─────────────────────────────────────────────────────────────
