@@ -91,10 +91,17 @@ Also answer:
 
 ---
 
-## 5. Background location declaration — THE LONG POLE
+## 5. Background location declaration
 
-Play reviews this separately from the app, and it runs one to several weeks. **File it
-early**, not after the build is ready.
+> **You cannot file this before uploading a bundle.** The permissions declaration form is
+> shown *during the release process*, once Play sees `ACCESS_BACKGROUND_LOCATION` in an
+> uploaded AAB's manifest — it is not a form you can open ahead of time. That makes the
+> **AAB the gate on this**, not the other way round. (An earlier version of this file said
+> to file it first; that was wrong.) Once a bundle is up it also appears under
+> *App content → Sensitive app permissions*.
+
+Play reviews it separately from the app, and it can run one to several weeks — so upload a
+bundle to the `internal` track as soon as one exists, even if you aren't ready to release.
 
 ### Written justification
 
@@ -220,19 +227,29 @@ Still to do before that works:
 - [x] ~~`eas submit` android config~~ — `eas.json`, track `internal`
 - [x] ~~targetSdk meets the deadline~~ — RN 0.86 pins 36; Play required 36 from 2026-08-31
 
-**Open — needs the Play Console**
+- [x] ~~Play service account~~ — `google-play-deploy@outdoor-gm.iam.gserviceaccount.com`,
+      key at `./play-service-account.json` (gitignored), `androidpublisher` API enabled,
+      invited in Play Console
+- [x] ~~Store listing text + all 7 images~~ — pushed via the API 2026-08-29 and read back:
+      short 78, full 1791, video set, icon + feature graphic + 5 phone screenshots
+- [x] ~~Demo videos recorded~~ — player side `https://youtu.be/fX3AxKAL0s4`,
+      web GM side `https://youtu.be/977LJcfcu6o`
+- [x] ~~App access, Ads, Content rating, Target audience, Government, Financial, Health~~
+      — all complete in App content
 
-- [ ] Store listing text pasted; assets uploaded
-- [ ] App access (test credentials) — submission is rejected without it
-- [ ] Data safety form (§4)
-- [ ] Background location declaration + video (§5) — **start first, longest lead time**
-- [ ] Content rating questionnaire (§6)
-- [ ] Target audience set to 13+ (§7)
-- [ ] Remaining declarations (§8)
+**Open**
 
-**Open — needs a build or a device**
+- [ ] **Data safety** (§4) — the last App content item. Scriptable: `applications.dataSafety`
+      takes the console's CSV *contents* as a string, so export the blank template from
+      Play Console → App content → Data safety → *Export to CSV*, fill it from §4, POST it.
+- [ ] **Production AAB** — every Android build so far is a `preview` APK. This now gates
+      the background-location declaration (§5), which cannot be filed before an upload.
+- [ ] Background-location declaration — appears during the release flow once the AAB is up;
+      paste §5's justification and the player-side video.
+- [ ] Production keystore SHA-1 (Maps) + SHA-256 (Play Integrity / Firebase) registered,
+      or the first production install shows a blank map.
 
-- [ ] Play service-account JSON
-- [ ] Production AAB (every Android build so far is a `preview` APK)
-- [ ] Background-location demo video
-- [ ] Production keystore SHA-1 / SHA-256 registered
+> **Automation.** `applications.dataSafety`, `edits.listings`, `edits.images`,
+> `edits.details`, `edits.bundles`, and `edits.tracks` are all in the Play Developer API.
+> Content rating, target audience, app access, and the permissions declaration are **not** —
+> those are console-only. Verified against the v3 discovery document, not from memory.
