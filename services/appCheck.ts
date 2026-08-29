@@ -1,4 +1,5 @@
-import appCheck from '@react-native-firebase/app-check';
+import { getApp } from '@react-native-firebase/app';
+import { initializeAppCheck, ReactNativeFirebaseAppCheckProvider } from '@react-native-firebase/app-check';
 
 // App Check attests that requests come from a genuine build of this app, not a
 // script wielding the (publicly shipped) Firebase config. Tokens start flowing
@@ -17,7 +18,7 @@ export async function initAppCheck(): Promise<void> {
   if (initialized) return;
   initialized = true;
   try {
-    const provider = appCheck().newReactNativeFirebaseAppCheckProvider();
+    const provider = new ReactNativeFirebaseAppCheckProvider();
     provider.configure({
       android: {
         provider: __DEV__ ? 'debug' : 'playIntegrity',
@@ -26,7 +27,7 @@ export async function initAppCheck(): Promise<void> {
         provider: __DEV__ ? 'debug' : 'appAttestWithDeviceCheckFallback',
       },
     });
-    await appCheck().initializeAppCheck({
+    initializeAppCheck(getApp(), {
       provider,
       isTokenAutoRefreshEnabled: true,
     });

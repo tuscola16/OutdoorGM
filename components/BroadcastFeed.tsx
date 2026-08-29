@@ -1,6 +1,6 @@
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import auth from '@react-native-firebase/auth';
+import { auth } from '@/services/firebase';
 import { Colors } from '@/constants/colors';
 import { iconFor, colorFor } from '@/components/broadcastVisuals';
 import { useBroadcasts } from '@/context/BroadcastsContext';
@@ -28,7 +28,7 @@ export function BroadcastFeed({
    * live inside a parent ScrollView without nesting two vertical scrollers. */
   scroll?: boolean;
 }) {
-  const uid = auth().currentUser?.uid;
+  const uid = auth.currentUser?.uid;
   // Hide broadcasts this player already dismissed (#71), then cap. The provider keeps
   // them sorted newest-first.
   const broadcasts = useBroadcasts()

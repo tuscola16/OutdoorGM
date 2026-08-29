@@ -5,6 +5,7 @@ import { GamesScreen } from '@/screens/GamesScreen';
 import { GameScreen } from '@/screens/GameScreen';
 import { RunbookScreen } from '@/screens/RunbookScreen';
 import { DemoScreen } from '@/screens/DemoScreen';
+import { PrivacyScreen, SupportScreen } from '@/screens/LegalScreens';
 
 function FullScreenMessage({ text }: { text: string }) {
   return (
@@ -72,6 +73,9 @@ export function App() {
         }
       />
       <Route path="/demo" element={<DemoScreen />} />
+      {/* Required by App Store Connect; public, no auth. */}
+      <Route path="/privacy" element={<PrivacyScreen />} />
+      <Route path="/support" element={<SupportScreen />} />
       <Route path="/" element={<Navigate to="/games" replace />} />
       <Route path="*" element={<Navigate to="/games" replace />} />
     </Routes>

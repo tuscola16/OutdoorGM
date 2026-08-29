@@ -5,7 +5,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import firestore from '@react-native-firebase/firestore';
+import { deleteField } from '@react-native-firebase/firestore';
 import { useGame } from '@/context/GameContext';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -115,7 +115,7 @@ export default function CheckpointEditorScreen() {
       radius: rad,
       icon,
       visibility: cpVisibility,
-      reveal: reveal ?? firestore.FieldValue.delete(),
+      reveal: reveal ?? deleteField(),
     };
 
     // A timed reveal pairs to a deterministic run-sheet row (#60).

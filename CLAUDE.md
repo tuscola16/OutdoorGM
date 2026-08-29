@@ -370,12 +370,27 @@ Info.plist that will actually be generated (a full `expo prebuild --platform ios
   would be an unused-permission rejection vector (and RECORD_AUDIO on Android).
 - **`ios.privacyManifests`** feeds the generated `PrivacyInfo.xcprivacy`. Missing required-reason
   API declarations get the automated ITMS-91053 bounce on upload.
-- **`expo-build-properties` with `ios.useFrameworks: "static"` is required by
-  `@react-native-firebase`.** Without it the `Install pods` phase fails with *"The following
-  Swift pods cannot yet be integrated as static libraries"* — `FirebaseCoreInternal`,
-  `FirebaseCrashlytics`, `FirebaseFirestore`, `FirebaseFunctions`, `FirebaseSessions`, and
-  `FirebaseStorage` all depend on pods (`GoogleUtilities`, `FirebaseCore`, `nanopb`, …) that
-  don't define modules. Only iOS is affected; Android builds fine without it.
+- **iOS Firebase needs BOTH `useFrameworks: "static"` AND `disableSPM: true`.** These are a
+  pair, not alternatives — each one alone produces a different `Install pods` failure:
+  - `expo-build-properties` → `ios.useFrameworks: "static"` builds pods as *frameworks*, which
+    always carry module maps. Without it, Firebase's Swift pods can't import their module-less
+    transitive deps (`GoogleUtilities`, `nanopb`, `GoogleDataTransport`,
+    `FirebaseFirestoreInternal`) and the install fails with *"cannot yet be integrated as
+    static libraries"*. Expo enables modular headers only for its **own** pods
+    (ExpoModulesCore, React-*, Yoga) — never Firebase's.
+  - `@react-native-firebase/app` → `ios.disableSPM: true` forces CocoaPods instead of Swift
+    Package Manager. RNFirebase 26 defaults to SPM, whose Firebase products are *automatic*
+    libraries; under static linkage each pod embeds its own copy and they collide as duplicate
+    symbols — *"SPM + static linkage is not supported"*.
+
+  Upstream states the rule outright in `node_modules/@react-native-firebase/app/firebase_spm.rb`:
+  *"You must disable SPM when using `use_frameworks! :linkage => :static`"*. This is the same
+  shape that built successfully on SDK 51, where RNFirebase 20 had no SPM to disable.
+- **`ios.config.googleMapsApiKey` must stay absent.** `@expo/config-plugins` injects
+  `pod 'react-native-google-maps'` whenever that key is set, but `react-native-maps` 1.27
+  no longer ships that podspec (iOS Google Maps support was dropped upstream), so the pod
+  install fails. iOS therefore renders Apple Maps: `provider` is gated to `PROVIDER_GOOGLE`
+  on Android only. Android keeps its own `android.config.googleMaps.apiKey`.
 
 ## Common Patterns
 

@@ -1,9 +1,9 @@
 import { useEffect } from 'react';
 import * as Notifications from 'expo-notifications';
 import type { GameConfig } from '@/types';
-import type { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
+import { Timestamp } from '@react-native-firebase/firestore';
 
-type Ts = FirebaseFirestoreTypes.Timestamp | null;
+type Ts = Timestamp | null;
 
 /**
  * Schedule eat-window open notifications for all future ration intervals. Must be
@@ -48,7 +48,15 @@ export function useRationReminders({
               body: 'Photograph your ration card before the window closes — or you starve.',
               sound: true,
             },
-            trigger: { date: new Date(opensAt), channelId: 'broadcasts' },
+            // `type` is REQUIRED since expo-notifications SDK 54+. Without it this object
+            // matches ChannelAwareTriggerInput ({ channelId }), which the docs define as
+            // "a trigger that will cause the notification to be delivered IMMEDIATELY" —
+            // so every future eat-window fired at once the moment the game started.
+            trigger: {
+              type: Notifications.SchedulableTriggerInputTypes.DATE,
+              date: new Date(opensAt),
+              channelId: 'broadcasts',
+            },
           });
           if (cancelled) {
             Notifications.cancelScheduledNotificationAsync(id).catch(() => {});

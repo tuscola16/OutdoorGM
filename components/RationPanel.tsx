@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, TextInput, Alert, ActivityIndicator, Keyboard, AppState } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
+import { doc, onSnapshot, Timestamp, type DocumentSnapshot } from '@react-native-firebase/firestore';
+import { db } from '@/services/firebase';
 import { Collections } from '@/services/firebase';
 import { submitRation, rationInterval } from '@/services/gameService';
 import { uploadRationPhoto } from '@/services/storage';
@@ -14,7 +15,7 @@ import { CameraCapture } from '@/components/CameraCapture';
 import { Colors } from '@/constants/colors';
 import type { GameConfig, RationStatus } from '@/types';
 
-type Ts = FirebaseFirestoreTypes.Timestamp | null;
+type Ts = Timestamp | null;
 
 /**
  * Player-facing ration-card capture (Rules 6–9). The eat-window is only **open** for
@@ -62,14 +63,9 @@ export function RationPanel({
       return;
     }
     setStatus(null);
-    return firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .collection(Collections.RATIONS)
-      .doc(`${player.userId}_${intervalIndex}`)
-      .onSnapshot(
+    return onSnapshot(doc(db, Collections.GAMES, gameId, Collections.RATIONS, `${player.userId}_${intervalIndex}`), 
         (snap) => setStatus((snap.data()?.status as RationStatus) ?? null),
-        (err) => console.error('[RationPanel] submission listener error', err)
+        (err: Error) => console.error('[RationPanel] submission listener error', err)
       );
   }, [gameId, player.userId, intervalIndex]);
 

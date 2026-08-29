@@ -334,6 +334,8 @@ export const onLocationUpdate = functions
       longitude: number;
       displayName: string;
       accuracy?: number;
+      battery?: number;
+      updatedAt?: FirebaseFirestore.Timestamp;
     };
 
     // Previous fix for this player — the location doc is overwritten on every update, so
@@ -365,8 +367,18 @@ export const onLocationUpdate = functions
       geofenceConfirmFixes?: number;
       reNotifyAwayCooldownMinutes?: number;
       tripIntervalMinutes?: number;
+      locationTrail?: boolean;
     };
-    const minFixAccuracy = rawConfig.minFixAccuracyMeters ?? 30;
+    // Field-measured 2026-08-14: a pocketed Android phone with the screen locked reports
+    // ~52m accuracy while walking, and ~16m only when stationary with the app open. The old
+    // 30m default therefore rejected essentially every real gameplay fix — checkpoints never
+    // fired in the field while the GM map kept updating, because the location write happens
+    // ABOVE this gate and only checkpoint evaluation is skipped.
+    // 100m accepts pocketed fixes. It is deliberately blunt: a fix accurate to only 100m can
+    // trigger a smaller checkpoint from outside it, so `geofenceConfirmFixes` (2) is doing
+    // real work here. The better fix is a per-checkpoint gate judged against that
+    // checkpoint's own radius; this default is the stopgap until then.
+    const minFixAccuracy = rawConfig.minFixAccuracyMeters ?? 100;
     const confirmFixes = rawConfig.geofenceConfirmFixes ?? 2;
     const reNotifyAwayCooldownMs = (rawConfig.reNotifyAwayCooldownMinutes ?? 5) * 60_000;
     // #67: re-evaluate a lingering player's runbook entries at most this often (default 2 min).
@@ -382,6 +394,75 @@ export const onLocationUpdate = functions
     const db = admin.firestore();
     const memberRef = db.collection('games').doc(gameId).collection('members').doc(userId);
     const arrivalsCol = db.collection('games').doc(gameId).collection('arrivals');
+
+    // Does this fix clear the GPS quality gate? Computed here rather than at the gate itself
+    // so the breadcrumb below can record the verdict for fixes that are about to be dropped.
+    //
+    // `>=`, not `>`. Android's fused provider emits coarse network fixes with an accuracy of
+    // exactly 100.0 m, which under `>` cleared a 100 m threshold by a single unit. Field-
+    // measured 2026-08-15: those fixes repeated the previous position verbatim (0 m moved)
+    // while the player was walking, i.e. precisely the stale positions this gate exists to
+    // drop. Read the threshold as "must be better than this", so a fix that merely ties it
+    // is rejected.
+    const accuracyRejected = location.accuracy != null && location.accuracy >= minFixAccuracy;
+
+    // A rejected fix is invisible everywhere else: the map dot still moves (the location
+    // write happens above this trigger) while checkpoint evaluation is silently skipped.
+    // That divergence cost two field tests, so say it out loud. Low volume by nature — a
+    // healthy game rejects nothing.
+    if (accuracyRejected) {
+      functions.logger.info('[geofence] fix rejected by accuracy gate', {
+        gameId, userId, accuracy: location.accuracy, minFixAccuracy,
+      });
+    }
+
+    // --- Diagnostic breadcrumb trail (opt-in via config.locationTrail) ---
+    // `locations/{playerId}` is overwritten by every fix, so a finished game preserves only
+    // the last position plus whatever arrivals happened to fire. Reconstructing a six-minute
+    // walk from four arrival records is how the last three field tests went. When enabled,
+    // append every fix — including the rejected ones — with enough context to replay the
+    // track offline: the reported position, its claimed accuracy, the distance moved since
+    // the previous fix, and the distance to every checkpoint.
+    if (rawConfig.locationTrail === true) {
+      try {
+        const trailCps = await getCheckpointsCached(gameId);
+        const checkpointDistances: Record<string, number> = {};
+        for (const cp of trailCps) {
+          const { latitude: cpLat, longitude: cpLng, name } = cp.data as {
+            latitude?: number; longitude?: number; name?: string;
+          };
+          if (typeof cpLat !== 'number' || typeof cpLng !== 'number') continue;
+          checkpointDistances[name || cp.id] = Math.round(
+            distanceMeters(location.latitude, location.longitude, cpLat, cpLng)
+          );
+        }
+        await db.collection('games').doc(gameId).collection('locationTrail').add({
+          playerId: userId,
+          playerName: location.displayName ?? null,
+          latitude: location.latitude,
+          longitude: location.longitude,
+          accuracy: location.accuracy ?? null,
+          battery: location.battery ?? null,
+          // Movement since the previous fix — the signal that separates "the phone stopped
+          // reporting" from "the phone reported a position that didn't move".
+          metersSincePrev: prevLoc
+            ? Math.round(distanceMeters(
+                prevLoc.latitude, prevLoc.longitude, location.latitude, location.longitude
+              ))
+            : null,
+          accuracyRejected,
+          minFixAccuracy,
+          checkpointDistances,
+          // Client clock vs. server clock: a large skew means the fix was cached on the
+          // device and delivered late, which looks identical to a stale position otherwise.
+          clientUpdatedAt: location.updatedAt ?? null,
+          at: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      } catch (err) {
+        // Never let a debugging aid break gameplay.
+        functions.logger.warn('[geofence] locationTrail write failed', { gameId, userId, err });
+      }
+    }
 
     // Player-left-the-boundary alert (#7). Runs before checkpoint work so it fires even
     // in a game with zero checkpoints. A per-member `outOfBounds` latch means the GM is
@@ -412,7 +493,7 @@ export const onLocationUpdate = functions
 
     // GPS quality gate (#50): poor fixes are rejected from checkpoint eval — the map dot
     // still updates via the location write above. Reject is for checkpoint eval only.
-    if (location.accuracy != null && location.accuracy > minFixAccuracy) return;
+    if (accuracyRejected) return;
 
     const checkpoints = await getCheckpointsCached(gameId);
     if (checkpoints.length === 0) return;
@@ -523,17 +604,33 @@ export const onLocationUpdate = functions
       // bypasses the #50 confirm-fixes streak and latches as already-exited below.
       let passThrough = false;
       if (!inRadius && prevLoc && !trip?.inside) {
-        const segLen = distanceMeters(
+        // BOTH endpoints must be outside the radius. `pointToSegmentMeters` returns
+        // <= radius whenever *either* endpoint is inside it, so a player DEPARTING a
+        // checkpoint (prev inside → current outside) is geometrically identical to one
+        // passing through it. `!trip.inside` was the only guard against that, and it is
+        // legitimately false in several states — a partial confirm-streak, right after a
+        // previous pass-through (which latches inside:false itself), or once a jittery
+        // outside fix has reset it — so departures were being recorded as fresh arrivals
+        // at the *current* fix, i.e. a checkpoint "arrival" logged 120m from the
+        // checkpoint. Requiring prev to be outside makes this a true crossing test:
+        // the path clips the circle strictly *between* two fixes.
+        const prevDist = distanceMeters(
           prevLoc.latitude, prevLoc.longitude,
-          location.latitude, location.longitude
+          cp.latitude, cp.longitude
         );
-        if (segLen > 0 && segLen <= MAX_SEGMENT_METERS) {
-          const segDist = pointToSegmentMeters(
-            cp.latitude, cp.longitude,
+        if (prevDist > cp.radius) {
+          const segLen = distanceMeters(
             prevLoc.latitude, prevLoc.longitude,
             location.latitude, location.longitude
           );
-          passThrough = segDist <= cp.radius;
+          if (segLen > 0 && segLen <= MAX_SEGMENT_METERS) {
+            const segDist = pointToSegmentMeters(
+              cp.latitude, cp.longitude,
+              prevLoc.latitude, prevLoc.longitude,
+              location.latitude, location.longitude
+            );
+            passThrough = segDist <= cp.radius;
+          }
         }
       }
 

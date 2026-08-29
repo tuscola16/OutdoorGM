@@ -1,10 +1,19 @@
-import messaging from '@react-native-firebase/messaging';
+import {
+  getToken,
+  requestPermission,
+  registerDeviceForRemoteMessages,
+  onMessage,
+  AuthorizationStatus,
+} from '@react-native-firebase/messaging';
+import { messaging } from './firebase';
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 
 Notifications.setNotificationHandler({
+  // `shouldShowAlert` was split into banner + list in expo-notifications SDK 54+.
   handleNotification: async () => ({
-    shouldShowAlert: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
     shouldPlaySound: true,
     shouldSetBadge: false,
   }),
@@ -12,10 +21,10 @@ Notifications.setNotificationHandler({
 
 export async function requestNotificationPermissions(): Promise<boolean> {
   if (Platform.OS === 'ios') {
-    const authStatus = await messaging().requestPermission();
+    const authStatus = await requestPermission(messaging);
     const enabled =
-      authStatus === messaging.AuthorizationStatus.AUTHORIZED ||
-      authStatus === messaging.AuthorizationStatus.PROVISIONAL;
+      authStatus === AuthorizationStatus.AUTHORIZED ||
+      authStatus === AuthorizationStatus.PROVISIONAL;
     if (!enabled) return false;
   }
 
@@ -25,8 +34,8 @@ export async function requestNotificationPermissions(): Promise<boolean> {
 
 export async function getFcmToken(): Promise<string | null> {
   try {
-    await messaging().registerDeviceForRemoteMessages();
-    const token = await messaging().getToken();
+    await registerDeviceForRemoteMessages(messaging);
+    const token = await getToken(messaging);
     return token;
   } catch (err) {
     console.error('Failed to get FCM token:', err);
@@ -35,7 +44,7 @@ export async function getFcmToken(): Promise<string | null> {
 }
 
 export function onForegroundMessage(handler: (title: string, body: string) => void): () => void {
-  return messaging().onMessage(async (remoteMessage) => {
+  return onMessage(messaging, async (remoteMessage) => {
     const title = remoteMessage.notification?.title ?? 'Alert';
     const body = remoteMessage.notification?.body ?? '';
     handler(title, body);

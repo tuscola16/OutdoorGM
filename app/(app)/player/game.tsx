@@ -18,17 +18,25 @@ import { PostGameMedia } from '@/components/PostGameMedia';
 import { Tutorial } from '@/components/Tutorial';
 import { BroadcastsProvider } from '@/context/BroadcastsContext';
 import * as Location from 'expo-location';
-import { startLocationTracking, stopLocationTracking, getTrackingDiagnostics } from '@/services/locationTask';
+import {
+  startLocationTracking,
+  stopLocationTracking,
+  getTrackingDiagnostics,
+  startCheckpointGeofencing,
+  stopCheckpointGeofencing,
+  isCheckpointGeofencingArmed,
+} from '@/services/locationTask';
 import { requestBatteryOptimizationExemption } from '@/services/batteryOptimization';
 import { eliminatePlayer, raiseSos, setDeathLocation, gamePhase, gameConfig } from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
 import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
 import { useRationReminders } from '@/hooks/useRationReminders';
-import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
+import { collection, doc, onSnapshot, query, where, Timestamp, type QuerySnapshot } from '@react-native-firebase/firestore';
+import { db } from '@/services/firebase';
 import { Collections } from '@/services/firebase';
 import type { Game, GameConfig, GamePhase, MapBoundary, RevealedMarker } from '@/types';
 
-type Ts = FirebaseFirestoreTypes.Timestamp | null;
+type Ts = Timestamp | null;
 
 export default function PlayerGameScreen() {
   const { gameId } = useLocalSearchParams<{ gameId: string }>();
@@ -79,8 +87,15 @@ export default function PlayerGameScreen() {
   // startup stalled: permission states, which source engaged, last upload, last error.
   const [diag, setDiag] = useState(getTrackingDiagnostics());
   const [showDiag, setShowDiag] = useState(false);
+  // The "…s ago" rows need a clock, but reading Date.now() during render is impure — it
+  // makes the output depend on when React happens to re-render. Sample it on the same tick
+  // as the diagnostics instead, so both move together and render stays a pure function.
+  const [diagNow, setDiagNow] = useState(() => Date.now());
   useEffect(() => {
-    const id = setInterval(() => setDiag(getTrackingDiagnostics()), 2000);
+    const id = setInterval(() => {
+      setDiag(getTrackingDiagnostics());
+      setDiagNow(Date.now());
+    }, 2000);
     return () => clearInterval(id);
   }, []);
 
@@ -105,10 +120,7 @@ export default function PlayerGameScreen() {
   // Subscribe to the game doc (phase, timing, rules) and own member doc.
   useEffect(() => {
     if (!gameId || !user) return;
-    const unsubGame = firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .onSnapshot(
+    const unsubGame = onSnapshot(doc(db, Collections.GAMES, gameId), 
         (snap) => {
           const d = snap.data();
           if (!d) return;
@@ -125,15 +137,10 @@ export default function PlayerGameScreen() {
           setBatterySaver(gameConfig(d as any).batterySaver);
           setConfig(gameConfig(d as any));
         },
-        (err) => console.error('[PlayerGame] game listener error', err)
+        (err: Error) => console.error('[PlayerGame] game listener error', err)
       );
 
-    const unsubMember = firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .collection(Collections.MEMBERS)
-      .doc(user.uid)
-      .onSnapshot(
+    const unsubMember = onSnapshot(doc(db, Collections.GAMES, gameId, Collections.MEMBERS, user.uid), 
         (snap) => {
           // The membership doc vanishing means the GM removed us from the game.
           // Stop sharing location immediately and leave — without this, the
@@ -145,7 +152,7 @@ export default function PlayerGameScreen() {
           // reconciles. Treating that as a removal bounced a flaky-signal player back
           // to "My Games" every few seconds even though she was never actually removed.
           // `metadata.fromCache` is false only once the server has spoken.
-          if (!snap.exists) {
+          if (!snap.exists()) {
             if (sawMemberRef.current && !snap.metadata.fromCache) {
               stopLocationTracking().catch(() => {});
               Alert.alert('Removed from game', 'The Game Master has removed you from this game.');
@@ -160,7 +167,7 @@ export default function PlayerGameScreen() {
           setOut(!!d.out);
           setOutAt(d.outAt ?? null);
         },
-        (err) => console.error('[PlayerGame] member listener error', err)
+        (err: Error) => console.error('[PlayerGame] member listener error', err)
       );
 
     return () => { unsubGame(); unsubMember(); };
@@ -173,10 +180,7 @@ export default function PlayerGameScreen() {
   // (defense-in-depth against stale pre-written markers).
   useEffect(() => {
     if (!gameId || !user) return;
-    const col = firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .collection(Collections.MARKERS);
+    const col = collection(db, Collections.GAMES, gameId, Collections.MARKERS);
     const merged = new Map<string, RevealedMarker>();
     const emit = () => {
       const nowMs = Date.now();
@@ -186,7 +190,7 @@ export default function PlayerGameScreen() {
         )
       );
     };
-    const handle = (snap: FirebaseFirestoreTypes.QuerySnapshot) => {
+    const handle = (snap: QuerySnapshot) => {
       snap.docChanges().forEach((c) => {
         if (c.type === 'removed') merged.delete(c.doc.id);
         else merged.set(c.doc.id, { ...c.doc.data() } as RevealedMarker);
@@ -195,10 +199,10 @@ export default function PlayerGameScreen() {
     };
     const unsubGlobal = col
       .where('audiencePlayerIds', '==', null)
-      .onSnapshot(handle, (err) => console.error('[PlayerGame] global markers error', err));
+      .onSnapshot(handle, (err: Error) => console.error('[PlayerGame] global markers error', err));
     const unsubMine = col
       .where('audiencePlayerIds', 'array-contains', user.uid)
-      .onSnapshot(handle, (err) => console.error('[PlayerGame] my markers error', err));
+      .onSnapshot(handle, (err: Error) => console.error('[PlayerGame] my markers error', err));
     return () => { unsubGlobal(); unsubMine(); };
   }, [gameId, user]);
 
@@ -256,6 +260,61 @@ export default function PlayerGameScreen() {
         }
       });
     return () => { active = false; stopLocationTracking().catch(console.error); };
+  }, [gameId, shouldTrack]);
+
+  // OS geofences for this game's checkpoints. Purely a latency device: the OS wakes the app
+  // on region entry even in Doze, and the task forces a location upload so the SERVER can
+  // detect the arrival on a fresh fix instead of waiting out a ~90s throttled gap. Arrival
+  // detection itself is unchanged and stays server-side.
+  //
+  // Registered only while tracking, and torn down on leave/elimination so a finished game
+  // doesn't keep waking the device.
+  useEffect(() => {
+    if (!shouldTrack || !gameId) {
+      stopCheckpointGeofencing().catch(() => {});
+      return;
+    }
+    let active = true;
+    let regions: { id: string; latitude: number; longitude: number; radius: number }[] = [];
+
+    const unsub = onSnapshot(
+      collection(db, Collections.GAMES, gameId, Collections.CHECKPOINTS),
+      (snap: QuerySnapshot) => {
+        if (!active) return;
+        regions = snap.docs
+          .map((d) => {
+            const c = d.data() as { latitude?: number; longitude?: number; radius?: number };
+            return { id: d.id, latitude: c.latitude!, longitude: c.longitude!, radius: c.radius ?? 30 };
+          })
+          .filter((r) => typeof r.latitude === 'number' && typeof r.longitude === 'number');
+        // The region set changed — re-register unconditionally, replacing whatever is armed.
+        startCheckpointGeofencing(regions).catch(() => {});
+      },
+      (err: Error) => console.error('[PlayerGame] checkpoint geofence listener error', err)
+    );
+
+    // Registration used to be one-shot, and its most common failure is transient: on a fresh
+    // install this effect runs before the player has finished granting "Always" location, so
+    // the single attempt fails and nothing ever retries. Nothing else re-runs it either —
+    // `shouldTrack` is already true during the lobby, so the lobby->play transition doesn't
+    // change this effect's deps, and the checkpoint snapshot won't fire again on its own.
+    //
+    // Field-observed 2026-08-15: geofencing sat unarmed through an entire test walk and only
+    // came up when the player happened to reopen the app, which remounted this effect. Poll
+    // until it takes, asking the OS each time so we also recover if the system drops them.
+    const retry = async () => {
+      if (!active || regions.length === 0) return;
+      if (await isCheckpointGeofencingArmed()) return;
+      await startCheckpointGeofencing(regions).catch(() => false);
+    };
+    const retryId = setInterval(retry, 15000);
+
+    return () => {
+      active = false;
+      clearInterval(retryId);
+      unsub();
+      stopCheckpointGeofencing().catch(() => {});
+    };
   }, [gameId, shouldTrack]);
 
   // Propagate param changes (displayName arriving, battery-saver toggle) to a running
@@ -364,7 +423,7 @@ export default function PlayerGameScreen() {
             // Fire-and-persist (#4): Firestore offline persistence durably queues the
             // write and delivers it on reconnect, so confirm immediately rather than
             // blocking on the network — a safety alert must feel instant in a dead zone.
-            raiseSos(gameId, user.uid).catch((err) => console.error('[SOS] raiseSos failed', err));
+            raiseSos(gameId, user.uid).catch((err: Error) => console.error('[SOS] raiseSos failed', err));
             Alert.alert(
               'Alert sent',
               "The Game Master has been notified and can see your location. If you're offline, it sends the moment you reconnect."
@@ -568,7 +627,23 @@ export default function PlayerGameScreen() {
                       </Text></Text>
                       <Text style={styles.diagRow}>
                         Last upload: <Text style={styles.diagVal}>
-                          {diag.lastUploadAt ? `${Math.round((Date.now() - diag.lastUploadAt) / 1000)}s ago` : 'never'}
+                          {diag.lastUploadAt ? `${Math.round((diagNow - diag.lastUploadAt) / 1000)}s ago` : 'never'}
+                        </Text>
+                      </Text>
+                      {/* Collected since the OS-geofencing change but never rendered, which
+                          made "did the wake-up trigger even arm?" unanswerable in the field. */}
+                      <Text style={styles.diagRow}>
+                        OS geofences: <Text style={styles.diagVal}>
+                          {diag.geofencedRegions > 0
+                            ? `${diag.geofencedRegions} armed`
+                            : `none armed${diag.geofenceError ? ` — ${diag.geofenceError}` : ''}`}
+                        </Text>
+                      </Text>
+                      <Text style={styles.diagRow}>
+                        Last geofence wake: <Text style={styles.diagVal}>
+                          {diag.lastGeofenceWakeAt
+                            ? `${Math.round((diagNow - diag.lastGeofenceWakeAt) / 1000)}s ago`
+                            : 'never'}
                         </Text>
                       </Text>
                       <Text style={styles.diagRow}>Last error: <Text style={styles.diagVal}>{diag.lastError ?? 'none'}</Text></Text>

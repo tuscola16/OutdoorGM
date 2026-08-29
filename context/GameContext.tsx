@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
-import auth from '@react-native-firebase/auth';
+import { collection, doc, query, where, orderBy, limit, onSnapshot, type QuerySnapshot } from '@react-native-firebase/firestore';
+import { auth, db } from '@/services/firebase';
 import { Collections } from '@/services/firebase';
 import { gamePhase } from '@/services/gameService';
 import type {
@@ -79,29 +79,22 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   // Subscribe to game document
   useEffect(() => {
     if (!gameId) return;
-    return firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .onSnapshot(
+    return onSnapshot(doc(db, Collections.GAMES, gameId), 
         (snap) => {
-          if (snap.exists) setGame({ id: snap.id, ...snap.data() } as Game);
+          if (snap.exists()) setGame({ id: snap.id, ...snap.data() } as Game);
         },
-        (err) => console.error('[GameContext] game listener error', err)
+        (err: Error) => console.error('[GameContext] game listener error', err)
       );
   }, [gameId]);
 
   // Subscribe to checkpoints
   useEffect(() => {
     if (!gameId) return;
-    return firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .collection(Collections.CHECKPOINTS)
-      .onSnapshot(
+    return onSnapshot(collection(db, Collections.GAMES, gameId, Collections.CHECKPOINTS), 
         (snap) => {
           setCheckpoints(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Checkpoint)));
         },
-        (err) => console.error('[GameContext] checkpoints listener error', err)
+        (err: Error) => console.error('[GameContext] checkpoints listener error', err)
       );
   }, [gameId]);
 
@@ -109,62 +102,44 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   // players never read it (they only experience the broadcasts/pushes it produces).
   useEffect(() => {
     if (!gameId || myRole !== 'gm') return;
-    return firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .collection(Collections.RUNBOOK)
-      .onSnapshot(
+    return onSnapshot(collection(db, Collections.GAMES, gameId, Collections.RUNBOOK), 
         (snap) => {
           setRunbookEntries(snap.docs.map((d) => ({ id: d.id, ...d.data() } as RunbookEntry)));
         },
-        (err) => console.error('[GameContext] runbook listener error', err)
+        (err: Error) => console.error('[GameContext] runbook listener error', err)
       );
   }, [gameId, myRole]);
 
   // Subscribe to members
   useEffect(() => {
     if (!gameId || myRole !== 'gm') return;
-    return firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .collection(Collections.MEMBERS)
-      .onSnapshot(
+    return onSnapshot(collection(db, Collections.GAMES, gameId, Collections.MEMBERS), 
         (snap) => {
           setMembers(snap.docs.map((d) => ({ userId: d.id, ...d.data() } as GameMember)));
         },
-        (err) => console.error('[GameContext] members listener error', err)
+        (err: Error) => console.error('[GameContext] members listener error', err)
       );
   }, [gameId, myRole]);
 
   // Subscribe to player locations (GMs only)
   useEffect(() => {
     if (!gameId || myRole !== 'gm') return;
-    return firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .collection(Collections.LOCATIONS)
-      .onSnapshot(
+    return onSnapshot(collection(db, Collections.GAMES, gameId, Collections.LOCATIONS), 
         (snap) => {
           setPlayerLocations(snap.docs.map((d) => ({ ...d.data() } as PlayerLocation)));
         },
-        (err) => console.error('[GameContext] locations listener error', err)
+        (err: Error) => console.error('[GameContext] locations listener error', err)
       );
   }, [gameId, myRole]);
 
   // Subscribe to arrivals
   useEffect(() => {
     if (!gameId) return;
-    return firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .collection(Collections.ARRIVALS)
-      .orderBy('timestamp', 'desc')
-      .limit(50)
-      .onSnapshot(
+    return onSnapshot(query(collection(db, Collections.GAMES, gameId, Collections.ARRIVALS), orderBy('timestamp', 'desc'), limit(50)), 
         (snap) => {
           setArrivals(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Arrival)));
         },
-        (err) => console.error('[GameContext] arrivals listener error', err)
+        (err: Error) => console.error('[GameContext] arrivals listener error', err)
       );
   }, [gameId]);
 
@@ -173,22 +148,17 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   // in one query, so players run two listeners and merge.
   useEffect(() => {
     if (!gameId) return;
-    const col = firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .collection(Collections.BROADCASTS);
+    const col = collection(db, Collections.GAMES, gameId, Collections.BROADCASTS);
 
     if (myRole === 'gm') {
-      return col
-        .orderBy('createdAt', 'desc')
-        .limit(100)
-        .onSnapshot(
-          (snap) => setBroadcasts(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Broadcast))),
-          (err) => console.error('[GameContext] broadcasts listener error', err)
-        );
+      return onSnapshot(
+        query(col, orderBy('createdAt', 'desc'), limit(100)),
+        (snap: QuerySnapshot) => setBroadcasts(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Broadcast))),
+        (err: Error) => console.error('[GameContext] broadcasts listener error', err)
+      );
     }
 
-    const uid = auth().currentUser?.uid;
+    const uid = auth.currentUser?.uid;
     const merged = new Map<string, Broadcast>();
     const emit = () =>
       setBroadcasts(
@@ -196,7 +166,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
           (a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0)
         )
       );
-    const handle = (snap: FirebaseFirestoreTypes.QuerySnapshot) => {
+    const handle = (snap: QuerySnapshot) => {
       snap.docChanges().forEach((c) => {
         if (c.type === 'removed') merged.delete(c.doc.id);
         else merged.set(c.doc.id, { id: c.doc.id, ...c.doc.data() } as Broadcast);
@@ -205,11 +175,11 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     };
     const unsubGlobal = col
       .where('targetPlayerId', '==', null)
-      .onSnapshot(handle, (err) => console.error('[GameContext] global broadcasts error', err));
+      .onSnapshot(handle, (err: Error) => console.error('[GameContext] global broadcasts error', err));
     const unsubMine = uid
       ? col
           .where('targetPlayerId', '==', uid)
-          .onSnapshot(handle, (err) => console.error('[GameContext] my broadcasts error', err))
+          .onSnapshot(handle, (err: Error) => console.error('[GameContext] my broadcasts error', err))
       : () => {};
     return () => {
       unsubGlobal();
@@ -220,29 +190,18 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   // Subscribe to ration submissions (GM review feed only).
   useEffect(() => {
     if (!gameId || myRole !== 'gm') return;
-    return firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .collection(Collections.RATIONS)
-      .orderBy('submittedAt', 'desc')
-      .limit(200)
-      .onSnapshot(
+    return onSnapshot(query(collection(db, Collections.GAMES, gameId, Collections.RATIONS), orderBy('submittedAt', 'desc'), limit(200)), 
         (snap) => setRations(snap.docs.map((d) => ({ id: d.id, ...d.data() } as RationSubmission))),
-        (err) => console.error('[GameContext] rations listener error', err)
+        (err: Error) => console.error('[GameContext] rations listener error', err)
       );
   }, [gameId, myRole]);
 
   // Subscribe to the run-sheet (GM only, #11).
   useEffect(() => {
     if (!gameId || myRole !== 'gm') return;
-    return firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .collection(Collections.SCHEDULED_EVENTS)
-      .orderBy('createdAt', 'asc')
-      .onSnapshot(
+    return onSnapshot(query(collection(db, Collections.GAMES, gameId, Collections.SCHEDULED_EVENTS), orderBy('createdAt', 'asc')), 
         (snap) => setScheduledEvents(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ScheduledEvent))),
-        (err) => console.error('[GameContext] scheduledEvents listener error', err)
+        (err: Error) => console.error('[GameContext] scheduledEvents listener error', err)
       );
   }, [gameId, myRole]);
 
@@ -252,22 +211,20 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   // run two listeners and merge — the same shape as the broadcasts subscription above.
   useEffect(() => {
     if (!gameId) return;
-    const col = firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .collection(Collections.MARKERS);
+    const col = collection(db, Collections.GAMES, gameId, Collections.MARKERS);
 
     if (myRole === 'gm') {
-      return col.onSnapshot(
-        (snap) => setMarkers(snap.docs.map((d) => ({ ...d.data() } as RevealedMarker))),
-        (err) => console.error('[GameContext] markers listener error', err)
+      return onSnapshot(
+        col,
+        (snap: QuerySnapshot) => setMarkers(snap.docs.map((d) => ({ ...d.data() } as RevealedMarker))),
+        (err: Error) => console.error('[GameContext] markers listener error', err)
       );
     }
 
-    const uid = auth().currentUser?.uid;
+    const uid = auth.currentUser?.uid;
     const merged = new Map<string, RevealedMarker>();
     const emit = () => setMarkers([...merged.values()]);
-    const handle = (snap: FirebaseFirestoreTypes.QuerySnapshot) => {
+    const handle = (snap: QuerySnapshot) => {
       snap.docChanges().forEach((c) => {
         if (c.type === 'removed') merged.delete(c.doc.id);
         else merged.set(c.doc.id, { ...c.doc.data() } as RevealedMarker);
@@ -276,11 +233,11 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     };
     const unsubGlobal = col
       .where('audiencePlayerIds', '==', null)
-      .onSnapshot(handle, (err) => console.error('[GameContext] global markers error', err));
+      .onSnapshot(handle, (err: Error) => console.error('[GameContext] global markers error', err));
     const unsubMine = uid
       ? col
           .where('audiencePlayerIds', 'array-contains', uid)
-          .onSnapshot(handle, (err) => console.error('[GameContext] my markers error', err))
+          .onSnapshot(handle, (err: Error) => console.error('[GameContext] my markers error', err))
       : () => {};
     return () => {
       unsubGlobal();

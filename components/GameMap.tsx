@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useMemo } from 'react';
-import { View, StyleSheet, Text } from 'react-native';
+import { View, StyleSheet, Text, Platform } from 'react-native';
 import MapView, { Marker, Circle, Polygon, Overlay, UrlTile, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import { Colors } from '@/constants/colors';
 import { TOPO_TILE_URL, TOPO_TILE_SIZE, TOPO_MAX_ZOOM, TOPO_MAX_NATIVE_ZOOM } from '@/constants/map';
@@ -205,7 +205,7 @@ export function GameMap({
     <MapView
       ref={mapRef}
       style={styles.map}
-      provider={PROVIDER_GOOGLE}
+      provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
       mapType="none"
       initialRegion={computedInitialRegion}
       onLongPress={

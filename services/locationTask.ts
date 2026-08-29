@@ -4,9 +4,10 @@ import * as Battery from 'expo-battery';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { updatePlayerLocation } from './gameService';
 import { isBatteryOptimized } from './batteryOptimization';
-import auth from '@react-native-firebase/auth';
+import { auth } from './firebase';
 
 export const LOCATION_TASK_NAME = 'hgl-background-location';
+export const GEOFENCE_TASK_NAME = 'hgl-checkpoint-geofence';
 export const ACTIVE_GAME_KEY = 'hgl_active_game';
 export const DISPLAY_NAME_KEY = 'hgl_display_name';
 
@@ -33,6 +34,20 @@ export interface TrackingDiagnostics {
   batteryOptimized: boolean | null;
   /** Most recent error (start or upload), or null. */
   lastError: string | null;
+  /** ms of the most recent OS-geofence wake-up upload, or null if none yet. */
+  lastGeofenceWakeAt: number | null;
+  /** How many checkpoint regions the OS is currently watching (0 = geofencing off). */
+  geofencedRegions: number;
+  /**
+   * Why geofencing isn't armed, or null when it is (or was never attempted).
+   *
+   * Separate from `lastError` on purpose: the upload path clears `lastError` on every
+   * successful write, which happens every few seconds. A geofence failure written there
+   * was reliably erased before anyone could read it — field-observed 2026-08-15, where
+   * the card showed "none armed" alongside "Last error: none" and the actual cause
+   * (permission not yet granted on a fresh install) was invisible.
+   */
+  geofenceError: string | null;
   updatedAt: number;
 }
 
@@ -44,6 +59,9 @@ let _diag: TrackingDiagnostics = {
   lastUploadAt: null,
   batteryOptimized: null,
   lastError: null,
+  lastGeofenceWakeAt: null,
+  geofencedRegions: 0,
+  geofenceError: null,
   updatedAt: Date.now(),
 };
 
@@ -81,7 +99,7 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
   const location = locations[0];
   if (!location) return;
 
-  const user = auth().currentUser;
+  const user = auth.currentUser;
   if (!user) return;
 
   const gameId = await AsyncStorage.getItem(ACTIVE_GAME_KEY);
@@ -104,6 +122,144 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
     setDiag({ lastError: `bg upload: ${errMsg(err)}` });
   }
 });
+
+/**
+ * Checkpoint geofence task — a WAKE-UP TRIGGER, not an arrival detector.
+ *
+ * Android throttles background location hard once the device is stationary with the screen
+ * off (Doze). Field-measured: upload cadence collapses from ~15s to ~90s, so a checkpoint
+ * crossing could take over two minutes to register even when everything else was working.
+ * The OS geofence fires on region entry *even in Doze*, so this task exists solely to force
+ * an immediate location upload the moment the player crosses into a checkpoint.
+ *
+ * It deliberately does NOT write an arrival. The Cloud Function still receives the location
+ * write and decides whether the player arrived, so arrivals stay server-authoritative and a
+ * client can't forge one. All this buys is latency — which is the whole problem.
+ *
+ * On Exit we do nothing: departures aren't interesting, and firing an upload on exit was
+ * exactly the pattern that produced spurious "arrivals" server-side (#49).
+ */
+TaskManager.defineTask(GEOFENCE_TASK_NAME, async ({ data, error }) => {
+  if (error) {
+    console.error('[Geofence] task error:', error.message);
+    return;
+  }
+  const { eventType } = (data ?? {}) as { eventType?: Location.LocationGeofencingEventType };
+  if (eventType !== Location.LocationGeofencingEventType.Enter) return;
+
+  const user = auth.currentUser;
+  if (!user) return;
+  const gameId = await AsyncStorage.getItem(ACTIVE_GAME_KEY);
+  const displayName = await AsyncStorage.getItem(DISPLAY_NAME_KEY);
+  if (!gameId) return;
+
+  try {
+    // A fresh high-accuracy fix, not the last-known one — the point is to hand the server a
+    // position good enough to clear its accuracy gate and land inside the radius.
+    const pos = await Location.getCurrentPositionAsync({
+      accuracy: Location.Accuracy.BestForNavigation,
+    });
+    await updatePlayerLocation(gameId, user.uid, displayName ?? user.email ?? 'Player', {
+      latitude: pos.coords.latitude,
+      longitude: pos.coords.longitude,
+      accuracy: pos.coords.accuracy ?? undefined,
+      heading: pos.coords.heading ?? undefined,
+      battery: await readBattery(),
+    });
+    setDiag({ lastUploadAt: Date.now(), lastGeofenceWakeAt: Date.now(), lastError: null });
+  } catch (err) {
+    console.error('[Geofence] wake-up upload failed:', err);
+    setDiag({ lastError: `geofence wake: ${errMsg(err)}` });
+  }
+});
+
+/**
+ * Register OS geofences for a game's checkpoints. Best-effort: geofencing needs background
+ * location permission, and a failure here only costs latency — the normal cadence still
+ * detects crossings server-side. Re-registering replaces the previous region set.
+ *
+ * Android caps geofences at 100 per app; games are far below that, but slice defensively.
+ */
+export async function startCheckpointGeofencing(
+  regions: { id: string; latitude: number; longitude: number; radius: number }[]
+): Promise<boolean> {
+  try {
+    if (regions.length === 0) {
+      await stopCheckpointGeofencing();
+      setDiag({ geofenceError: 'no checkpoints to watch' });
+      return false;
+    }
+    const { status } = await Location.getBackgroundPermissionsAsync();
+    if (status !== 'granted') {
+      // Previously a bare `return false`: geofencing silently never armed, `geofencedRegions`
+      // stayed 0, and the caller discards the return value — so there was no way, on the
+      // device or in Firestore, to tell "armed and didn't fire" from "never armed".
+      //
+      // This is the single most likely failure in practice, and it is transient: on a fresh
+      // install the player screen mounts before "Always" location has been granted. The
+      // caller retries, so this is a status, not a dead end.
+      setDiag({
+        geofenceError: `background permission is '${status}' — waiting for the grant`,
+        geofencedRegions: 0,
+      });
+      return false;
+    }
+    await Location.startGeofencingAsync(
+      GEOFENCE_TASK_NAME,
+      regions.slice(0, 100).map((r) => ({
+        identifier: r.id,
+        latitude: r.latitude,
+        longitude: r.longitude,
+        // Give the OS a slightly larger circle than the game's: it should wake us as the
+        // player approaches so the resulting fix lands INSIDE the real radius. The server
+        // still enforces the true radius, so a wide wake-up can't create a false arrival.
+        radius: Math.max(r.radius * 1.5, r.radius + 25),
+        notifyOnEnter: true,
+        notifyOnExit: false,
+      }))
+    );
+    // Confirm with the OS rather than assuming the call above took effect — `geofencedRegions`
+    // is a diagnostic, and a diagnostic that reports what we *asked for* instead of what is
+    // actually armed is worse than none at all.
+    const armed = await Location.hasStartedGeofencingAsync(GEOFENCE_TASK_NAME).catch(() => false);
+    if (!armed) {
+      setDiag({
+        geofenceError: 'startGeofencingAsync resolved but nothing is armed',
+        geofencedRegions: 0,
+      });
+      return false;
+    }
+    setDiag({ geofencedRegions: regions.length, geofenceError: null });
+    return true;
+  } catch (err) {
+    console.error('[Geofence] could not start geofencing:', err);
+    setDiag({ geofenceError: `start failed: ${errMsg(err)}`, geofencedRegions: 0 });
+    return false;
+  }
+}
+
+/**
+ * Is the OS currently watching our checkpoint regions? Asks the OS rather than reporting a
+ * cached flag, so the retry loop notices if the system drops the regions out from under us
+ * (and so a stale in-memory `true` can't suppress a re-registration that is actually needed).
+ */
+export async function isCheckpointGeofencingArmed(): Promise<boolean> {
+  try {
+    return await Location.hasStartedGeofencingAsync(GEOFENCE_TASK_NAME);
+  } catch {
+    return false;
+  }
+}
+
+/** Tear down checkpoint geofences (leaving a game / tracking stopped). */
+export async function stopCheckpointGeofencing(): Promise<void> {
+  try {
+    if (await Location.hasStartedGeofencingAsync(GEOFENCE_TASK_NAME).catch(() => false)) {
+      await Location.stopGeofencingAsync(GEOFENCE_TASK_NAME);
+    }
+  } catch { /* best effort */ }
+  setDiag({ geofencedRegions: 0 });
+}
 
 // Foreground location watcher. Uploads while the app is open and works with only
 // "While Using" permission, so a player who declines background location still
@@ -163,8 +319,26 @@ export async function startLocationTracking(
   isBatteryOptimized().then((opt) => setDiag({ batteryOptimized: opt })).catch(() => {});
 
   // Tracking cadence: tighter when accuracy matters, looser to save battery.
-  const accuracy = options.batterySaver ? Location.Accuracy.Balanced : Location.Accuracy.High;
-  const timeInterval = options.batterySaver ? 15000 : 5000;
+  //
+  // BestForNavigation (not High) in normal mode: field-measured 2026-08-14, a pocketed
+  // phone reported ~52m accuracy while walking and 40.1m while standing AT a 40m-radius
+  // checkpoint — i.e. fixes were landing just outside the circle and the crossing only
+  // registered via #49 segment detection. BestForNavigation keeps the GPS hot instead of
+  // letting the fused provider fall back to network positioning, which is what produces
+  // those 40-50m fixes. It costs battery, so batterySaver still uses Balanced.
+  const accuracy = options.batterySaver
+    ? Location.Accuracy.Balanced
+    : Location.Accuracy.BestForNavigation;
+  // 3s requested (was 5s). Observed cadence has been ~15s with ~90s gaps once the device
+  // idles, so the request is NOT currently the binding constraint — Android is coalescing.
+  // Asking for less can only help, but the real fix for the gaps is elsewhere; measure
+  // before assuming this changed anything.
+  const timeInterval = options.batterySaver ? 15000 : 3000;
+  // Never let the OS batch/defer updates: deferred delivery is exactly the "player stands
+  // still and stops reporting" failure we keep hitting. Explicit rather than relying on
+  // the library default staying 0.
+  const deferredUpdatesInterval = 0;
+  const deferredUpdatesDistance = 0;
   // distanceInterval MUST be 0 (purely time-based updates). A non-zero displacement
   // filter means the OS delivers nothing while the player stands still — so a player
   // waiting at a checkpoint (or just standing) stops uploading: the geofence never gets
@@ -227,8 +401,10 @@ export async function startLocationTracking(
         await withTimeout(
           Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
             accuracy,
-            timeInterval,             // 5s normally, 15s in battery saver
-            distanceInterval,         // 10m normally, 30m in battery saver
+            timeInterval,             // 3s normally, 15s in battery saver
+            distanceInterval,         // always 0 — see the note above
+            deferredUpdatesInterval,  // 0 — no OS batching
+            deferredUpdatesDistance,  // 0 — no OS batching
             // Fitness activity + never auto-pause: iOS otherwise suspends updates
             // when it thinks the player is stationary, dropping them off the map.
             activityType: Location.ActivityType.Fitness,
@@ -272,7 +448,7 @@ export async function startLocationTracking(
         // distanceInterval 0 → time-based updates even while stationary (see above).
         { accuracy, timeInterval, distanceInterval: 0 },
         async (pos) => {
-          const user = auth().currentUser;
+          const user = auth.currentUser;
           if (!user) return;
           try {
             await updatePlayerLocation(gameId, user.uid, displayName, {

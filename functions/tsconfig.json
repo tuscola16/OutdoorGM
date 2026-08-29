@@ -7,7 +7,13 @@
     "sourceMap": true,
     "strict": true,
     "target": "es2020",
-    "lib": ["es2020"]
+    "lib": ["es2020"],
+    // Without this, TypeScript sweeps in every @types package it can find — including
+    // the ROOT node_modules, which the Expo SDK 57 upgrade populated with browser-only
+    // types (@types/emscripten references Navigator/WebAssembly, absent from lib es2020).
+    // Those errors made `npm run build` exit 2, which aborts `firebase deploy` at its
+    // predeploy step. Functions only needs Node globals; everything else is imported.
+    "types": ["node"]
   },
   "compileOnSave": true,
   "include": ["src"]

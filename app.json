@@ -6,11 +6,6 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
-    "splash": {
-      "image": "./assets/splash.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#0D0D0D"
-    },
     "assetBundlePatterns": [
       "**/*"
     ],
@@ -18,9 +13,6 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.bagelrun.outdoorgm",
       "googleServicesFile": "./GoogleService-Info.plist",
-      "config": {
-        "googleMapsApiKey": "AIzaSyAeGFyRZRl1CqVDOb1P7C0gal4ZjEjD5T0"
-      },
       "infoPlist": {
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Outdoor GM tracks your location in the background so your Game Master can see your position and get alerts when you reach checkpoints.",
         "NSLocationAlwaysUsageDescription": "Outdoor GM needs background location so tracking continues while you play, even with the app closed.",
@@ -173,9 +165,26 @@
           "recordAudioAndroid": false
         }
       ],
-      "@react-native-firebase/app",
+      [
+        "@react-native-firebase/app",
+        {
+          "ios": {
+            "disableSPM": true
+          }
+        }
+      ],
       "@react-native-firebase/crashlytics",
       "@react-native-firebase/messaging",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash.png",
+          "resizeMode": "cover",
+          "backgroundColor": "#0D0D0D",
+          "imageWidth": 1284,
+          "enableFullScreenImage_legacy": true
+        }
+      ],
       [
         "expo-build-properties",
         {
@@ -184,7 +193,6 @@
           }
         }
       ],
-      "./plugins/withGradleVersion",
       "./plugins/withoutBackgroundFetch"
     ],
     "experiments": {

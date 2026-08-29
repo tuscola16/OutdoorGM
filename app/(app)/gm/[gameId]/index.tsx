@@ -16,7 +16,8 @@ import { AlertFeed } from '@/components/AlertFeed';
 import { Button } from '@/components/ui/Button';
 import { Colors } from '@/constants/colors';
 import { onForegroundMessage } from '@/services/notificationService';
-import firestore from '@react-native-firebase/firestore';
+import { doc, onSnapshot } from '@react-native-firebase/firestore';
+import { db } from '@/services/firebase';
 import { Collections } from '@/services/firebase';
 import { endGame, openLobby, reopenSetup, startGame, startEndgame, ENDGAME_RALLY_ID, updateGameConfig, deleteGame, setGameArchived, setGameMedia, resetPracticeGame, addCheckpoint, addRunbookEntry, sendBroadcast, sendGmMessage, subscribeGmMessages, gameConfig, parseEventDate, formatEventDate } from '@/services/gameService';
 import { PostGameMedia } from '@/components/PostGameMedia';
@@ -125,12 +126,7 @@ export default function GMGameScreen() {
   // #41: track the live end-game rally point so the GM map shows it (survives reload).
   useEffect(() => {
     if (!gameId) return;
-    return firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .collection(Collections.MARKERS)
-      .doc(ENDGAME_RALLY_ID)
-      .onSnapshot(
+    return onSnapshot(doc(db, Collections.GAMES, gameId, Collections.MARKERS, ENDGAME_RALLY_ID), 
         (snap) => {
           const d = snap.data();
           setRally(
@@ -139,7 +135,7 @@ export default function GMGameScreen() {
               : null
           );
         },
-        (err) => console.error('[GMGame] rally listener error', err)
+        (err: Error) => console.error('[GMGame] rally listener error', err)
       );
   }, [gameId]);
 

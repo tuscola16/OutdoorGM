@@ -10,79 +10,77 @@ Everything needed to fill out the **Outdoor GM** App Store Connect listing
 
 ## 1. Listing text
 
+> **App Store Connect is canonical for listing copy.** The text below is a mirror of what
+> is actually live on the record (verified 2026-08-15). If you change one, change the other.
+
 **Name:** Outdoor GM
-**Subtitle (30 char max):** `Live GPS games for real life`
+**Subtitle (30 char max):** `Game master for the outdoors`
+**Categories:** primary **Entertainment**, secondary **Sports**
 
 **Promotional text (170 max):**
-> Run large outdoor games with confidence. Watch every player on a live map, fire
-> events when they reach checkpoints, and keep the whole field coordinated from your phone.
+> Gather your group, head outside, and run your own live game. Watch every player on one
+> map and get an instant alert the moment someone reaches a checkpoint.
 
 **Keywords (100 char max, comma-separated, no spaces):**
 ```
-gps,outdoor,game master,live map,checkpoint,geofence,tracking,scavenger,larp,airsoft,survival,event
+gps,gamemaster,livemap,tracker,checkpoint,survival,team,group,event,geocaching,larp,tag,trail,hike
 ```
 
 **Description:**
 ```
-Outdoor GM turns a park, campus, or patch of woods into a live playing field.
+Outdoor GM turns any park, woods, trail, or campus into the board for your own live-action game.
 
-FOR GAME MASTERS
-Watch every player move on a real-time map. Draw your play boundary, drop checkpoints,
-and attach events to them — a hazard, a boon, a message to one player or everyone. When
-someone crosses a checkpoint, the event fires and you get an instant alert.
+One person runs the game as the Game Master. Everyone else joins with a code and heads out. As players move through the real world, the GM watches them all on a single live map and gets an instant alert the moment a player reaches a checkpoint — no radios, no guessing, no spreadsheets.
 
-Build a run sheet ahead of time so announcements and reveals fire on a schedule, or
-trigger anything by hand mid-game. Message co-GMs privately. See who has gone quiet,
-who has called for help, and who is still standing.
+FOR THE GAME MASTER
+- Live map of every player, updating in real time
+- Drop checkpoints anywhere and get alerted the instant someone arrives
+- Set a play-area boundary and get warned if a player wanders out of it
+- Broadcast announcements and events to everyone, or send one to a single player
+- Build a timed run-sheet that fires events, opens locations, and pings you on schedule
+- Track who's still in, who's out, and how long everyone has played
 
 FOR PLAYERS
-Your phone shares your location so the Game Master can see you — and shows you only what
-you're meant to see: the play area, your own position, and any locations revealed to you.
-No player sees another player.
+- Join in seconds with a game code
+- See your own position on the map and your time remaining
+- Get game events and alerts the moment they happen, even with your screen locked
+- One-tap safety alert to reach the Game Master if you ever need help
 
-Raise an SOS if something goes wrong. Tap out when you're done. Watch the clock on how
-long you've lasted.
+BUILT FOR REAL OUTDOOR PLAY
+- Keeps you on the map in the background, even with the app closed
+- Battery-saver mode for long sessions
+- Optional timed check-ins keep everyone in the game
 
-BUILT FOR REAL EVENTS
-- Location keeps updating in the background, even with your screen locked
-- Practice mode for an on-site dress rehearsal the night before
-- Custom arena maps: overlay your own hand-drawn map on the live map
-- Post-game recap: attach a video and photo album everyone can see
+Whether it's a last-one-standing survival game, a checkpoint race, capture-the-flag, or your own invented format, Outdoor GM gives you the live map and the tools to run it.
 
-Outdoor GM works for scavenger hunts, survival games, field exercises, LARP events,
-airsoft, camp-wide games, and anything else where people spread out and someone needs
-to see the whole board.
-
-Requires a data connection and location permission. Battery use is significant during
-play — bring a power bank for long events.
+LOCATION & PRIVACY
+Outdoor GM uses your location — including in the background during a game — so your Game Master can see you on the map and the game can react when you reach a checkpoint. Your location is shared only with the Game Master of a game you join, and only while you're playing. Leave a game at any time to stop sharing.
 ```
 
 ---
 
-## 2. Required URLs
+## 2. Required URLs — LIVE
 
-Both are **mandatory** for a location-tracking app. Neither exists yet — these must
-be live pages before submission.
+Both are deployed, public (no auth), and **now set on the App Store Connect record**:
 
-| Field | Needed |
-|---|---|
-| Privacy policy URL | Required. Must cover precise-location collection, background collection, retention, and deletion. |
-| Support URL | Required. A contact page or email is enough. |
-| Marketing URL | Optional. |
+| Field | URL | Status |
+|---|---|---|
+| Privacy policy | https://outdoor-gm.web.app/privacy | live, set on record |
+| Support | https://outdoor-gm.web.app/support | live, set on record |
 
-The Firebase Hosting site (`outdoor-gm.web.app`) already serves the GM dashboard and is
-the cheapest place to host both — add `/privacy` and `/support` routes.
+> The record previously carried `https://tuscola16.github.io/OutdoorGM/support.html` as the
+> support URL, which **404s**, and had no privacy policy URL at all. Both were corrected on
+> 2026-08-15. App Review opens both links, so re-check them with a plain `curl -I` before
+> each submission rather than trusting this table.
 
-**Privacy policy must state**, to match what the code actually does:
-- Precise GPS location is collected continuously while a game is in the `lobby`, `play`,
-  or `endgame` phase, including in the background with the screen locked.
-- Location stops when the player taps out, is eliminated, or the game ends.
-- Email address and display name are collected at signup.
-- Ration photos are uploaded and visible to that game's Game Masters.
-- Location and arrival history are **deleted automatically when a game ends**
-  (`cleanupRationPhotosOnGameEnd`), as are ration photos and arena overlays.
-- Users can delete their account and data in-app (Profile → Delete account).
-- Crash diagnostics go to Firebase Crashlytics.
+The privacy page is written against what the code actually does — background GPS during
+lobby/play/endgame, automatic deletion of location and arrival data on game end, ration
+photos visible to that game's GMs, in-app account deletion. **If those behaviours change,
+`web/src/screens/LegalScreens.tsx` has to change with them**, because App Review reads this
+page for a location-tracking app.
+
+The contact address in both pages is `support@outdoorgm.app` — make sure that mailbox
+exists and is monitored before submitting.
 
 ---
 
@@ -112,35 +110,47 @@ A reviewer sitting at a desk cannot exercise this app alone: it needs a Game Mas
 watching a map *and* a player physically crossing a geofence. Say so explicitly, and give
 them a way to see it without walking outside.
 
-**Demo account:** enter the shared test login directly in the ASC fields. Pre-create a
-game in `lobby` phase and give the reviewer its player code so they skip setup.
+**Demo account:** `reviewer@outdoorgm.test` — set on the record, and confirmed to exist and
+sign in against Firebase Auth. The password lives in the ASC field only, never in git.
 
-**Notes to reviewer — draft:**
+**Notes to reviewer — LIVE on the record** (set 2026-08-15; mirror below, ASC is canonical):
 ```
-Outdoor GM coordinates real-world outdoor games. It needs "Always" location because the
-core function is showing a Game Master where players are while players' phones are in
-their pockets with the screen locked. Without background location the app cannot do the
-one thing it exists to do.
+Outdoor GM coordinates real-world outdoor games — scavenger hunts, survival games, field
+exercises, LARP and airsoft events. One person acts as the Game Master and watches every
+player on a live map. Players share their location and see only themselves; no player ever
+sees another player.
+
+WHY THIS APP NEEDS "ALWAYS" LOCATION
+Players are physically spread across a large outdoor area for one to four hours with their
+phones in a pocket and the screen locked. The Game Master's live map, the checkpoint
+geofence alerts, and the SOS safety feature all depend on position updates continuing while
+the app is backgrounded. Without background location the app cannot perform its core
+function.
+
+Location sharing starts only when a Game Master starts a game, and stops automatically when
+the player taps out or the game ends. Location and arrival data are deleted when the game
+ends. Location is shared only with the Game Master of a game the player has chosen to join.
 
 HOW TO TEST WITHOUT GOING OUTSIDE
-The demo account above is already a Game Master of a game named "[NAME]" in the lobby.
+Sign in with the demo account above. It is a Game Master account.
 
-1. Sign in and open that game to see the Game Master map, player roster, and checkpoints.
-2. To see a player's view, join the same game from a second device (or after signing out)
-   with player code [CODE].
-3. Location updates can be simulated in the iOS Simulator via
-   Features > Location > Freeway Drive, or on a device with Xcode's location simulation.
-   Crossing into a checkpoint radius fires an alert to the Game Master.
+1. Tap "Create Game". Pan the map to set a play boundary, add a checkpoint, then tap
+   "Open to Players". You now see the Game Master view: live map, player roster, and
+   checkpoint list.
+2. The game screen shows a 6-character player code. Joining with that code from a second
+   device — or after signing out on this one — shows the restricted player view.
+3. Location can be simulated without walking outside: in the iOS Simulator use
+   Features > Location > Freeway Drive, or use Xcode's location simulation on a device.
+   Moving inside a checkpoint radius fires an arrival alert to the Game Master.
 
-WHY BACKGROUND LOCATION
-Players are physically moving across a large outdoor area for 1-4 hours with their phones
-pocketed. The Game Master's live map, the checkpoint geofence alerts, and the SOS safety
-feature all depend on position updates continuing while the app is backgrounded. Location
-sharing starts only when a Game Master starts a game, and stops automatically when the
-player taps out or the game ends.
-
-A screen recording of a full game is attached / available at [URL].
+Privacy policy: https://outdoor-gm.web.app/privacy
+Support: https://outdoor-gm.web.app/support
 ```
+
+> These notes deliberately walk the reviewer through **creating** a game rather than pointing
+> at a pre-seeded one, so they don't rot. If you do seed a `lobby` game for a submission, add
+> its name and player code here and shorten step 1 — but then the notes have a dependency
+> that has to be re-checked every time.
 
 **Attach a screen recording.** For an Always-location app this is the single highest-value
 thing you can provide. Record a real game: GM starts it, a player walks into a checkpoint,
@@ -148,30 +158,77 @@ the alert lands, phone locks and the dot keeps moving.
 
 ---
 
-## 5. Screenshots
+## 5. Screenshots — GENERATED AND UPLOADED
 
-Required at 6.7" (1290x2796) and 6.5" (1242x2688). These must come from a real device or
-simulator — they cannot be mocked up from the web dashboard.
+15 files, checked in at `store-screenshots/`, at Apple's exact dimensions. **10 of them are
+uploaded** to the 1.0.0 record (verified `assetDeliveryState: COMPLETE`, no errors/warnings):
 
-Suggested set, in order:
-1. GM live map with several players and checkpoints visible
-2. Checkpoint arrival alert / notification feed
-3. Player view: play boundary and own position
-4. Run sheet or checkpoint behavior editor
-5. Results screen with player times
+| Folder | Pixels | Device class | ASC display type |
+|---|---|---|---|
+| `6.9/` | 1320 × 2868 | iPhone 16 Pro Max | `APP_IPHONE_67` ← uploaded |
+| `6.7/` | 1290 × 2796 | iPhone 15 Pro Max | `APP_IPHONE_67` — redundant, not uploaded |
+| `6.5/` | 1242 × 2688 | iPhone 11 Pro Max / XS Max | `APP_IPHONE_65` ← uploaded |
+
+> **There is no `APP_IPHONE_69` display type.** The API enum stops at `APP_IPHONE_67`, and
+> that one slot accepts either 1290 × 2796 or 1320 × 2868 — only one set can occupy it. We
+> upload the 6.9" (1320 × 2868) because it is the current required size, which makes the
+> `6.7/` folder dead weight for iOS. Keep generating it only if you want it for other stores.
+
+Display order (the first two do the selling):
+
+1. **gm-play** — live GM map, players and checkpoints, stale-player warning
+2. **gm-endgame** — final showdown with the rally point
+3. **gm-alerts** — notification feed: arrivals, hazards, boons
+4. **player-map** — the player's restricted view
+5. **results** — final times plus the post-game recap card
+
+No iPad sizes needed — `ios.supportsTablet` is `false`.
+
+Regenerate with the recipe in `store-screenshots/README.md`. They are browser-rendered
+mocks, not device captures, so check them against the real app before each submission.
 
 ---
 
 ## 6. Pre-submission checklist
 
-- [ ] Version string in App Store Connect matches the binary — record says `1.0`, build is `1.0.0`
+Record state as of **2026-08-15**: version `1.0.0`, `PREPARE_FOR_SUBMISSION`, **no build ever
+uploaded**. Everything below marked done was verified by reading the field back from the API,
+not just by a 200 response — see the `contentRightsDeclaration` note for why that matters.
+
+**Done**
+
+- [x] ~~Privacy policy URL live *and set on the record*~~ — https://outdoor-gm.web.app/privacy
+- [x] ~~Support URL live *and set on the record*~~ — https://outdoor-gm.web.app/support (the old value 404'd)
+- [x] ~~Screenshots generated~~ — `store-screenshots/`, all three sizes
+- [x] ~~Screenshots uploaded to App Store Connect~~ — 5 × `APP_IPHONE_67` + 5 × `APP_IPHONE_65`, all `COMPLETE`
+- [x] ~~Version string matches the binary~~ — record moved `1.0` → `1.0.0` to match `app.json`
+- [x] ~~Categories set~~ — primary Entertainment, secondary Sports
+- [x] ~~Review notes written~~ — the "why Always location" + simulator test recipe, ~1.8k chars
+- [x] ~~Demo account~~ — `reviewer@outdoorgm.test` exists in Firebase Auth and signs in
+- [x] ~~Age rating~~ — `FOUR_PLUS`, declaration complete
+- [x] ~~APNs auth key uploaded to Firebase~~ — `UTTR598W4P`, verified in console
+- [x] ~~Encryption declaration~~ — `ITSAppUsesNonExemptEncryption: false` in `app.json`
+
+**Console-only — no public API exists**
+
+- [ ] **App Privacy nutrition labels** — §3 has the table; ASC exposes no endpoint for these
+- [ ] **Content rights declaration** — `PATCH /v1/apps/{id}` accepts `contentRightsDeclaration`
+      and **echoes it back in a 200, but never persists it** (read-back is still `null`).
+      Do not trust the 200; set it in the console.
 - [ ] Duplicate listing "Outdoor Game Master" (`com.outdoorgamemaster.app`, ID 6775019774) removed
-- [ ] APNs auth key uploaded to Firebase → Project Settings → Cloud Messaging (iOS push is dead without it)
-- [ ] App Store Connect API key created so `eas submit` can run
-- [ ] Privacy policy URL live
-- [ ] Support URL live
-- [ ] Screenshots uploaded
-- [ ] Nutrition labels completed
-- [ ] Review notes + demo account + recording attached
+
+**Blocked on a device / a build**
+
+- [ ] Build uploaded and attached to 1.0.0
+- [ ] Screen recording of a real game attached to review notes
+- [ ] A game left in `lobby` phase for the reviewer — every game on the demo account is
+      currently `results`/ended. The review notes deliberately tell the reviewer to *create*
+      a game instead, so this is optional polish rather than a blocker.
+
+**Still open**
+
+- [ ] Price schedule (Free) + territory availability — never configured on this record
+- [ ] App Store Connect API key wired to `eas submit` — key `9DN225MYUH` already exists with Admin access
+- [ ] `support@outdoorgm.app` mailbox exists and is monitored
 - [ ] Google Maps API keys restricted by bundle ID (repo is public; the iOS Maps key doubles as the Firebase `API_KEY`)
 - [ ] App Check enforcement considered before real users

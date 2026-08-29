@@ -5,7 +5,7 @@ import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import * as Notifications from 'expo-notifications';
-import crashlytics from '@react-native-firebase/crashlytics';
+import { getCrashlytics, setCrashlyticsCollectionEnabled } from '@react-native-firebase/crashlytics';
 import { AuthProvider } from '@/context/AuthContext';
 import { GameProvider } from '@/context/GameContext';
 import '@/services/locationTask';
@@ -14,7 +14,7 @@ SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
   useEffect(() => {
-    crashlytics().setCrashlyticsCollectionEnabled(!__DEV__);
+    setCrashlyticsCollectionEnabled(getCrashlytics(), !__DEV__);
 
     if (Platform.OS === 'android') {
       // MAX importance → heads-up banner + sound even when the app is backgrounded

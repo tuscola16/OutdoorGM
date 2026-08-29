@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import firestore, { FirebaseFirestoreTypes } from '@react-native-firebase/firestore';
-import auth from '@react-native-firebase/auth';
+import { collection, query, where, onSnapshot, type QuerySnapshot } from '@react-native-firebase/firestore';
+import { auth, db } from '@/services/firebase';
 import { Collections } from '@/services/firebase';
 import type { Broadcast } from '@/types';
 
@@ -39,11 +39,8 @@ export function BroadcastsProvider({
     setInitialized(false);
     if (!gameId) return;
 
-    const col = firestore()
-      .collection(Collections.GAMES)
-      .doc(gameId)
-      .collection(Collections.BROADCASTS);
-    const uid = auth().currentUser?.uid;
+    const col = collection(db, Collections.GAMES, gameId, Collections.BROADCASTS);
+    const uid = auth.currentUser?.uid;
 
     const merged = new Map<string, Broadcast>();
     const emit = () =>
@@ -60,7 +57,7 @@ export function BroadcastsProvider({
       if (globalPrimed && minePrimed) setInitialized(true);
     };
 
-    const makeHandler = (markPrimed: () => void) => (snap: FirebaseFirestoreTypes.QuerySnapshot) => {
+    const makeHandler = (markPrimed: () => void) => (snap: QuerySnapshot) => {
       snap.docChanges().forEach((c) => {
         if (c.type === 'removed') merged.delete(c.doc.id);
         else merged.set(c.doc.id, { id: c.doc.id, ...c.doc.data() } as Broadcast);
@@ -74,14 +71,14 @@ export function BroadcastsProvider({
       .where('targetPlayerId', '==', null)
       .onSnapshot(
         makeHandler(() => { globalPrimed = true; }),
-        (err) => console.error('[Broadcasts] global error', err)
+        (err: Error) => console.error('[Broadcasts] global error', err)
       );
     const unsubMine = uid
       ? col
           .where('targetPlayerId', '==', uid)
           .onSnapshot(
             makeHandler(() => { minePrimed = true; }),
-            (err) => console.error('[Broadcasts] mine error', err)
+            (err: Error) => console.error('[Broadcasts] mine error', err)
           )
       : () => {};
 
