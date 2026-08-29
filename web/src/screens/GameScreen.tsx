@@ -16,8 +16,9 @@ import {
   deleteGame, setGameArchived, reviewRation, rationInterval, setMemberDistrict,
   revealCheckpointNow, setRevealSchedule, parseEventDate, formatEventDate,
   sendGmMessage, subscribeGmMessages, deleteScheduledEvent,
-  uploadArenaOverlay, setMapOverlay, setGameMedia, resetPracticeGame,
+  uploadArenaOverlay, setMapOverlay, setGameMedia, resetPracticeGame, importCheckpoints,
 } from '@/services/gameService';
+import { parseGpxWaypoints, expandBoundary, type GpxParseResult } from '@/services/gpxImport';
 import { normalizeYoutubeUrl, normalizePhotosUrl } from '@shared/common/mediaLinks';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { db, Collections } from '@/services/firebase';
@@ -444,6 +445,30 @@ function SetupView({
   const [behaviorCheckpointId, setBehaviorCheckpointId] = useState<string | null>(null);
   const behaviorCp = checkpoints.find((c) => c.id === behaviorCheckpointId) ?? null;
   const [showRules, setShowRules] = useState(false);
+  // GPX waypoint import — parsed file awaiting the GM's confirmation.
+  const [gpx, setGpx] = useState<{ parsed: GpxParseResult; fileName: string } | null>(null);
+
+  async function handleGpxFile(file: File) {
+    // Same #64 gate as map placement: without a boundary there's nothing to import into.
+    if (!game?.boundary) {
+      window.alert('Draw the play boundary first — checkpoints must sit inside it.');
+      return;
+    }
+    try {
+      const parsed = parseGpxWaypoints(await file.text());
+      if (parsed.waypoints.length === 0) {
+        const { trackPoints, routePoints } = parsed.skipped;
+        window.alert(
+          `That file has no waypoints — only ${trackPoints} track point(s) and ${routePoints} route point(s), ` +
+            'which this importer skips on purpose. Export your points as GPX waypoints and try again.'
+        );
+        return;
+      }
+      setGpx({ parsed, fileName: file.name });
+    } catch (err) {
+      window.alert(friendlyError(err));
+    }
+  }
 
   function handleMapClick(coord: { latitude: number; longitude: number }) {
     // #64: a checkpoint must sit inside the play area, or the geofence can never fire it.
@@ -643,6 +668,15 @@ function SetupView({
               </div>
             );
           })}
+          <label className="btn btn--ghost" style={{ cursor: 'pointer', justifyContent: 'center', textAlign: 'center' }}>
+            Import GPX waypoints
+            <input
+              type="file"
+              accept=".gpx,application/gpx+xml,application/xml,text/xml"
+              style={{ display: 'none' }}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) handleGpxFile(f); e.target.value = ''; }}
+            />
+          </label>
           {checkpoints.length > 0 && (
             <button className="btn btn--ghost" style={{ justifyContent: 'center' }} onClick={() => navigate(`/games/${gameId}/runbook`)}>
               Open Runbook editor →
@@ -701,6 +735,16 @@ function SetupView({
       )}
       {showRules && (
         <RulesModal gameId={gameId} initial={game?.rules ?? ''} onClose={() => setShowRules(false)} />
+      )}
+      {gpx && game?.boundary && (
+        <GpxImportModal
+          gameId={gameId}
+          parsed={gpx.parsed}
+          fileName={gpx.fileName}
+          boundary={game.boundary}
+          existingCount={checkpoints.length}
+          onClose={() => setGpx(null)}
+        />
       )}
     </div>
   );
@@ -773,6 +817,164 @@ function NewCheckpointModal({
         <button className="btn btn--ghost" style={{ flex: 1 }} onClick={() => onClose()} disabled={busy}>Cancel</button>
         <button className="btn btn--secondary" style={{ flex: 1 }} onClick={() => save(false)} disabled={busy}>Just add</button>
       </div>
+    </Modal>
+  );
+}
+
+
+/**
+ * GPX waypoint import (setup only). Previews the file's `<wpt>` markers, lets the GM
+ * drop any they don't want, and writes the rest as checkpoints in one batch.
+ *
+ * Imported checkpoints are inert: they get no runbook entries, so crossing one only
+ * pings the GM until behavior is authored in the Runbook editor.
+ */
+function GpxImportModal({
+  gameId, parsed, fileName, boundary, existingCount, onClose,
+}: {
+  gameId: string;
+  parsed: GpxParseResult;
+  fileName: string;
+  boundary: MapBoundary;
+  existingCount: number;
+  onClose: () => void;
+}) {
+  const [radius, setRadius] = useState('100');
+  const [icon, setIcon] = useState(DEFAULT_CHECKPOINT_ICON);
+  const [excluded, setExcluded] = useState<Set<number>>(() => new Set());
+  const [expand, setExpand] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const labelStyle = { fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: 0.5 } as const;
+
+  const selected = parsed.waypoints.filter((_, i) => !excluded.has(i));
+  // #64: a checkpoint outside the play area can never fire, so flag those up front.
+  const outsideCount = selected.filter((w) => !pointInBoundary(w.latitude, w.longitude, boundary)).length;
+  const hasPolygon = Array.isArray(boundary.polygon) && boundary.polygon.length >= 3;
+  const skippedTotal = parsed.skipped.trackPoints + parsed.skipped.routePoints;
+
+  function toggle(i: number) {
+    setExcluded((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i); else next.add(i);
+      return next;
+    });
+  }
+
+  async function doImport() {
+    if (selected.length === 0) { window.alert('Select at least one waypoint.'); return; }
+    const r = parseInt(radius, 10);
+    if (isNaN(r) || r < 10) { window.alert('Enter a valid radius (minimum 10m)'); return; }
+    const willExpand = expand && outsideCount > 0;
+    if (outsideCount > 0 && !willExpand) {
+      const ok = window.confirm(
+        outsideCount + ' waypoint(s) sit outside the play area. They will be created, but the ' +
+        'geofence can never fire them until you widen the boundary. Import anyway?'
+      );
+      if (!ok) return;
+    }
+    setBusy(true);
+    try {
+      if (willExpand) {
+        await updateGameConfig(gameId, { boundary: expandBoundary(boundary, selected) });
+      }
+      await importCheckpoints(gameId, selected, { radius: r, icon, startOrder: existingCount });
+      onClose();
+    } catch (err) { window.alert(friendlyError(err)); setBusy(false); }
+  }
+
+  return (
+    <Modal title="Import GPX waypoints" onClose={onClose}>
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+        📄 {fileName} — {parsed.waypoints.length} waypoint{parsed.waypoints.length === 1 ? '' : 's'}
+        {skippedTotal > 0 && (
+          <>
+            {' · '}skipped {parsed.skipped.trackPoints} track and {parsed.skipped.routePoints} route
+            {' '}point{skippedTotal === 1 ? '' : 's'}
+          </>
+        )}
+      </div>
+
+      <div className="field">
+        <label>Detection radius for all (meters)</label>
+        <input className="input" type="number" value={radius} onChange={(e) => setRadius(e.target.value)} />
+      </div>
+
+      <div>
+        <div style={{ ...labelStyle, marginBottom: 8 }}>Map icon for all</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {Object.entries(CHECKPOINT_ICON_EMOJIS).map(([key, emoji]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setIcon(key)}
+              title={key}
+              style={{
+                width: 40, height: 40, borderRadius: 8, fontSize: 18, cursor: 'pointer',
+                border: '1px solid ' + (key === icon ? 'var(--primary)' : 'var(--border)'),
+                background: key === icon ? 'rgba(212,137,63,0.15)' : 'transparent',
+              }}
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <div style={{ ...labelStyle, marginBottom: 8 }}>
+          Waypoints ({selected.length} of {parsed.waypoints.length} selected)
+        </div>
+        <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8 }}>
+          {parsed.waypoints.map((w, i) => {
+            const inside = pointInBoundary(w.latitude, w.longitude, boundary);
+            return (
+              <label
+                key={i}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', cursor: 'pointer',
+                  borderTop: i === 0 ? 'none' : '1px solid var(--border)',
+                  opacity: excluded.has(i) ? 0.45 : 1,
+                }}
+              >
+                <input type="checkbox" checked={!excluded.has(i)} onChange={() => toggle(i)} />
+                <span style={{ flex: 1, fontWeight: 600, fontSize: 13 }}>{w.name}</span>
+                {!inside && (
+                  <span title="Outside the play area" style={{ fontSize: 11, color: 'var(--danger)' }}>outside</span>
+                )}
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  {w.latitude.toFixed(4)}, {w.longitude.toFixed(4)}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      </div>
+
+      {outsideCount > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer', fontSize: 13 }}>
+            <input type="checkbox" checked={expand} onChange={(e) => setExpand(e.target.checked)} />
+            <span>Expand the play area to fit all {outsideCount} outside waypoint(s)</span>
+          </label>
+          {expand && hasPolygon && (
+            <span style={{ fontSize: 12, color: 'var(--primary)' }}>
+              ⚠️ Your play area is a drawn polygon. Expanding keeps every part of it, but fills in
+              any concave bite — the new shape is the convex hull around it plus these waypoints.
+            </span>
+          )}
+        </div>
+      )}
+
+      <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+        Imported checkpoints have no behavior yet — crossing one just pings you. Author what they
+        do in the Runbook editor.
+      </span>
+
+      <button className="btn btn--block" onClick={doImport} disabled={busy}>
+        {busy ? 'Importing…' : 'Import ' + selected.length + ' checkpoint' + (selected.length === 1 ? '' : 's')}
+      </button>
+      <button className="btn btn--ghost btn--block" onClick={onClose} disabled={busy}>Cancel</button>
     </Modal>
   );
 }

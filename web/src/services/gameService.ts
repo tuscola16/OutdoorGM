@@ -510,6 +510,37 @@ export async function addCheckpoint(
   return { id: ref.id, ...checkpoint };
 }
 
+/** Firestore caps a batch at 500 writes; chunk well under it. */
+const IMPORT_CHUNK = 400;
+
+/**
+ * Bulk-create checkpoints from a GPX import. Points keep their file order via `order`,
+ * continuing from `startOrder` so an import appends to any checkpoints already placed.
+ * Returns the number written.
+ */
+export async function importCheckpoints(
+  gameId: string,
+  points: { name: string; latitude: number; longitude: number }[],
+  opts: { radius: number; icon: string; startOrder: number }
+): Promise<number> {
+  const col = collection(db, Collections.GAMES, gameId, Collections.CHECKPOINTS);
+  for (let i = 0; i < points.length; i += IMPORT_CHUNK) {
+    const batch = writeBatch(db);
+    points.slice(i, i + IMPORT_CHUNK).forEach((p, j) => {
+      batch.set(doc(col), {
+        name: p.name,
+        latitude: p.latitude,
+        longitude: p.longitude,
+        radius: opts.radius,
+        icon: opts.icon,
+        order: opts.startOrder + i + j,
+      });
+    });
+    await batch.commit();
+  }
+  return points.length;
+}
+
 export async function updateCheckpoint(
   gameId: string,
   checkpointId: string,
