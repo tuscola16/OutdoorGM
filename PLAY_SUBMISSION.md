@@ -246,8 +246,12 @@ Still to do before that works:
       the background-location declaration (§5), which cannot be filed before an upload.
 - [ ] Background-location declaration — appears during the release flow once the AAB is up;
       paste §5's justification and the player-side video.
-- [ ] Production keystore SHA-1 (Maps) + SHA-256 (Play Integrity / Firebase) registered,
-      or the first production install shows a blank map.
+- [ ] **Play App Signing** SHA-1 (→ Android Maps key) and SHA-256 (→ Play Integrity +
+      Firebase fingerprints) registered, from Play Console → Setup → App signing.
+      Not the upload key: EAS keeps one keystore per app, so production reuses preview's
+      (`Build Credentials jE7VDI3PFh`) and that SHA-1 is already registered. Google
+      **re-signs** the AAB, so what apps see at runtime is a different key — and that's
+      the one Maps and Integrity check. Miss it and the first store install has a blank map.
 
 > **Automation.** `applications.dataSafety`, `edits.listings`, `edits.images`,
 > `edits.details`, `edits.bundles`, and `edits.tracks` are all in the Play Developer API.
