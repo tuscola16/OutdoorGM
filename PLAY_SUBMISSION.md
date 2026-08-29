@@ -28,7 +28,7 @@ description is shared with the App Store. Play-specific limits:
 | Privacy policy | https://outdoor-gm.web.app/privacy |
 | Terms | https://outdoor-gm.web.app/terms |
 | Support | https://outdoor-gm.web.app/support |
-| Contact email | `tuscola16@gmail.com` |
+| Contact email | `eatmypack@gmail.com` |
 
 ---
 
@@ -221,7 +221,7 @@ Still to do before that works:
 
 - [x] ~~Play Console app created~~ — `com.bagelrun.outdoorgm`
 - [x] ~~Privacy, terms, support URLs live~~ — verified 2026-08-29
-- [x] ~~Contact address receives mail~~ — `tuscola16@gmail.com`
+- [x] ~~Contact address receives mail~~ — `eatmypack@gmail.com`
 - [x] ~~Phone screenshots at 9:16~~ — `store-screenshots/play-phone/`, 5 × 1080 × 1920
 - [x] ~~Feature graphic + 512 icon~~ — checked in
 - [x] ~~`eas submit` android config~~ — `eas.json`, track `internal`

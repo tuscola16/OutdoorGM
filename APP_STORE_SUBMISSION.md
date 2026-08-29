@@ -79,12 +79,16 @@ photos visible to that game's GMs, in-app account deletion. **If those behaviour
 `web/src/screens/LegalScreens.tsx` has to change with them**, because App Review reads this
 page for a location-tracking app.
 
-The contact address on all three pages is `tuscola16@gmail.com`. It was previously
-`support@outdoorgm.app`, which **never worked** — `outdoorgm.app` has never been registered
-and returns NXDOMAIN for both A and MX, so every mail to it hard-bounced. Neither store
-requires a branded address, only one that receives mail; this is the same address eatMyPack
-ships on its own privacy/support pages. If you ever do buy the domain, change it here, in
-`web/src/screens/LegalScreens.tsx`, and on both store records together.
+The contact address on all three pages is `eatmypack@gmail.com`, matching the developer
+contact already set on the Play Console record — a reviewer cross-checks the listing against
+the privacy page, so the two must agree.
+
+It was previously `support@outdoorgm.app`, which **never worked**: `outdoorgm.app` has never
+been registered and returns NXDOMAIN for both A and MX, so every mail to it hard-bounced.
+Neither store requires a branded address, only one that receives mail.
+
+> **Check the App Store Connect record still says this too.** Three places have to agree —
+> `web/src/screens/LegalScreens.tsx`, the Play record, and ASC.
 
 ---
 
@@ -233,7 +237,7 @@ not just by a 200 response — see the `contentRightsDeclaration` note for why t
 
 - [ ] Price schedule (Free) + territory availability — never configured on this record
 - [ ] App Store Connect API key wired to `eas submit` — key `9DN225MYUH` already exists with Admin access
-- [x] ~~Contact address receives mail~~ — now `tuscola16@gmail.com`; the old
+- [x] ~~Contact address receives mail~~ — now `eatmypack@gmail.com`, matching the Play record; the old
       `support@outdoorgm.app` bounced (domain never registered)
 - [ ] Google Maps API keys restricted by bundle ID (repo is public; the iOS Maps key doubles as the Firebase `API_KEY`)
 - [ ] App Check enforcement considered before real users

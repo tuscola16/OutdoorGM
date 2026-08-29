@@ -14,11 +14,13 @@
  * If any of those behaviours change, this page has to change with them.
  */
 
-// Both stores require a contact address that actually receives mail; neither requires a
-// branded one. `support@outdoorgm.app` was aspirational — outdoorgm.app has never been
-// registered and returns NXDOMAIN, so mail to it hard-bounced. This is the same address
-// eatMyPack ships on its own privacy/support pages and in `eas submit`.
-const CONTACT = 'tuscola16@gmail.com';
+// Must match the developer contact on the store records, because a reviewer cross-checks
+// the listing against this page. This is the address already on the Play Console record
+// (App content → contact email), so the store is canonical and this follows it.
+//
+// It was `support@outdoorgm.app`, which never worked — outdoorgm.app has never been
+// registered and returns NXDOMAIN, so mail to it hard-bounced.
+const CONTACT = 'eatmypack@gmail.com';
 const UPDATED = '15 August 2026';
 const TERMS_UPDATED = '29 August 2026';
 
