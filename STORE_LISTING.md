@@ -80,10 +80,14 @@ three constants back the app's own links in `constants/index.ts`.
 
 ---
 
-## Play Store (Android) — for the listing you'll create for com.bagelrun.outdoorgm
+## Play Store (Android)
+
+> **See [PLAY_SUBMISSION.md](PLAY_SUBMISSION.md)** for the full Play kit — data safety,
+> background-location declaration, content rating, target audience, and app access. The
+> listing copy below is the paste-ready part.
 
 **Short description** (≤80):
-> Run live outdoor games: watch players on a map and get instant checkpoint alerts.
+> Run live outdoor games: watch players on a map, get instant checkpoint alerts.
 
 **Full description** (≤4000): reuse the App Store description above.
 
