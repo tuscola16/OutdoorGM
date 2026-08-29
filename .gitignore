@@ -14,6 +14,9 @@ npm-debug.*
 *.p12
 *.key
 *.mobileprovision
+# Play Console service-account key for `eas submit --platform android`
+# (path is set in eas.json → submit.production.android.serviceAccountKeyPath)
+play-service-account.json
 *.orig.*
 web-build/
 .env
