@@ -5,7 +5,7 @@ import { GamesScreen } from '@/screens/GamesScreen';
 import { GameScreen } from '@/screens/GameScreen';
 import { RunbookScreen } from '@/screens/RunbookScreen';
 import { DemoScreen } from '@/screens/DemoScreen';
-import { PrivacyScreen, SupportScreen } from '@/screens/LegalScreens';
+import { PrivacyScreen, SupportScreen, TermsScreen } from '@/screens/LegalScreens';
 
 function FullScreenMessage({ text }: { text: string }) {
   return (
@@ -73,8 +73,11 @@ export function App() {
         }
       />
       <Route path="/demo" element={<DemoScreen />} />
-      {/* Required by App Store Connect; public, no auth. */}
+      {/* Required by App Store Connect and the Play Console; public, no auth. `/terms`
+          also backs the sign-in screen's Terms link (constants/index.ts). These must stay
+          above the `*` catch-all, which would otherwise bounce them to /games. */}
       <Route path="/privacy" element={<PrivacyScreen />} />
+      <Route path="/terms" element={<TermsScreen />} />
       <Route path="/support" element={<SupportScreen />} />
       <Route path="/" element={<Navigate to="/games" replace />} />
       <Route path="*" element={<Navigate to="/games" replace />} />

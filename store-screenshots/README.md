@@ -1,4 +1,4 @@
-# App Store screenshots
+# Store screenshots
 
 Generated from the `/demo` screenshot page, which renders pixel-matched mocks of the React
 Native screens. Regenerate any time the UI changes — these are checked in so the submission
@@ -22,15 +22,46 @@ temp path and copy the files in afterwards.
 
 ## Sizes
 
-| Folder | Pixels | Device class |
-|---|---|---|
-| `6.9/` | 1320 × 2868 | iPhone 16 Pro Max |
-| `6.7/` | 1290 × 2796 | iPhone 15 Pro Max |
-| `6.5/` | 1242 × 2688 | iPhone 11 Pro Max / XS Max |
+### App Store
+
+| Folder | `?shot=` | Pixels | Device class |
+|---|---|---|---|
+| `6.9/` | `6.9` | 1320 × 2868 | iPhone 16 Pro Max |
+| `6.7/` | `6.7` | 1290 × 2796 | iPhone 15 Pro Max |
+| `6.5/` | `6.5` | 1242 × 2688 | iPhone 11 Pro Max / XS Max |
 
 App Store Connect generally needs only the largest size and scales the rest, but it has
 historically asked for 6.5" separately. All three are here so the upload can't be blocked by
 a missing size. No iPad sizes are needed — `ios.supportsTablet` is `false`.
+
+### Google Play
+
+| Folder | `?shot=` | Pixels | Slot |
+|---|---|---|---|
+| `play-phone/` | `play-phone` | 1080 × 1920 | Phone — **required**, min 2 · *5 captured* |
+| — | `play-tablet` | 1440 × 2560 | 7" / 10" tablet — optional, not captured |
+
+> **The App Store captures cannot be reused for Play.** Play requires an aspect ratio of
+> **16:9 or 9:16**; the iPhone sizes are ~1:2.17 and get rejected. The `play-*` sizes are
+> exactly 9:16, which means a shorter layout than the Apple ones — check the bottom of each
+> capture isn't clipped, since the frame is `overflow: hidden`.
+
+Play also needs two assets that are not screenshots of the app. Both are checked in:
+
+| File | Pixels | Notes |
+|---|---|---|
+| `play-feature-graphic.png` | 1024 × 500 | Required; shown at the top of the listing |
+| `play-icon-512.png` | 512 × 512 | 32-bit RGBA, downscaled from `assets/icon.png` |
+
+**The feature graphic is hand-built, not generated from `/demo`.** Its source is a
+standalone HTML page rendered at 1024 × 500 — the recipe is in the commit that added it.
+It deliberately carries no device frames and no store badges (Play rejects both), and keeps
+the wordmark clear of the map motif on the right so nothing collides. Treat it as a
+serviceable placeholder: it's assembled from the existing icon and palette rather than
+designed, and it's the one asset a real designer would improve most.
+
+The 512 icon is a straight downscale re-encoded to RGBA (Chrome's screenshot writes RGB,
+and Play wants 32-bit). The source icon is fully opaque, so the alpha channel is all 255.
 
 ## Order
 
