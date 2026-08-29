@@ -1,4 +1,4 @@
-# App Store screenshots
+# Store screenshots
 
 Generated from the `/demo` screenshot page, which renders pixel-matched mocks of the React
 Native screens. Regenerate any time the UI changes — these are checked in so the submission
@@ -22,15 +22,35 @@ temp path and copy the files in afterwards.
 
 ## Sizes
 
-| Folder | Pixels | Device class |
-|---|---|---|
-| `6.9/` | 1320 × 2868 | iPhone 16 Pro Max |
-| `6.7/` | 1290 × 2796 | iPhone 15 Pro Max |
-| `6.5/` | 1242 × 2688 | iPhone 11 Pro Max / XS Max |
+### App Store
+
+| Folder | `?shot=` | Pixels | Device class |
+|---|---|---|---|
+| `6.9/` | `6.9` | 1320 × 2868 | iPhone 16 Pro Max |
+| `6.7/` | `6.7` | 1290 × 2796 | iPhone 15 Pro Max |
+| `6.5/` | `6.5` | 1242 × 2688 | iPhone 11 Pro Max / XS Max |
 
 App Store Connect generally needs only the largest size and scales the rest, but it has
 historically asked for 6.5" separately. All three are here so the upload can't be blocked by
 a missing size. No iPad sizes are needed — `ios.supportsTablet` is `false`.
+
+### Google Play
+
+| Folder | `?shot=` | Pixels | Slot |
+|---|---|---|---|
+| `play-phone/` | `play-phone` | 1080 × 1920 | Phone — **required**, min 2 |
+| `play-tablet/` | `play-tablet` | 1440 × 2560 | 7" / 10" tablet — optional |
+
+> **The App Store captures cannot be reused for Play.** Play requires an aspect ratio of
+> **16:9 or 9:16**; the iPhone sizes are ~1:2.17 and get rejected. The `play-*` sizes are
+> exactly 9:16, which means a shorter layout than the Apple ones — check the bottom of each
+> capture isn't clipped, since the frame is `overflow: hidden`.
+
+Play also needs two assets this generator does **not** produce, because neither is a
+screenshot of the app:
+
+- **Feature graphic** — 1024 × 500, shown at the top of the listing. Required.
+- **App icon** — 512 × 512, 32-bit PNG. Separate from `assets/icon.png` (1024 × 1024).
 
 ## Order
 

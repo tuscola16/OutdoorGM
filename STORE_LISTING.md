@@ -56,10 +56,12 @@ LOCATION & PRIVACY
 Outdoor GM uses your location — including in the background during a game — so your Game Master can see you on the map and the game can react when you reach a checkpoint. Your location is shared only with the Game Master of a game you join, and only while you're playing. Leave a game at any time to stop sharing.
 ```
 
-**URLs**
-- Privacy Policy: `https://tuscola16.github.io/OutdoorGM/privacy.html`
-- Support URL: `https://tuscola16.github.io/OutdoorGM/support.html`
-- Marketing URL (optional): `https://tuscola16.github.io/OutdoorGM/`
+**URLs** — served by the web app (`web/src/screens/LegalScreens.tsx`) off Firebase Hosting.
+The old `tuscola16.github.io/OutdoorGM/*` addresses **404** and must not be used; the same
+three constants back the app's own links in `constants/index.ts`.
+- Privacy Policy: `https://outdoor-gm.web.app/privacy`
+- Terms of Use: `https://outdoor-gm.web.app/terms`
+- Support URL: `https://outdoor-gm.web.app/support`
 
 **Category:** Primary **Entertainment** · Secondary **Sports** (alt: Utilities)
 

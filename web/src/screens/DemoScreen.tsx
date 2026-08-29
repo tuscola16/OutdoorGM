@@ -1006,9 +1006,10 @@ export function DemoScreen() {
     </div>
   );
 
-  // App Store screenshot mode: `?shot=6.7` renders the phone-sized layout scaled up to
-  // Apple's exact pixel dimensions, so a plain viewport-sized browser capture is already
-  // submission-ready — no upscaling (which blurs) and no DevTools DPR fiddling.
+  // Store screenshot mode: `?shot=6.7` / `?shot=play-phone` renders the phone-sized layout
+  // scaled up to that store's exact pixel dimensions, so a plain viewport-sized browser
+  // capture is already submission-ready — no upscaling (which blurs) and no DevTools DPR
+  // fiddling. See SHOT_SIZES for the available keys.
   //
   // The layout is authored at a logical phone width; we render it at that width and then
   // `transform: scale()` the whole frame, so text and SVG rasterise at full device
@@ -1034,14 +1035,24 @@ export function DemoScreen() {
 }
 
 /**
- * Apple's required App Store screenshot dimensions, keyed by the display size Apple names
- * them by. `logicalW` is the CSS width the layout is authored against — the scale factor is
- * derived, so adding a new size needs only its pixel dimensions.
+ * Store screenshot dimensions, keyed by the name each store uses. `logicalW` is the CSS
+ * width the layout is authored against — the scale factor is derived, so adding a new size
+ * needs only its pixel dimensions.
+ *
+ * The two stores want different *shapes*, not just different resolutions. Apple's are the
+ * device's own ~1:2.17 panel. **Google Play requires 16:9 or 9:16**, so the tall Apple
+ * captures are rejected outright — the `play-*` sizes are exactly 9:16, which gives a
+ * shorter logical viewport (720 rather than ~956) and therefore a slightly tighter layout.
+ * Check the bottom of a Play capture isn't clipped: the frame is `overflow: hidden`.
  */
 const SHOT_SIZES: Record<string, { w: number; h: number; logicalW: number }> = {
   '6.9': { w: 1320, h: 2868, logicalW: 440 }, // iPhone 16 Pro Max
   '6.7': { w: 1290, h: 2796, logicalW: 430 }, // iPhone 15 Pro Max
   '6.5': { w: 1242, h: 2688, logicalW: 414 }, // iPhone 11 Pro Max / XS Max
+  // Google Play. Phone screenshots are required (min 2); the tablet slots are optional and
+  // reuse the same phone layout, since the app is portrait-phone only.
+  'play-phone': { w: 1080, h: 1920, logicalW: 440 }, // 9:16
+  'play-tablet': { w: 1440, h: 2560, logicalW: 440 }, // 9:16, for the 7"/10" slots
 };
 
 // ─── State picker (shown at /demo with no state param) ─────────────────────────

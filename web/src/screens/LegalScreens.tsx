@@ -1,7 +1,9 @@
 /**
- * Privacy policy and support pages. Both URLs are REQUIRED by App Store Connect, and for a
- * location-tracking app the privacy page is read during review — so the content below is
- * written to match what the code actually does, not boilerplate:
+ * Privacy policy, terms, and support pages. Privacy and support are REQUIRED by App Store
+ * Connect and the Play Console; terms backs the "Terms" link on the app's sign-in screen
+ * (`constants/index.ts`). For a location-tracking app the privacy page is read during
+ * review — so the content below is written to match what the code actually does, not
+ * boilerplate:
  *
  *   - background GPS during lobby/play/endgame  (services/locationTask.ts)
  *   - automatic deletion of location + arrival data on game end
@@ -14,6 +16,7 @@
 
 const CONTACT = 'support@outdoorgm.app';
 const UPDATED = '15 August 2026';
+const TERMS_UPDATED = '29 August 2026';
 
 const page: React.CSSProperties = {
   maxWidth: 760,
@@ -23,7 +26,15 @@ const page: React.CSSProperties = {
   color: 'var(--text)',
 };
 
-function Shell({ title, children }: { title: string; children: React.ReactNode }) {
+function Shell({
+  title,
+  updated = UPDATED,
+  children,
+}: {
+  title: string;
+  updated?: string;
+  children: React.ReactNode;
+}) {
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)', overflowY: 'auto' }}>
       <div style={page}>
@@ -32,7 +43,7 @@ function Shell({ title, children }: { title: string; children: React.ReactNode }
         </a>
         <h1 style={{ fontSize: 32, fontWeight: 800, margin: '16px 0 6px' }}>{title}</h1>
         <p style={{ color: 'var(--text-muted)', fontSize: 13, margin: '0 0 32px' }}>
-          Last updated {UPDATED}
+          Last updated {updated}
         </p>
         {children}
       </div>
@@ -208,6 +219,142 @@ export function SupportScreen() {
       <p>
         See the <a href="/privacy" style={{ color: 'var(--primary)' }}>privacy policy</a> for
         what the app collects and how long it is kept.
+      </p>
+    </Shell>
+  );
+}
+
+/**
+ * Terms of use. Linked from the sign-in screen (`app/(auth)/login.tsx` → `TERMS_URL`).
+ *
+ * The safety sections are the load-bearing ones: this app sends people into real terrain,
+ * and its SOS is a message to the Game Master's phone (`gameService.ts` → `raiseSos`), not
+ * a call to emergency services. Say that plainly rather than burying it.
+ */
+export function TermsScreen() {
+  return (
+    <Shell title="Terms of Use" updated={TERMS_UPDATED}>
+      <p>
+        These terms cover your use of the Outdoor GM app and website. By creating an account
+        or joining a game, you agree to them. If you do not, don't use the app.
+      </p>
+
+      <h2 style={h2}>What Outdoor GM is</h2>
+      <p>
+        Outdoor GM is a coordination tool for running real-world outdoor games. It shows a
+        Game Master where players are, and it reacts when a player reaches a checkpoint.{' '}
+        <strong>It is not a safety device, a security service, or a navigation system</strong>,
+        and it is not a substitute for supervision, a map, a compass, or a charged phone.
+      </p>
+
+      <h2 style={h2}>Safety</h2>
+      <p>
+        <strong>The in-app safety alert notifies the Game Masters of your game. It does not
+        contact emergency services.</strong> In an emergency, call your local emergency number
+        first.
+      </p>
+      <ul>
+        <li>
+          You are responsible for your own safety, your fitness for the activity, the terrain
+          you enter, and the weather you enter it in.
+        </li>
+        <li>
+          Location reporting depends on GPS and a mobile data connection. Both fail — under
+          tree cover, in valleys, in poor coverage, on a flat battery, or when your phone
+          throttles background apps. Assume you can become invisible on the map at any moment,
+          and plan the game so that being invisible is survivable.
+        </li>
+        <li>
+          Checkpoint detection is approximate. Distances, radii, and arrival times are
+          estimates, not measurements.
+        </li>
+        <li>Do not use the app while driving.</li>
+      </ul>
+
+      <h2 style={h2}>Running a game</h2>
+      <p>If you run a game as a Game Master, you are responsible for it. You agree to:</p>
+      <ul>
+        <li>
+          tell every player, before they join, that the app shares their location with you
+          continuously — including in the background while their screen is locked;
+        </li>
+        <li>
+          only run games in places where you and your players are permitted to be, with any
+          landowner or venue permission the location requires;
+        </li>
+        <li>
+          set a play area and rules appropriate to the participants, the terrain, and the
+          conditions; and
+        </li>
+        <li>
+          supervise participants under 18, and take part on your own account rather than
+          creating accounts for them.
+        </li>
+      </ul>
+
+      <h2 style={h2}>Location sharing and consent</h2>
+      <p>
+        Joining a game shares your live location with that game's Game Masters for as long as
+        the game runs. Other players never see it. You can stop at any time by tapping out or
+        leaving the game. What is collected and how long it is kept is set out in the{' '}
+        <a href="/privacy" style={{ color: 'var(--primary)' }}>privacy policy</a>.
+      </p>
+      <p>
+        <strong>Never use Outdoor GM to track someone who has not knowingly agreed to be
+        tracked.</strong> Using it to monitor a person without their informed consent —
+        including a partner, a family member, or an employee — is a misuse of the app and
+        grounds for removing the account.
+      </p>
+
+      <h2 style={h2}>Your account</h2>
+      <p>
+        Keep your sign-in details to yourself; you're responsible for what happens under your
+        account. Choose a display name you're comfortable other participants in a game seeing.
+        You can delete your account at any time from <strong>Profile → Delete account</strong>.
+      </p>
+
+      <h2 style={h2}>Acceptable use</h2>
+      <ul>
+        <li>Don't use the app to harass, stalk, intimidate, or endanger anyone.</li>
+        <li>Don't use it for any unlawful purpose, or to trespass.</li>
+        <li>Don't upload photographs of other people without their agreement.</li>
+        <li>
+          Don't attempt to break, overload, reverse-engineer, or gain unauthorised access to
+          the service or to other people's game data.
+        </li>
+      </ul>
+
+      <h2 style={h2}>Availability</h2>
+      <p>
+        The app is provided as-is, with no guarantee that it will be available, uninterrupted,
+        or accurate. Features may change or be withdrawn. Games, locations, and photos may be
+        deleted as described in the privacy policy.
+      </p>
+
+      <h2 style={h2}>Liability</h2>
+      <p>
+        To the fullest extent the law allows, Outdoor GM is not liable for injury, loss, or
+        damage arising from your participation in a game, from the conduct of a Game Master or
+        another player, or from the app failing to report a position, deliver an alert, or
+        detect a checkpoint. Nothing here limits liability that cannot lawfully be limited.
+      </p>
+
+      <h2 style={h2}>Ending access</h2>
+      <p>
+        We may suspend or remove an account that breaks these terms, particularly the consent
+        and acceptable-use sections. You can stop using the app and delete your account at any
+        time.
+      </p>
+
+      <h2 style={h2}>Changes</h2>
+      <p>
+        These terms may be updated; the date at the top shows when they last changed.
+        Continuing to use the app after a change means you accept the updated terms.
+      </p>
+
+      <h2 style={h2}>Contact</h2>
+      <p>
+        <a href={`mailto:${CONTACT}`} style={{ color: 'var(--primary)' }}>{CONTACT}</a>
       </p>
     </Shell>
   );
