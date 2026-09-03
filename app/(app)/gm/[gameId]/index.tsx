@@ -169,12 +169,13 @@ export default function GMGameScreen() {
     }
   }
 
+  /**
+   * Tapping a checkpoint on the GM map opens its editor instead of a read-only dialog:
+   * one tap from the map to the checkpoint's config, its runbook entries, and the fire
+   * button for GM-prompted ones. Authoring new entries still lives on the web dashboard.
+   */
   function handleCheckpointPress(checkpoint: Checkpoint) {
-    Alert.alert(
-      checkpoint.name,
-      `Radius: ${checkpoint.radius}m\nLat: ${checkpoint.latitude.toFixed(6)}\nLng: ${checkpoint.longitude.toFixed(6)}`,
-      [{ text: 'OK' }]
-    );
+    router.push(`/(app)/gm/${gameId}/checkpoint/${checkpoint.id}`);
   }
 
   async function runPhaseAction(fn: () => Promise<void>) {

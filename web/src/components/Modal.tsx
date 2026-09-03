@@ -4,10 +4,13 @@ export function Modal({
   title,
   onClose,
   children,
+  maxWidth = 420,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
+  /** Widen the shell for form-dense content (e.g. the runbook entry editor). */
+  maxWidth?: number;
 }) {
   return (
     <div
@@ -26,7 +29,7 @@ export function Modal({
         onClick={(e) => e.stopPropagation()}
         className="card"
         style={{
-          width: '100%', maxWidth: 420, display: 'flex', flexDirection: 'column', gap: 16,
+          width: '100%', maxWidth, display: 'flex', flexDirection: 'column', gap: 16,
           maxHeight: 'calc(100vh - 48px)',
         }}
       >

@@ -5,6 +5,7 @@ import { useAuth } from '@/context/AuthContext';
 import { GameMap, type DeathMarker } from '@/components/GameMap';
 import { NotificationFeed } from '@/components/NotificationFeed';
 import { Modal } from '@/components/Modal';
+import { EntryEditor } from '@/components/EntryEditor';
 import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
 import { useNow } from '@/hooks/useNow';
 import { friendlyError } from '@/services/errorUtils';
@@ -23,7 +24,7 @@ import { normalizeYoutubeUrl, normalizePhotosUrl } from '@shared/common/mediaLin
 import { doc, onSnapshot } from 'firebase/firestore';
 import { db, Collections } from '@/services/firebase';
 import {
-  KIND_META, checkpointKind, VIS_META, VIS_ORDER,
+  KIND_META, TRIGGER_META, checkpointKind, VIS_META, VIS_ORDER,
   behaviorSummary, CHECKPOINT_ICON_EMOJIS, DEFAULT_CHECKPOINT_ICON, checkpointIconEmoji,
 } from '@/services/checkpointKinds';
 import { validateGameConfig, requireMinInt } from '@shared/common/gameConfigValidation';
@@ -989,11 +990,18 @@ function CheckpointBehaviorModal({
   cp: Checkpoint;
   onClose: () => void;
 }) {
-  const { checkpoints: liveCheckpoints, members, runbookEntries, scheduledEvents } = useGame();
+  const { checkpoints: liveCheckpoints, members, runbookEntries, scheduledEvents, phase } = useGame();
   const navigate = useNavigate();
   const liveCp = liveCheckpoints.find((c) => c.id === cp.id) ?? cp;
   const players = members.filter((m) => m.role === 'player');
-  const entryCount = runbookEntries.filter((e) => e.checkpointId === cp.id).length;
+  // Highest priority first — the order the geofence resolves a crossing in (#60).
+  const cpEntries = runbookEntries
+    .filter((e) => e.checkpointId === cp.id)
+    .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
+
+  // In-place runbook authoring (#60): 'new' opens a blank entry on this checkpoint, an
+  // entry object edits it. Rendered as a modal stacked over this one.
+  const [editingEntry, setEditingEntry] = useState<RunbookEntry | 'new' | null>(null);
 
   const labelStyle = { fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: 0.5 } as const;
 
@@ -1180,14 +1188,53 @@ function CheckpointBehaviorModal({
         )}
       </div>
 
-      {/* Runbook link (#60) */}
+      {/* Runbook — authored in place, straight off the map marker (#60/#80). */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
-        <span style={labelStyle}>Runbook ({entryCount})</span>
-        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-          What happens at this checkpoint is authored in the Runbook — hazards, boons, arrival queues, timed and GM-prompted events.
-        </span>
-        <button type="button" className="btn btn--ghost" onClick={() => { onClose(); navigate(`/games/${gameId}/runbook?cp=${cp.id}`); }}>
-          Open Runbook editor →
+        <span style={labelStyle}>Runbook ({cpEntries.length})</span>
+        {cpEntries.length === 0 ? (
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            Nothing happens here yet. Add an entry — a hazard, a boon, an arrival queue, a timed or GM-prompted event.
+          </span>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {cpEntries.map((e) => {
+              const meta = KIND_META[e.effect?.kind ?? 'gm-notify'];
+              return (
+                <button
+                  key={e.id}
+                  type="button"
+                  onClick={() => setEditingEntry(e)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
+                    padding: '8px 10px', borderRadius: 8, cursor: 'pointer',
+                    border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-primary)',
+                  }}
+                >
+                  <span>{meta.emoji}</span>
+                  <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {e.name}
+                  </span>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>
+                    {TRIGGER_META[e.trigger].label} · p{e.priority ?? 0}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+        <button type="button" className="btn btn--secondary" onClick={() => setEditingEntry('new')}>
+          + Add runbook entry
+        </button>
+        {(phase === 'play' || phase === 'endgame') && (
+          // #67: a lingering player is re-evaluated every `tripIntervalMinutes`, so an entry
+          // authored now can fire for someone already standing inside — no re-entry needed.
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            ⚠ The game is live — an entry you add now can fire within minutes for a player already
+            inside this checkpoint, without them re-entering.
+          </span>
+        )}
+        <button type="button" className="btn btn--ghost" style={{ fontSize: 12, padding: '6px 10px' }} onClick={() => { onClose(); navigate(`/games/${gameId}/runbook?cp=${cp.id}`); }}>
+          Open the full Runbook →
         </button>
       </div>
 
@@ -1196,6 +1243,26 @@ function CheckpointBehaviorModal({
         <button className="btn" style={{ flex: 1 }} onClick={save} disabled={busy}>Save</button>
       </div>
       <button className="btn btn--danger" onClick={remove} disabled={busy}>Delete checkpoint</button>
+
+      {editingEntry && (
+        <Modal
+          title={editingEntry === 'new' ? `New entry — ${liveCp.name}` : `Edit entry — ${liveCp.name}`}
+          maxWidth={640}
+          onClose={() => setEditingEntry(null)}
+        >
+          <EntryEditor
+            key={editingEntry === 'new' ? `new:${cp.id}` : editingEntry.id}
+            gameId={gameId}
+            entry={editingEntry === 'new' ? null : editingEntry}
+            newCheckpointId={editingEntry === 'new' ? cp.id : null}
+            checkpoints={liveCheckpoints}
+            players={players}
+            onSaved={() => setEditingEntry(null)}
+            onDeleted={() => setEditingEntry(null)}
+            showHeading={false}
+          />
+        </Modal>
+      )}
     </Modal>
   );
 }
