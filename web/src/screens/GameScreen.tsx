@@ -265,6 +265,7 @@ export function GameScreen() {
         )}
         {(phase === 'play' || phase === 'endgame') && (
           <PlayView
+            gameId={gameId!}
             phase={phase}
             remaining={remaining}
             aliveCount={aliveCount}
@@ -1336,12 +1337,13 @@ function LobbyView({
 // --- Play ---
 
 function PlayView({
-  phase, remaining, aliveCount, activeCount, arrivalsCount, notReporting, sosPlayers,
+  gameId, phase, remaining, aliveCount, activeCount, arrivalsCount, notReporting, sosPlayers,
   checkpoints, runbookEntries, playerLocations, deathMarkers, boundary, arrivals, entryTrips, members, busy,
   rationsEnabled, pendingRations, onOpenRations, mapOverlay,
   placingRally, rallyPoint, rallyDraftSet, onPlaceRally, onStartPlaceRally, onCancelRally, onConfirmEndgame,
   onBroadcast, onAckSos, onClearSos, onOpenPlayers, onEnd,
 }: {
+  gameId: string;
   phase: string;
   remaining: number | null;
   aliveCount: number;
@@ -1377,6 +1379,10 @@ function PlayView({
 }) {
   // #75: cap the sidebar feed; the header opens the full, filterable feed in a modal.
   const [showAllNotifs, setShowAllNotifs] = useState(false);
+  // Tap a checkpoint on the live map to open its editor + runbook (#60/#80), same modal
+  // SetupView uses. SetupView isn't mounted mid-game, so PlayView owns its own instance.
+  const [behaviorCheckpointId, setBehaviorCheckpointId] = useState<string | null>(null);
+  const behaviorCp = checkpoints.find((c) => c.id === behaviorCheckpointId) ?? null;
   return (
     <div style={{ height: '100%', display: 'flex' }}>
       <div style={{ flex: 1, position: 'relative' }}>
@@ -1390,6 +1396,7 @@ function PlayView({
           placingRally={placingRally}
           rallyPoint={rallyPoint}
           onMapClick={placingRally ? onPlaceRally : undefined}
+          onCheckpointClick={placingRally ? undefined : (cp) => setBehaviorCheckpointId(cp.id)}
         />
         {(phase === 'endgame' || placingRally) && (
           <div style={{
@@ -1489,6 +1496,13 @@ function PlayView({
             <NotificationFeed arrivals={arrivals} entryTrips={entryTrips} members={members} />
           </div>
         </Modal>
+      )}
+      {behaviorCp && (
+        <CheckpointBehaviorModal
+          gameId={gameId}
+          cp={behaviorCp}
+          onClose={() => setBehaviorCheckpointId(null)}
+        />
       )}
     </div>
   );
