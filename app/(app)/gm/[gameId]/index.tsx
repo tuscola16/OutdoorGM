@@ -1217,6 +1217,8 @@ function ResultsView({
   onArchive: () => void;
   busy: boolean;
 }) {
+  const alive = players.filter((p) => !p.out);
+  const winner = alive.length === 1 ? alive[0] : null;
   function playerTime(p: GameMember): string {
     if (startedAtMs == null) return '—';
     const outMs = p.outAt?.toMillis?.() ?? null;
@@ -1229,12 +1231,17 @@ function ResultsView({
     <View style={styles.flex}>
       <ScrollView contentContainerStyle={styles.setupBody}>
         <View style={styles.resultHero}>
-          <Ionicons name="flag" size={40} color={Colors.primary} />
+          <Ionicons name={winner ? 'trophy' : 'flag'} size={40} color={Colors.primary} />
           <Text style={styles.resultHeroLabel}>GAME OVER</Text>
           <Text style={styles.resultHeroTime}>
             {totalDuration != null ? formatDuration(totalDuration) : '—'}
           </Text>
           <Text style={styles.resultHeroSub}>total game time</Text>
+          {winner && (
+            <Text style={{ marginTop: 8, fontSize: 15, fontWeight: '800', color: Colors.primary }}>
+              🏆 {winner.displayName} — last one standing
+            </Text>
+          )}
         </View>
 
         <View style={{ marginBottom: 16 }}>
@@ -1244,7 +1251,7 @@ function ResultsView({
         <Text style={styles.lobbyHeading}>Players</Text>
         {players.map((p) => (
           <View key={p.userId} style={styles.resultRow}>
-            <Text style={styles.resultName}>{p.displayName}</Text>
+            <Text style={styles.resultName}>{winner?.userId === p.userId ? '🏆 ' : ''}{p.displayName}</Text>
             <View style={styles.resultRight}>
               {p.out && <Text style={styles.outTag}>OUT</Text>}
               <Text style={styles.resultTime}>{playerTime(p)}</Text>

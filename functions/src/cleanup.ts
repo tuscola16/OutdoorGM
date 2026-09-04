@@ -56,6 +56,28 @@ export const cleanupRationPhotosOnGameEnd = functions.firestore
       endedAt: after?.endedAt ?? null,
     });
 
+    // #81: crown the last tribute standing on the MANUAL End Game path. Winner detection
+    // (members.ts) already stamps `winnerId` in its transaction when a death auto-ends the
+    // game; a GM tapping End Game with one player left does not, so fill it in here. Skip if
+    // it's already set (auto path handled it) so we never overwrite. This is a second write
+    // to the game doc, but `before.status === 'ended'` short-circuits the re-triggered run.
+    if (after?.winnerId == null) {
+      // Wrapped so a winner-stamp failure can NEVER block the privacy cleanup below — the
+      // location/arrival purge (#30) is the load-bearing part of this trigger.
+      try {
+        const members = await gameRef.collection('members').get();
+        const living = members.docs
+          .map((d) => ({ userId: d.id, ...(d.data() as { role?: string; out?: boolean; displayName?: string }) }))
+          .filter((m) => m.role !== 'gm' && !m.out);
+        if (living.length === 1) {
+          await gameRef.update({ winnerId: living[0].userId, winnerName: living[0].displayName ?? null });
+          functions.logger.info(`[cleanupOnGameEnd] game ${gameId} manually ended with one survivor — crowned ${living[0].userId}`);
+        }
+      } catch (e) {
+        functions.logger.error(`[cleanupOnGameEnd] winner stamp failed for ${gameId} — cleanup continues`, e);
+      }
+    }
+
     // All best-effort and independent — run in parallel. `force` on deleteFiles keeps
     // going past any individual error; absent photos/subcollections are fine.
     await Promise.allSettled([

@@ -26,8 +26,11 @@ collection); the server-only `checkpointTrips`, `entryTrips` (GM-readable, #67/#
 and the shared `common/` helpers `pointInBoundary`, `validateGameConfig`, `startPreflight`
 (#63/#64/#23); `RunbookEntry.playerIds` + `RunbookEntry.revealOnFire` (#80 — per-entry player
 targeting and the entry-driven reveal into the existing `markers` projection; both optional, so
-untargeted legacy entries still fire for everyone and reveal nothing). Tier 7 (#20–28) added **no**
-new schema.
+untargeted legacy entries still fire for everyone and reveal nothing); `Game.winnerId` +
+`Game.winnerName` (#81 — the sole survivor, stamped on `status → ended` by winner detection in-txn
+(auto path) and by the `cleanupRationPhotosOnGameEnd` chokepoint on the manual End Game path;
+`winnerName` denormalized onto the game doc because players can't read other members; both optional,
+absent when there's no single winner). Tier 7 (#20–28) added **no** new schema.
 
 ---
 

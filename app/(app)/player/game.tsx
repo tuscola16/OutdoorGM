@@ -55,6 +55,10 @@ export default function PlayerGameScreen() {
   const [markers, setMarkers] = useState<RevealedMarker[]>([]);
   const [startedAt, setStartedAt] = useState<Ts>(null);
   const [endedAt, setEndedAt] = useState<Ts>(null);
+  // #81: the last tribute standing, stamped on the game doc when it ends. Drives the
+  // "YOU WON" results banner (players can't read other members, so the name rides here).
+  const [winnerId, setWinnerId] = useState<string | null>(null);
+  const [winnerName, setWinnerName] = useState<string | null>(null);
   const [durationMinutes, setDurationMinutes] = useState(gameConfig(null).durationMinutes);
   const [batterySaver, setBatterySaver] = useState(gameConfig(null).batterySaver);
   const [config, setConfig] = useState<GameConfig>(gameConfig(null));
@@ -133,6 +137,8 @@ export default function PlayerGameScreen() {
           setPractice(!!d.practice);
           setStartedAt(d.startedAt ?? null);
           setEndedAt(d.endedAt ?? null);
+          setWinnerId(d.winnerId ?? null);
+          setWinnerName(d.winnerName ?? null);
           setDurationMinutes(gameConfig(d as any).durationMinutes);
           setBatterySaver(gameConfig(d as any).batterySaver);
           setConfig(gameConfig(d as any));
@@ -686,14 +692,23 @@ export default function PlayerGameScreen() {
   }
 
   function renderResults() {
+    // #81: the sole survivor is crowned. `winnerId` is stamped server-side on game end,
+    // for both the auto (last-death) and manual (GM End Game) paths.
+    const iWon = !!winnerId && winnerId === user?.uid;
     return (
       <View style={styles.centerBody}>
         <View style={styles.waitIcon}>
-          <Ionicons name="flag" size={44} color={Colors.primary} />
+          <Ionicons name={iWon ? 'trophy' : 'flag'} size={44} color={Colors.primary} />
         </View>
-        <Text style={styles.resultLabel}>{out ? 'YOU TAPPED OUT' : 'GAME OVER'}</Text>
+        <Text style={styles.resultLabel}>{iWon ? 'YOU WON!' : out ? 'YOU TAPPED OUT' : 'GAME OVER'}</Text>
         <Text style={styles.resultTime}>{elapsed != null ? formatDuration(elapsed) : '—'}</Text>
-        <Text style={styles.waitSub}>That's how long you played, {displayName || 'Player'}. Nice work!</Text>
+        {iWon ? (
+          <Text style={styles.waitSub}>Last tribute standing. You survived them all, {displayName || 'champion'}. 🏆</Text>
+        ) : winnerName ? (
+          <Text style={styles.waitSub}>{winnerName} was the last one standing. You played {elapsed != null ? formatDuration(elapsed) : '—'}.</Text>
+        ) : (
+          <Text style={styles.waitSub}>That's how long you played, {displayName || 'Player'}. Nice work!</Text>
+        )}
         {(media?.youtubeUrl || media?.photosAlbumUrl) && (
           <View style={{ alignSelf: 'stretch', marginTop: 16 }}>
             <PostGameMedia media={media} />

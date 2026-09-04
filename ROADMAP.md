@@ -62,6 +62,13 @@ field-test findings has shipped** (see the callout) — the only outstanding wor
 >   voucher-site run-sheet preset (scaffolds open/close/announce rows); post-game `media` (GM
 >   attaches host-validated YouTube + Google Photos links on results, `onGameMediaWrite` pushes
 >   all-but-setter, results screens link out). Schema in `types/index.ts`; `common/mediaLinks.ts`.
+> - **81** — **last-tribute winner on results**: the sole survivor is stamped on the game doc
+>   (`winnerId`/`winnerName`, denormalized because players can't read other members) on the
+>   `status → ended` transition — winner detection (`members.ts`) stamps it in its transaction on the
+>   auto (last-death) path, and the game-end chokepoint (`cleanupRationPhotosOnGameEnd`) fills it in for
+>   the manual GM **End Game** path when exactly one player is left. The mobile player results screen
+>   reads it: "YOU WON 🏆" for the winner, who-won for everyone else. Functions pending deploy; the
+>   results UI rides the next APK.
 > - **80** — **per-entry player targeting + reveal-on-fire**: a runbook entry can name the players
 >   who may trip it (`RunbookEntry.playerIds`; anyone else crossing falls through to the next entry,
 >   and a `gm-prompted` entry defaults its recipients to that list), and can reveal its checkpoint on

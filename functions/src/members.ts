@@ -117,7 +117,8 @@ async function handleDeath(
 
     const mSnap = await t.get(gameRef.collection('members'));
     const living = mSnap.docs
-      .map((d) => d.data() as MemberData)
+      // Keep the doc id — it IS the userId, and we stamp it as the winner below (#81).
+      .map((d) => ({ ...(d.data() as MemberData), userId: (d.data() as MemberData).userId ?? d.id }))
       .filter((m) => m.role !== 'gm' && !m.out);
 
     // Re-check the threshold with fresh data (another death may have landed).
@@ -143,10 +144,15 @@ async function handleDeath(
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     }
+    // #81: stamp the sole survivor so the results screen can tell everyone (the winner
+    // especially) who took the crown. Only the single-winner case; zero survivors leaves
+    // it unset. `winnerName` is denormalized because players can't read other members.
+    const winner = threshold === 'one' && living.length === 1 ? living[0] : null;
     t.update(gameRef, {
       phase: 'results',
       status: 'ended',
       endedAt: admin.firestore.FieldValue.serverTimestamp(),
+      ...(winner ? { winnerId: winner.userId, winnerName: winner.displayName ?? null } : {}),
     });
     return true;
   });

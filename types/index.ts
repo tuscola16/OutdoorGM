@@ -66,6 +66,16 @@ export interface Game {
   /** When the GM pressed End (phase → results). */
   endedAt?: FsTimestamp | null;
   /**
+   * The last tribute standing when the game ended (#81): the sole non-GM member still
+   * `!out`. Stamped server-side on `status → ended` for BOTH the auto-end (winner
+   * detection) and the manual GM End Game paths; absent when the game ended with zero or
+   * more than one player alive (no single winner). `winnerName` is denormalized here
+   * because players can't read other members' docs — the results screen reads it to tell
+   * everyone (and the winner especially) who took the crown.
+   */
+  winnerId?: string | null;
+  winnerName?: string | null;
+  /**
    * GM-set event date (ROADMAP #36), distinct from the system `createdAt`. When present
    * it's used to sort/label "My Games"; absent → fall back to `createdAt`. Editable by the
    * GM in setup. An all-day date (stored as that day's local midnight).

@@ -1533,6 +1533,8 @@ function ResultsView({
   onArchive: () => void;
   onDone: () => void;
 }) {
+  const alive = players.filter((p) => !p.out);
+  const winner = alive.length === 1 ? alive[0] : null;
   function playerTime(p: GameMember): string {
     if (startedAtMs == null) return '—';
     const outMs = p.outAt?.toMillis?.() ?? null;
@@ -1545,6 +1547,11 @@ function ResultsView({
         <div style={{ color: 'var(--text-secondary)', fontWeight: 800, letterSpacing: 2, fontSize: 12 }}>GAME OVER</div>
         <div style={{ fontSize: 44, fontWeight: 800 }}>{totalDuration != null ? formatDuration(totalDuration) : '—'}</div>
         <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>total game time</div>
+        {winner && (
+          <div style={{ marginTop: 10, fontSize: 16, fontWeight: 800, color: 'var(--primary)' }}>
+            🏆 {winner.displayName} — last one standing
+          </div>
+        )}
       </div>
 
       <MediaSection media={media} gameId={gameId} gmUid={gmUid} />
@@ -1554,7 +1561,7 @@ function ResultsView({
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {players.map((p) => (
           <div key={p.userId} className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontWeight: 600 }}>{p.displayName}</span>
+            <span style={{ fontWeight: 600 }}>{winner?.userId === p.userId ? '🏆 ' : ''}{p.displayName}</span>
             <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               {p.out && <span style={{ fontSize: 10, fontWeight: 800, color: 'var(--danger)', border: '1px solid var(--danger)', borderRadius: 4, padding: '1px 5px' }}>OUT</span>}
               <span style={{ fontWeight: 700, color: 'var(--primary)' }}>{playerTime(p)}</span>
