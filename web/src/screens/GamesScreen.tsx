@@ -98,9 +98,12 @@ export function GamesScreen() {
   const sortKey = (e: GameEntry) =>
     e.game.gameDate?.toMillis?.() ?? e.game.createdAt?.toMillis?.() ?? 0;
   const byDateDesc = (a: GameEntry, b: GameEntry) => sortKey(b) - sortKey(a);
-  const gmGames = games.filter((g) => g.role === 'gm');
-  const activeGames = gmGames.filter((g) => !g.archived).sort(byDateDesc);
-  const archivedGames = gmGames.filter((g) => g.archived).sort(byDateDesc);
+  // Every membership is listed, GM *and* player. The dashboard only *opens* GM games
+  // (there is no web player view), but a game the user merely played in is still part of
+  // their history and has to stay visible here after it ends — previously player entries
+  // were dropped from the list entirely, so that history was invisible on the web.
+  const activeGames = games.filter((g) => !g.archived).sort(byDateDesc);
+  const archivedGames = games.filter((g) => g.archived).sort(byDateDesc);
   const visibleGames = showArchived ? archivedGames : activeGames;
 
   return (
@@ -151,13 +154,16 @@ export function GamesScreen() {
             <p style={{ color: 'var(--text-secondary)' }}>
               {showArchived
                 ? 'No archived games.'
-                : "No games where you're the GM yet. Create one, or join an existing game with its GM code."}
+                : 'No games yet. Create one, or join an existing game with its GM code.'}
             </p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {visibleGames.map((entry) => {
                 const phase = gamePhase(entry.game);
-                const canDelete = phase === 'setup' || phase === 'lobby';
+                const isGM = entry.role === 'gm';
+                // GM-only actions. A player entry is history: it can be archived (a
+                // self-update on their own member doc) but never cloned or deleted.
+                const canDelete = isGM && (phase === 'setup' || phase === 'lobby');
                 const canArchive = phase === 'results';
                 const busy = busyId === entry.game.id;
                 return (
@@ -168,6 +174,8 @@ export function GamesScreen() {
                   >
                     <button
                       onClick={() => openGame(entry)}
+                      disabled={!isGM}
+                      title={isGM ? undefined : 'You played in this game — open it in the mobile app for the player view.'}
                       style={{
                         display: 'flex',
                         alignItems: 'center',
@@ -178,7 +186,7 @@ export function GamesScreen() {
                         padding: 0,
                         textAlign: 'left',
                         color: 'inherit',
-                        cursor: 'pointer',
+                        cursor: isGM ? 'pointer' : 'default',
                       }}
                     >
                       <span
@@ -188,29 +196,32 @@ export function GamesScreen() {
                           letterSpacing: 0.5,
                           padding: '4px 8px',
                           borderRadius: 6,
-                          background: 'rgba(90,126,78,0.2)',
+                          background: isGM ? 'rgba(90,126,78,0.2)' : 'rgba(212,137,63,0.2)',
                         }}
                       >
-                        GM
+                        {isGM ? 'GM' : 'PLAYER'}
                       </span>
                       <span style={{ flex: 1 }}>
                         <span style={{ display: 'block', fontSize: 16, fontWeight: 700 }}>{entry.game.name}</span>
                         <span style={{ display: 'block', fontSize: 13, color: 'var(--text-secondary)', marginTop: 2 }}>
                           {PHASE_TEXT[phase]}
                           {entry.game.gameDate?.toDate ? ` · ${entry.game.gameDate.toDate().toLocaleDateString()}` : ''}
+                          {!isGM && ' · player view is in the mobile app'}
                         </span>
                       </span>
-                      <span style={{ color: 'var(--text-muted)' }}>›</span>
+                      {isGM && <span style={{ color: 'var(--text-muted)' }}>›</span>}
                     </button>
-                    <button
-                      className="btn btn--ghost"
-                      style={{ padding: '6px 12px', fontSize: 13 }}
-                      disabled={busy}
-                      title="Create a new game with this game's boundary and checkpoints"
-                      onClick={() => setCloneTarget(entry)}
-                    >
-                      Clone
-                    </button>
+                    {isGM && (
+                      <button
+                        className="btn btn--ghost"
+                        style={{ padding: '6px 12px', fontSize: 13 }}
+                        disabled={busy}
+                        title="Create a new game with this game's boundary and checkpoints"
+                        onClick={() => setCloneTarget(entry)}
+                      >
+                        Clone
+                      </button>
+                    )}
                     {canArchive && (
                       <button
                         className="btn btn--ghost"

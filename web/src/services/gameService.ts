@@ -461,21 +461,30 @@ export async function getMyGames(userId: string): Promise<MyGameEntry[]> {
     query(collectionGroup(db, Collections.MEMBERS), where('userId', '==', userId))
   );
 
-  const results: MyGameEntry[] = [];
-  for (const memberDoc of snap.docs) {
-    // Parent path: games/{gameId}/members/{userId}
-    const gameId = memberDoc.ref.parent.parent?.id;
-    if (!gameId) continue;
-    const gameSnap = await getDoc(doc(db, Collections.GAMES, gameId));
-    if (gameSnap.exists()) {
-      results.push({
-        game: { id: gameSnap.id, ...gameSnap.data() } as Game,
-        role: memberDoc.data().role as 'player' | 'gm',
-        archived: memberDoc.data().archived === true,
-      });
-    }
-  }
-  return results;
+  // Parallel, and individually fault-tolerant (mirrors mobile): one unreadable game
+  // (a doc deleted out from under a surviving membership, a transient permission-denied)
+  // must never blank the whole list — that would hide every finished game the user was a
+  // player or co-GM in along with the broken one.
+  const entries = await Promise.all(
+    snap.docs.map(async (memberDoc) => {
+      // Parent path: games/{gameId}/members/{userId}
+      const gameId = memberDoc.ref.parent.parent?.id;
+      if (!gameId) return null;
+      try {
+        const gameSnap = await getDoc(doc(db, Collections.GAMES, gameId));
+        if (!gameSnap.exists()) return null;
+        return {
+          game: { id: gameSnap.id, ...gameSnap.data() } as Game,
+          role: memberDoc.data().role as 'player' | 'gm',
+          archived: memberDoc.data().archived === true,
+        };
+      } catch (err) {
+        console.warn(`[getMyGames] skipping unreadable game ${gameId}`, err);
+        return null;
+      }
+    })
+  );
+  return entries.filter((e): e is MyGameEntry => e !== null);
 }
 
 /** Delete a game that hasn't started yet (GM-only). Runs server-side so the game
