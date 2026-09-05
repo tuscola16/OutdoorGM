@@ -71,6 +71,9 @@ export default function GMGameScreen() {
   const [copiedCode, setCopiedCode] = useState<'player' | 'gm' | null>(null);
   const [busy, setBusy] = useState(false);
   const [showReadiness, setShowReadiness] = useState(false); // #43 practice readiness
+  // Post-game map: a finished game keeps its arena (boundary, checkpoints, where players
+  // died), so the GM can walk back over it in `results` instead of being locked to the recap.
+  const [resultsMap, setResultsMap] = useState(false);
   // #41 end-game: tap-to-place rally flow + the live rally point (from the marker doc).
   const [placingRally, setPlacingRally] = useState(false);
   const [rallyDraft, setRallyDraft] = useState<{ latitude: number; longitude: number } | null>(null);
@@ -514,9 +517,18 @@ export default function GMGameScreen() {
               )}
             </TouchableOpacity>
           )}
-          {phase !== 'results' && (
+          {phase !== 'results' ? (
             <TouchableOpacity onPress={() => router.push(`/(app)/gm/${gameId}/runsheet`)} style={styles.headerBtn}>
               <Ionicons name="time-outline" size={22} color={Colors.text} />
+            </TouchableOpacity>
+          ) : (
+            // Post-game: swap between the recap and the arena map.
+            <TouchableOpacity onPress={() => setResultsMap((v) => !v)} style={styles.headerBtn}>
+              <Ionicons
+                name={resultsMap ? 'list-outline' : 'map-outline'}
+                size={22}
+                color={Colors.primary}
+              />
             </TouchableOpacity>
           )}
           <TouchableOpacity onPress={() => router.push(`/(app)/gm/${gameId}/players`)} style={styles.headerBtn}>
@@ -710,7 +722,43 @@ export default function GMGameScreen() {
         </>
       )}
 
-      {phase === 'results' && (
+      {/* Post-game arena map. Live positions and checkpoint arrivals are purged when a
+          game ends (#30 privacy retention), so this shows the *arena*: the boundary, every
+          checkpoint, the end-game rally point, and where each dead tribute fell. */}
+      {phase === 'results' && resultsMap && (
+        <>
+          <View style={styles.postGameNote}>
+            <Ionicons name="information-circle-outline" size={16} color={Colors.textSecondary} />
+            <Text style={styles.postGameNoteText}>
+              Game over — boundary, checkpoints and death locations. Live player positions were
+              cleared when the game ended.
+            </Text>
+          </View>
+          <View style={styles.content}>
+            <GameMap
+              checkpoints={checkpoints}
+              playerLocations={playerLocations}
+              boundary={game?.boundary}
+              deathMarkers={members
+                .filter((m) => m.out && m.deathLocation)
+                .map((m) => ({
+                  userId: m.userId,
+                  displayName: m.displayName,
+                  latitude: m.deathLocation!.latitude,
+                  longitude: m.deathLocation!.longitude,
+                }))}
+              rallyPoint={rally}
+              mapOverlay={game?.mapOverlay}
+              onCheckpointPress={handleCheckpointPress}
+            />
+          </View>
+          <View style={styles.footer}>
+            <Button title="Back to results" onPress={() => setResultsMap(false)} variant="secondary" />
+          </View>
+        </>
+      )}
+
+      {phase === 'results' && !resultsMap && (
         <ResultsView
           totalDuration={elapsed}
           players={players}
@@ -720,6 +768,7 @@ export default function GMGameScreen() {
           onSaveMedia={(m) => runPhaseAction(() => setGameMedia(gameId!, m, user!.uid))}
           onDone={() => router.replace('/(app)/games')}
           onArchive={handleArchiveGame}
+          onViewMap={() => setResultsMap(true)}
           busy={busy}
         />
       )}
@@ -1205,7 +1254,7 @@ function LobbyView({
 }
 
 function ResultsView({
-  totalDuration, players, startedAtMs, endedAtMs, media, onSaveMedia, onDone, onArchive, busy,
+  totalDuration, players, startedAtMs, endedAtMs, media, onSaveMedia, onDone, onArchive, onViewMap, busy,
 }: {
   totalDuration: number | null;
   players: GameMember[];
@@ -1215,6 +1264,7 @@ function ResultsView({
   onSaveMedia: (media: { youtubeUrl?: string; photosAlbumUrl?: string } | null) => Promise<void>;
   onDone: () => void;
   onArchive: () => void;
+  onViewMap: () => void;
   busy: boolean;
 }) {
   const alive = players.filter((p) => !p.out);
@@ -1261,6 +1311,7 @@ function ResultsView({
         {players.length === 0 && <Text style={styles.lobbyEmpty}>No players took part.</Text>}
       </ScrollView>
       <View style={styles.footer}>
+        <Button title="Open the arena map" onPress={onViewMap} variant="secondary" style={{ marginBottom: 12 }} />
         <Button title="Back to My Games" onPress={onDone} />
         <TouchableOpacity onPress={onArchive} style={styles.linkBtn} disabled={busy}>
           <Text style={styles.linkBtnText}>Archive game (hide from My Games)</Text>
@@ -1362,6 +1413,12 @@ const styles = StyleSheet.create({
     borderRadius: 8, backgroundColor: Colors.danger + '1A', borderWidth: 1, borderColor: Colors.danger,
   },
   staleChipText: { color: Colors.danger, fontSize: 13, fontWeight: '600' },
+  postGameNote: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    marginHorizontal: 16, marginBottom: 8, paddingVertical: 8, paddingHorizontal: 12,
+    borderRadius: 8, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border,
+  },
+  postGameNoteText: { flex: 1, color: Colors.textSecondary, fontSize: 12, lineHeight: 17 },
   content: { flex: 1, marginHorizontal: 16, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: Colors.border },
   alertContainer: { flex: 1, backgroundColor: Colors.surface, padding: 12 },
   footer: { paddingHorizontal: 16, paddingVertical: 12, gap: 8 },

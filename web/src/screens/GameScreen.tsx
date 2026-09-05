@@ -66,6 +66,9 @@ export function GameScreen() {
   const [placingRally, setPlacingRally] = useState(false);
   const [rallyDraft, setRallyDraft] = useState<{ latitude: number; longitude: number } | null>(null);
   const [rally, setRally] = useState<{ latitude: number; longitude: number } | null>(null);
+  // Post-game map: a finished game keeps its arena (boundary, checkpoints, where players
+  // died), so the GM can walk back over it in `results` instead of being locked to the recap.
+  const [resultsMap, setResultsMap] = useState(false);
   const elapsed = useElapsed(game?.startedAt, game?.endedAt);
   const remaining = useRemaining(game?.startedAt, gameConfig(game).durationMinutes, game?.endedAt);
   const now = useNow(10000);
@@ -235,9 +238,14 @@ export function GameScreen() {
           </button>
         )}
         <button className="btn btn--ghost" style={{ padding: '8px 12px' }} onClick={() => setShowCodes(true)}>Codes</button>
-        {phase !== 'results' && (
+        {phase !== 'results' ? (
           <button className="btn btn--ghost" style={{ padding: '8px 12px' }} onClick={() => navigate(`/games/${gameId}/runbook`)}>
             Runbook{runbookEntries.length ? ` (${runbookEntries.length})` : ''}
+          </button>
+        ) : (
+          // Post-game: swap between the recap and the arena map.
+          <button className="btn btn--ghost" style={{ padding: '8px 12px' }} onClick={() => setResultsMap((v) => !v)}>
+            {resultsMap ? '← Results' : '🗺 Arena map'}
           </button>
         )}
         <button className="btn btn--ghost" style={{ padding: '8px 12px' }} onClick={() => setShowGmMessages(true)}>Co-GM</button>
@@ -317,7 +325,18 @@ export function GameScreen() {
             }}
           />
         )}
-        {phase === 'results' && (
+        {phase === 'results' && resultsMap && (
+          <ResultsMapView
+            checkpoints={checkpoints}
+            runbookEntries={runbookEntries}
+            playerLocations={playerLocations}
+            deathMarkers={deathMarkers}
+            boundary={game?.boundary}
+            mapOverlay={game?.mapOverlay}
+            rallyPoint={rally}
+          />
+        )}
+        {phase === 'results' && !resultsMap && (
           <ResultsView
             totalDuration={elapsed}
             players={players}
@@ -329,6 +348,7 @@ export function GameScreen() {
             busy={busy}
             onArchive={archiveAndExit}
             onDone={() => navigate('/games')}
+            onViewMap={() => setResultsMap(true)}
           />
         )}
       </div>
@@ -1519,8 +1539,48 @@ function Stat({ label, value, danger }: { label: string; value: string; danger?:
 
 // --- Results ---
 
+/** The arena of a finished game. Live positions and checkpoint arrivals are purged on the
+ * `status → ended` transition (#30 privacy retention), so what survives — and what the GM
+ * comes back for — is the arena itself: boundary, checkpoints + their runbook colours, the
+ * end-game rally point, and where each dead tribute fell. Read-only: no rally placement, no
+ * checkpoint editing on a game that's over. */
+function ResultsMapView({
+  checkpoints, runbookEntries, playerLocations, deathMarkers, boundary, mapOverlay, rallyPoint,
+}: {
+  checkpoints: Checkpoint[];
+  runbookEntries: RunbookEntry[];
+  playerLocations: PlayerLocation[];
+  deathMarkers: DeathMarker[];
+  boundary?: MapBoundary | null;
+  mapOverlay?: Game['mapOverlay'] | null;
+  rallyPoint: { latitude: number; longitude: number } | null;
+}) {
+  return (
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <div style={{
+        padding: '8px 20px', borderBottom: '1px solid var(--border)',
+        color: 'var(--text-secondary)', fontSize: 13,
+      }}>
+        Game over — boundary, checkpoints and death locations. Live player positions were cleared
+        when the game ended.
+      </div>
+      <div style={{ flex: 1, minHeight: 0 }}>
+        <GameMap
+          checkpoints={checkpoints}
+          runbookEntries={runbookEntries}
+          playerLocations={playerLocations}
+          deathMarkers={deathMarkers}
+          boundary={boundary}
+          mapOverlay={mapOverlay}
+          rallyPoint={rallyPoint}
+        />
+      </div>
+    </div>
+  );
+}
+
 function ResultsView({
-  totalDuration, players, startedAtMs, endedAtMs, media, gameId, gmUid, busy, onArchive, onDone,
+  totalDuration, players, startedAtMs, endedAtMs, media, gameId, gmUid, busy, onArchive, onDone, onViewMap,
 }: {
   totalDuration: number | null;
   players: GameMember[];
@@ -1532,6 +1592,7 @@ function ResultsView({
   busy: boolean;
   onArchive: () => void;
   onDone: () => void;
+  onViewMap: () => void;
 }) {
   const alive = players.filter((p) => !p.out);
   const winner = alive.length === 1 ? alive[0] : null;
@@ -1570,6 +1631,9 @@ function ResultsView({
         ))}
       </div>
       <div style={{ display: 'flex', gap: 12, marginTop: 24 }}>
+        <button className="btn" style={{ flex: 1 }} onClick={onViewMap}>🗺 Open the arena map</button>
+      </div>
+      <div style={{ display: 'flex', gap: 12, marginTop: 12 }}>
         <button className="btn btn--ghost" style={{ flex: 1 }} onClick={onDone}>Back to Games</button>
         <button className="btn btn--secondary" style={{ flex: 1 }} onClick={onArchive} disabled={busy}>
           Archive game
