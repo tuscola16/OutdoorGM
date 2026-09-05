@@ -61,21 +61,41 @@ export const cleanupRationPhotosOnGameEnd = functions.firestore
     // game; a GM tapping End Game with one player left does not, so fill it in here. Skip if
     // it's already set (auto path handled it) so we never overwrite. This is a second write
     // to the game doc, but `before.status === 'ended'` short-circuits the re-triggered run.
-    if (after?.winnerId == null) {
-      // Wrapped so a winner-stamp failure can NEVER block the privacy cleanup below — the
-      // location/arrival purge (#30) is the load-bearing part of this trigger.
-      try {
+    // #81: crown the last tribute standing AND notify them. `winnerId` is stamped by winner
+    // detection (members.ts) in its transaction on the auto (last-death) path; on the manual GM
+    // End Game path we compute it here. Either way, send the winner a TARGETED push so they learn
+    // they won even on an OLDER app build that has no "YOU WON" results screen yet — the existing
+    // onBroadcastCreate delivers it to just their device, and BroadcastsContext only surfaces a
+    // targeted broadcast to its recipient, so it never leaks to the other players. All wrapped so
+    // nothing here can block the privacy cleanup below (the #30 purge is the load-bearing part).
+    try {
+      let winnerId = (after?.winnerId as string | null | undefined) ?? null;
+      let winnerName = (after?.winnerName as string | null | undefined) ?? null;
+      if (winnerId == null) {
         const members = await gameRef.collection('members').get();
         const living = members.docs
           .map((d) => ({ userId: d.id, ...(d.data() as { role?: string; out?: boolean; displayName?: string }) }))
           .filter((m) => m.role !== 'gm' && !m.out);
         if (living.length === 1) {
-          await gameRef.update({ winnerId: living[0].userId, winnerName: living[0].displayName ?? null });
-          functions.logger.info(`[cleanupOnGameEnd] game ${gameId} manually ended with one survivor — crowned ${living[0].userId}`);
+          winnerId = living[0].userId;
+          winnerName = living[0].displayName ?? null;
+          await gameRef.update({ winnerId, winnerName });
+          functions.logger.info(`[cleanupOnGameEnd] game ${gameId} manually ended with one survivor — crowned ${winnerId}`);
         }
-      } catch (e) {
-        functions.logger.error(`[cleanupOnGameEnd] winner stamp failed for ${gameId} — cleanup continues`, e);
       }
+      if (winnerId) {
+        // Deterministic id so a re-fired trigger UPDATES (never re-creates) this doc —
+        // onBroadcastCreate is onCreate, so the winner is pushed at most once.
+        await gameRef.collection('broadcasts').doc(`winner_push_${winnerId}`).set({
+          kind: 'winner',
+          message: 'You survived them all — you win! 🏆',
+          targetPlayerId: winnerId,
+          pushed: false, // let onBroadcastCreate deliver the push to the winner's device
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+    } catch (e) {
+      functions.logger.error(`[cleanupOnGameEnd] winner notify failed for ${gameId} — cleanup continues`, e);
     }
 
     // All best-effort and independent — run in parallel. `force` on deleteFiles keeps
