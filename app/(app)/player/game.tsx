@@ -63,6 +63,8 @@ export default function PlayerGameScreen() {
   const [winnerName, setWinnerName] = useState<string | null>(null);
   const [durationMinutes, setDurationMinutes] = useState(gameConfig(null).durationMinutes);
   const [batterySaver, setBatterySaver] = useState(gameConfig(null).batterySaver);
+  // #82: the A/B arm for the wake-lock experiment, read from the game config.
+  const [wakeLock, setWakeLock] = useState(gameConfig(null).wakeLockEnabled === true);
   const [config, setConfig] = useState<GameConfig>(gameConfig(null));
 
   // Empty until the member doc loads, so location tracking starts with the real
@@ -143,6 +145,7 @@ export default function PlayerGameScreen() {
           setWinnerName(d.winnerName ?? null);
           setDurationMinutes(gameConfig(d as any).durationMinutes);
           setBatterySaver(gameConfig(d as any).batterySaver);
+          setWakeLock(gameConfig(d as any).wakeLockEnabled === true);
           setConfig(gameConfig(d as any));
         },
         (err: Error) => console.error('[PlayerGame] game listener error', err)
@@ -252,8 +255,8 @@ export default function PlayerGameScreen() {
   // a battery-saver toggle re-asserts params (effect below) instead of tearing down and
   // restarting the background service, which left a window with no active tracker.
   const trackName = displayName || user?.email || 'Player';
-  const trackParamsRef = useRef({ trackName, batterySaver });
-  trackParamsRef.current = { trackName, batterySaver };
+  const trackParamsRef = useRef({ trackName, batterySaver, wakeLock });
+  trackParamsRef.current = { trackName, batterySaver, wakeLock };
   const shouldTrackRef = useRef(shouldTrack);
   shouldTrackRef.current = shouldTrack;
 
@@ -268,6 +271,7 @@ export default function PlayerGameScreen() {
     let active = true;
     startLocationTracking(gameId, trackParamsRef.current.trackName, {
       batterySaver: trackParamsRef.current.batterySaver,
+      wakeLock: trackParamsRef.current.wakeLock,
     })
       .then(() => { if (active) setTracking(true); })
       .catch((err: unknown) => {
@@ -346,12 +350,12 @@ export default function PlayerGameScreen() {
   useEffect(() => {
     if (!paramsPrimed.current) { paramsPrimed.current = true; return; }
     if (!shouldTrack || !gameId) return;
-    startLocationTracking(gameId, trackName, { batterySaver })
+    startLocationTracking(gameId, trackName, { batterySaver, wakeLock })
       .then(() => setTracking(true))
       .catch(() => {});
     // shouldTrack/gameId read live; we only want to react to param changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trackName, batterySaver]);
+  }, [trackName, batterySaver, wakeLock]);
 
   // Re-assert tracking every time the app returns to the foreground. Two reasons:
   // (1) if the player granted "Always" in Settings since we started, this upgrades
@@ -364,6 +368,7 @@ export default function PlayerGameScreen() {
       if (state !== 'active' || !shouldTrackRef.current) return;
       startLocationTracking(gameId, trackParamsRef.current.trackName, {
         batterySaver: trackParamsRef.current.batterySaver,
+      wakeLock: trackParamsRef.current.wakeLock,
       })
         .then(() => setTracking(true))
         .catch(() => {});

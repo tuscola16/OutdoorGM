@@ -338,6 +338,10 @@ export const onLocationUpdate = functions
       speed?: number;   // #82 — recorded only, never gated on
       mocked?: boolean; // #82
       steps?: number;   // #82
+      appState?: string;         // #82 capture context
+      msSinceForeground?: number; // #82
+      batteryOptimized?: boolean; // #82
+      wakeLock?: boolean;         // #82
       updatedAt?: FirebaseFirestore.Timestamp;
     };
 
@@ -453,6 +457,13 @@ export const onLocationUpdate = functions
           speed: location.speed ?? null,
           mocked: location.mocked ?? null,
           steps: location.steps ?? null,
+          // #82 capture context — de-confounds the screen-locked variable that made the
+          // 2026-09-05 walk ambiguous. msSinceForeground is the load-bearing one: Doze
+          // depth tracks how long the device sat untouched, not screen state per fix.
+          appState: location.appState ?? null,
+          msSinceForeground: location.msSinceForeground ?? null,
+          batteryOptimized: location.batteryOptimized ?? null,
+          wakeLock: location.wakeLock ?? null,
           // Steps taken since the previous fix — pair with `metersSincePrev` to separate
           // "they walked" from "the fix moved but they didn't".
           // A negative delta means the counter reset between fixes (the player left and

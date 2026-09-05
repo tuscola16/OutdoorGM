@@ -1,108 +1,105 @@
+import { Platform } from 'react-native';
 import { Pedometer } from 'expo-sensors';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getNativeStepCount } from '@/modules/outdoor-native';
 
 /**
  * Step counting — a RECORDING instrument, not a gameplay input (ROADMAP #82).
  *
- * Nothing in the app reads this to make a decision. Every step count we gather is
- * written alongside the location fix and read back after the game, to answer the one
- * question a `locationTrail` otherwise can't: when a player's dot jumped 60 m, were
- * they actually walking? Δsteps between two fixes bounds the displacement that was
- * physically possible, which is the foundation any future motion gate would need.
+ * **Rewritten 2026-09-05 after the field trail proved the listener approach doesn't
+ * work.** The original implementation accumulated `Pedometer.watchStepCount` callbacks.
+ * That listener does not fire while the app is backgrounded, which is the entire window
+ * we care about. The trail is unambiguous: a phone locked for the full 16 minutes
+ * reported **2 steps**, while a phone that was periodically unlocked flushed backlogs of
+ * **367, 211, 319 and 147** steps — one per wake. The hardware counter was correct all
+ * along; nothing was reading it.
  *
- * Why the hardware counter and not the accelerometer: both platforms count steps on a
- * low-power coprocessor that keeps counting through Doze and app suspension for well
- * under 1% of a battery per day. Sampling the accelerometer ourselves would need the
- * CPU awake — which is exactly what we don't have when the phone is pocketed and
- * locked, i.e. the case we're trying to measure.
+ * So: **poll, don't listen.** Both platforms expose the accrued total on demand, and
+ * both keep counting on a low-power coprocessor through Doze and app suspension:
+ *  - Android — the cumulative `TYPE_STEP_COUNTER`, read through our native shim
+ *    (`modules/outdoor-native`); expo-sensors offers no historical read here.
+ *  - iOS — `Pedometer.getStepCountAsync(start, end)` against CMPedometer's 7-day cache,
+ *    which already covers time the app was suspended.
  *
- * **Everything here fails soft.** The pedometer is optional hardware behind an optional
- * runtime permission (`ACTIVITY_RECOGNITION` on Android 10+). A device without it, or a
- * player who declines, must play exactly as they do today — so every function swallows
- * its errors and the counter simply reports `undefined`.
+ * Everything still fails soft. `undefined` means "we don't know", which is emphatically
+ * not "they took zero steps" — the distinction the stabilizer and the trail both depend
+ * on. A missing sensor, a declined permission, or any error must leave the player
+ * playing exactly as they do today.
  */
 
-/** Persisted running total, so a background-task process restart doesn't reset to zero. */
-const STEP_BASELINE_KEY = 'hgl_step_baseline';
-
-/** Steps accumulated before the current subscription started (restored from storage). */
-let baseline = 0;
-/** Steps reported by the live subscription — Expo counts from when the listener started. */
-let sinceSubscribe = 0;
-/** Null until a subscription is running; cleared on stop. */
-let sub: { remove: () => void } | null = null;
-/** True once we've confirmed hardware + permission. Gates `getSteps()`. */
-let available = false;
+/** Boot-relative baseline (Android) captured when tracking started, so the reported
+ *  count is steps *this session* rather than steps since the phone last rebooted. */
+let androidBaseline: number | null = null;
+/** Session start (iOS), the lower bound of the CMPedometer historical query. */
+let sessionStart: Date | null = null;
+/** Set once permission is confirmed; gates every read. */
+let permitted = false;
 
 /**
- * Start counting. Best-effort and non-blocking by contract: callers must never await
- * this in a path that gates location tracking, and must never let it throw.
+ * Prepare step counting. Best-effort and non-blocking by contract: callers must never
+ * await this in a path that gates location tracking, and must never let it throw.
  *
- * Requests `ACTIVITY_RECOGNITION` on Android. Call this only AFTER location permission
- * has been granted — stacking an optional prompt in front of the critical one is how a
- * player ends up declining both.
+ * Requests `ACTIVITY_RECOGNITION` on Android via expo-sensors (which owns the runtime
+ * prompt) even though reads go through the native shim. Call only AFTER location
+ * permission is granted — stacking an optional prompt in front of the critical one is
+ * how a player ends up declining both.
  */
 export async function startStepCounting(): Promise<void> {
   try {
-    if (sub) return; // already running
+    if (permitted) return; // already prepared
 
-    if (!(await Pedometer.isAvailableAsync())) {
-      available = false;
-      return;
-    }
-
-    // Ask, but never insist. A decline is a normal outcome, not an error.
     const { granted } = await Pedometer.requestPermissionsAsync();
     if (!granted) {
-      available = false;
+      permitted = false;
       return;
     }
-
-    const stored = await AsyncStorage.getItem(STEP_BASELINE_KEY);
-    baseline = stored ? Number(stored) || 0 : 0;
-    sinceSubscribe = 0;
-
-    // NOTE: on Android, Expo's Pedometer reports steps since THIS listener started
-    // (it subtracts the hardware counter's value at subscribe time), not the raw
-    // cumulative device count. iOS behaves the same way. So the running total is
-    // always `baseline + result.steps`, and persisting the baseline is what keeps the
-    // series monotonic across a process restart.
-    sub = Pedometer.watchStepCount((result) => {
-      sinceSubscribe = result.steps;
-      // Fire-and-forget: losing a write just means a restart resumes from slightly
-      // behind, which is far better than blocking the sensor callback.
-      AsyncStorage.setItem(STEP_BASELINE_KEY, String(baseline + sinceSubscribe)).catch(
-        () => {}
-      );
-    });
-    available = true;
+    permitted = true;
+    sessionStart = new Date();
+    androidBaseline = Platform.OS === 'android' ? await getNativeStepCount() : null;
   } catch {
-    // Optional instrument — a failure here must be invisible to the player.
-    available = false;
+    permitted = false;
   }
 }
 
 /**
- * Running total for this tracking session, or `undefined` when the pedometer isn't
- * available or the permission was declined.
+ * Steps taken since tracking started, or `undefined` when unknown.
  *
- * `undefined` is meaningful and must be preserved by callers: it means "we don't know",
- * which is a different reading from "they took zero steps".
+ * Async by necessity — both platforms' accrued totals are a query, not a cached value.
+ * Callers are background-task upload paths that already await, so this costs nothing
+ * they weren't already paying.
  */
-export function getSteps(): number | undefined {
-  return available ? baseline + sinceSubscribe : undefined;
+export async function getSteps(): Promise<number | undefined> {
+  if (!permitted) return undefined;
+  try {
+    if (Platform.OS === 'android') {
+      const total = await getNativeStepCount();
+      if (total == null) return undefined;
+      // First successful read establishes the baseline if startStepCounting()'s attempt
+      // came back null (sensor not yet warm). Without this the whole session reports
+      // undefined because the baseline never got set.
+      if (androidBaseline == null) {
+        androidBaseline = total;
+        return 0;
+      }
+      // A counter reset (device reboot mid-game) would make this negative. Re-baseline
+      // rather than report nonsense.
+      if (total < androidBaseline) {
+        androidBaseline = total;
+        return 0;
+      }
+      return total - androidBaseline;
+    }
+
+    if (!sessionStart) return undefined;
+    const { steps } = await Pedometer.getStepCountAsync(sessionStart, new Date());
+    return typeof steps === 'number' ? steps : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
-/** Stop counting and reset the session total (called when tracking stops). */
+/** Stop counting and clear the session baseline (called when tracking stops). */
 export async function stopStepCounting(): Promise<void> {
-  try {
-    sub?.remove();
-  } catch {
-    /* best effort */
-  }
-  sub = null;
-  available = false;
-  baseline = 0;
-  sinceSubscribe = 0;
-  await AsyncStorage.removeItem(STEP_BASELINE_KEY).catch(() => {});
+  permitted = false;
+  androidBaseline = null;
+  sessionStart = null;
 }

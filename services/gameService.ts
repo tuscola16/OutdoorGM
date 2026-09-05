@@ -926,6 +926,11 @@ export async function updatePlayerLocation(
     mocked?: boolean;
     /** Steps since tracking started (#82); omitted without pedometer access. */
     steps?: number;
+    /** #82 capture context — see the PlayerLocation docs for why each is recorded. */
+    appState?: string;
+    msSinceForeground?: number;
+    batteryOptimized?: boolean;
+    wakeLock?: boolean;
   }
 ): Promise<void> {
   await setDoc(doc(db, Collections.GAMES, gameId, Collections.LOCATIONS, userId), {
@@ -951,6 +956,17 @@ export async function updatePlayerLocation(
       ...(typeof coords.speed === 'number' ? { speed: coords.speed } : {}),
       ...(typeof coords.mocked === 'boolean' ? { mocked: coords.mocked } : {}),
       ...(typeof coords.steps === 'number' ? { steps: coords.steps } : {}),
+      // #82 capture context. These de-confound the next field test: the 2026-09-05 walk
+      // could not distinguish "bad handset" from "phone left locked", and the answer
+      // turned out to be the latter.
+      ...(typeof coords.appState === 'string' ? { appState: coords.appState } : {}),
+      ...(typeof coords.msSinceForeground === 'number'
+        ? { msSinceForeground: coords.msSinceForeground }
+        : {}),
+      ...(typeof coords.batteryOptimized === 'boolean'
+        ? { batteryOptimized: coords.batteryOptimized }
+        : {}),
+      ...(typeof coords.wakeLock === 'boolean' ? { wakeLock: coords.wakeLock } : {}),
       updatedAt: serverTimestamp(),
     });
 }

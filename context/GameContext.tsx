@@ -3,7 +3,7 @@ import { collection, doc, query, where, orderBy, limit, onSnapshot, type QuerySn
 import { LocationStabilizer, type StabilizedLocation } from '@/common/locationStabilizer';
 import { auth, db } from '@/services/firebase';
 import { Collections } from '@/services/firebase';
-import { gamePhase } from '@/services/gameService';
+import { gameConfig, gamePhase } from '@/services/gameService';
 import type {
   Game,
   Checkpoint,
@@ -60,6 +60,13 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   /** #82: per-player jump suppression for the map. Held in a ref so it survives
    *  re-renders and keeps its history across snapshots. */
   const stabilizer = useRef(new LocationStabilizer());
+
+  // #82: keep the display accuracy ceiling in sync with the game's config, so a GM can
+  // retune it mid-game without a rebuild.
+  useEffect(() => {
+    const max = gameConfig(game).maxDisplayAccuracyMeters;
+    if (typeof max === 'number') stabilizer.current.setMaxAccuracy(max);
+  }, [game]);
   const [arrivals, setArrivals] = useState<Arrival[]>([]);
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
   const [rations, setRations] = useState<RationSubmission[]>([]);

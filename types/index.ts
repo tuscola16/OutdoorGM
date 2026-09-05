@@ -176,6 +176,34 @@ export interface GameConfig {
   /** Coarser GPS cadence when the player is stationary. */
   batterySaver: boolean;
 
+  /**
+   * #82: hold a partial CPU wake lock while tracking (Android only). Default **off**.
+   *
+   * A foreground service does not keep the CPU awake and `expo-location` holds no lock of
+   * its own, so between callbacks the device suspends and the OS coalesces our updates —
+   * measured 2026-09-05 as a 3 s request delivered at a 14–18 s median with ~90 s gaps,
+   * and a locked phone's median accuracy at 38 m against 13 m for one kept awake.
+   *
+   * This is the **one capture-layer variable** under test; leave everything else in the
+   * location request alone while measuring it, or the result is uninterpretable. Costs
+   * battery — that's the trade being quantified. Flip it on for a subset of players to
+   * get both A/B arms out of a single walk.
+   */
+  wakeLockEnabled?: boolean;
+
+  /**
+   * #82: reject fixes worse than this many metres from the **GM map display only**
+   * (never from checkpoint evaluation, which keeps using `minFixAccuracyMeters`). The
+   * last good position is held instead. Default 80 m; 0 disables.
+   *
+   * This gates the *bad* fix rather than the correction that follows it — the distinction
+   * the field data forced. Of 13 large jumps on the 2026-09-05 walk, 11 had accuracy
+   * *improving*: the dot leaps because GPS reacquires and snaps back to truth, so holding
+   * the new fix would keep the player at the wrong place for longer. Dropping the 89–203 m
+   * fixes at the source is what actually removes the jumping.
+   */
+  maxDisplayAccuracyMeters?: number;
+
   // --- Geofence quality (#50/#55) ---
   /**
    * GPS fix quality gate for checkpoint evaluation. Fixes whose reported accuracy (m) is
@@ -245,6 +273,10 @@ export const BASE_GAME_CONFIG: GameConfig = {
   playerCountBroadcast: true,
   winnerDetection: true,
   batterySaver: true,
+  // #82: off by default — it's the variable under test, and it costs battery. Turn it on
+  // for a subset of players to get both A/B arms out of one walk.
+  wakeLockEnabled: false,
+  maxDisplayAccuracyMeters: 80,
 };
 
 /**
@@ -597,6 +629,29 @@ export interface PlayerLocation {
    * motion gate would be built on.
    */
   steps?: number;
+  /**
+   * #82 capture context — `AppState` at the moment of the fix ('active' | 'background' |
+   * 'inactive' | 'unknown').
+   *
+   * Added because the 2026-09-05 walk was confounded by something the data couldn't see:
+   * one player checked their phone repeatedly and the other never unlocked theirs, and
+   * that — not the handset — explained a 13 m vs 38 m median-accuracy split. Never again
+   * infer this from conversation.
+   */
+  appState?: string;
+  /**
+   * #82: ms since the app was last foregrounded (0 while active).
+   *
+   * The more important half of the pair. Screen state alone would NOT have explained the
+   * field data — the frequently-checked phone's background fixes were still good, because
+   * it never settled into deep idle. Doze depth tracks how long the device has been left
+   * alone, so the duration is the signal, not the state.
+   */
+  msSinceForeground?: number;
+  /** #82: was Android battery optimization active for us at fix time? Absent when unreadable. */
+  batteryOptimized?: boolean;
+  /** #82: was the partial CPU wake lock held at fix time? Identifies the A/B arm. */
+  wakeLock?: boolean;
   updatedAt: FsTimestamp;
 }
 

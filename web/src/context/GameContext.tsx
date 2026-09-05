@@ -8,7 +8,7 @@ import {
   onSnapshot,
 } from 'firebase/firestore';
 import { db, Collections } from '@/services/firebase';
-import { gamePhase } from '@/services/gameService';
+import { gameConfig, gamePhase } from '@/services/gameService';
 import type { Game, Checkpoint, RunbookEntry, GameMember, PlayerLocation, Arrival, GamePhase, RationSubmission, ScheduledEvent, EntryTrip } from '@shared/types';
 import { LocationStabilizer, type StabilizedLocation } from '@shared/common/locationStabilizer';
 
@@ -49,6 +49,13 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   const [playerLocations, setPlayerLocations] = useState<StabilizedLocation[]>([]);
   /** #82: per-player jump suppression for the map (ref so it survives re-renders). */
   const stabilizer = useRef(new LocationStabilizer());
+
+  // #82: keep the display accuracy ceiling in sync with the game's config, so a GM can
+  // retune it mid-game without a redeploy.
+  useEffect(() => {
+    const max = gameConfig(game).maxDisplayAccuracyMeters;
+    if (typeof max === 'number') stabilizer.current.setMaxAccuracy(max);
+  }, [game]);
   const [arrivals, setArrivals] = useState<Arrival[]>([]);
   const [rations, setRations] = useState<RationSubmission[]>([]);
   const [scheduledEvents, setScheduledEvents] = useState<ScheduledEvent[]>([]);

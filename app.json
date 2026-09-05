@@ -17,6 +17,7 @@
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Outdoor GM tracks your location in the background so your Game Master can see your position and get alerts when you reach checkpoints.",
         "NSLocationAlwaysUsageDescription": "Outdoor GM needs background location so tracking continues while you play, even with the app closed.",
         "NSLocationWhenInUseUsageDescription": "Outdoor GM uses your location to detect when you reach game checkpoints.",
+        "NSMotionUsageDescription": "Outdoor GM reads your step count to tell real movement from GPS drift, so your Game Master's map doesn't show you jumping around while you stand still.",
         "ITSAppUsesNonExemptEncryption": false,
         "UIBackgroundModes": [
           "location",
@@ -124,7 +125,9 @@
         "FOREGROUND_SERVICE_LOCATION",
         "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
         "RECEIVE_BOOT_COMPLETED",
-        "CAMERA"
+        "CAMERA",
+        "WAKE_LOCK",
+        "ACTIVITY_RECOGNITION"
       ]
     },
     "web": {

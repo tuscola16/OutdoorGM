@@ -64,7 +64,7 @@ Shipped 2026-09-05. Additive and optional; legacy fixes without these fields rea
 
 | Field | Type | Notes |
 |---|---|---|
-| `speed` | `number?` | Doppler ground speed m/s. **Absence is the signal** — a Wi-Fi/cell fix has no Doppler, so a missing `speed` marks a probable network fallback. Better discriminator than `accuracy`, which a network fix understates. |
+| `speed` | `number?` | Doppler ground speed m/s. **Correction (2026-09-05 field trail): absence is NOT the signal.** Android reports `0`, never null — zero missing values across 126 fixes. The value still correlates with bad fixes (every held candidate showed `speed 0`), so use the value, not its presence. |
 | `mocked` | `boolean?` | Android mock-provider flag; separates a developer-options mock from a genuine bad fix. |
 | `steps` | `number?` | Cumulative steps for the tracking session. **Recording only** — no gameplay decision reads it. |
 
@@ -83,11 +83,49 @@ walking. Pair `stepsSincePrev` with the existing `metersSincePrev` to separate "
 lat/lng ranges but uses no `hasOnly()` key allowlist, so the new fields pass as-is.
 
 **`StabilizedLocation`** (`common/locationStabilizer.ts`) is a *view* type, never persisted:
-`PlayerLocation` plus `held` / `ageMs` / `confidenceM` / `stale`. Both GM contexts expose
-`playerLocations` as this type; because it's a superset, existing consumers are unaffected.
+`PlayerLocation` plus `held` / `heldReason` / `ageMs` / `confidenceM` / `stale`. Both GM contexts
+expose `playerLocations` as this type; because it's a superset, existing consumers are unaffected.
+
+| Field | Type | Notes |
+|---|---|---|
+| `heldReason` | `'steps' \| 'speed' \| null` | Which gate held the fix; `null` when it was accepted. `held` is now exactly `heldReason !== null`. Diagnostic — recorded so the gate constants can be re-derived from a `locationTrail` capture. |
+
+**`NSMotionUsageDescription`** (`app.json` → `ios.infoPlist`) is **required**, not optional polish.
+`expo-sensors` is deliberately absent from `plugins` (its only iOS job is this key), so the key is
+declared directly. Without it `Pedometer.requestPermissionsAsync()` reaches `RCTFatal` in
+`EXMotionPermissionRequester.m` and **aborts the process** — an OS-level kill that `stepCounter.ts`'s
+fail-soft `try/catch` cannot intercept. Verify with `npx expo config --type introspect --json`.
+Android needs nothing: `expo-sensors` merges its own `ACTIVITY_RECOGNITION` declaration.
+
+**Capture context on `PlayerLocation`** (added 2026-09-05c, all optional):
+
+| Field | Type | Notes |
+|---|---|---|
+| `appState` | `string?` | `AppState` at fix time. The first walk could not distinguish "bad handset" from "phone left locked"; it was the latter, and only conversation revealed it. |
+| `msSinceForeground` | `number?` | ms since last foregrounded (0 while active). **The load-bearing one** — screen state alone would not have explained the data, because the frequently-checked phone's background fixes were still good. Doze depth tracks how long a device sat untouched. |
+| `batteryOptimized` | `boolean?` | Android battery-optimization state at fix time. Absent when unreadable — note the underlying check fails *open*. |
+| `wakeLock` | `boolean?` | Was the partial CPU wake lock held? Identifies which A/B arm a fix belongs to. |
+
+**Two new `GameConfig` knobs:**
+
+| Field | Default | Notes |
+|---|---|---|
+| `wakeLockEnabled` | `false` | Hold a partial CPU wake lock while tracking (Android). **The one capture-layer variable under test** — changing anything else in the location request at the same time makes the result uninterpretable. Costs battery; that is the trade being quantified. Enable for a subset of players to get both arms from one walk. |
+| `maxDisplayAccuracyMeters` | `80` | Reject fixes worse than this **from the GM map only** — never from checkpoint evaluation, which keeps using `minFixAccuracyMeters`. 0 disables. |
+
+**`modules/outdoor-native`** — a local Expo module (autolinked; `android/` is CNG output so native
+code cannot live there). Android implements `getStepCount()` over the cumulative
+`TYPE_STEP_COUNTER` and `acquire/release/isWakeLockHeld`; iOS is a deliberate no-op (no
+user-acquirable CPU lock, and CMPedometer's historical query already covers suspended time). New
+manifest permissions: `WAKE_LOCK`, `ACTIVITY_RECOGNITION`.
+
+**`HoldReason`** is now `'accuracy' | 'speed'`. The `'steps'` motion gate was deleted before
+shipping — replayed against the trail it suppressed 556 m and 980 m of two players' genuine
+movement, because Android batches step delivery and a locked phone's listener never fires.
 
 **`GameConfig.locationTrail`** (existing, #50) is the capture switch — no new config knob. Constants
-(`MAX_PLAUSIBLE_SPEED_MS` 7, `MAX_HOLD_MS` 60 s, `STALE_AFTER_MS` 45 s) are module-level in
+(`MAX_PLAUSIBLE_SPEED_MS` 7, `MAX_HOLD_MS` 60 s, `STALE_AFTER_MS` 45 s, and for the motion gate
+`MAX_STRIDE_M` 1.5, `STEP_GATE_SLACK_M` 25, `DOPPLER_MOVING_MS` 0.5) are module-level in
 `locationStabilizer.ts`, deliberately not GM-tunable until field data justifies values.
 
 ---

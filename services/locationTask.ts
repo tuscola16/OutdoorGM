@@ -1,11 +1,47 @@
 import * as TaskManager from 'expo-task-manager';
 import * as Location from 'expo-location';
 import * as Battery from 'expo-battery';
+import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { updatePlayerLocation } from './gameService';
 import { isBatteryOptimized } from './batteryOptimization';
 import { getSteps, startStepCounting, stopStepCounting } from './stepCounter';
+import { startWakeLock, stopWakeLock, wakeLockHeld } from './wakeLock';
 import { auth } from './firebase';
+
+/**
+ * #82 instrumentation: how long the app has been out of the foreground.
+ *
+ * The 2026-09-05 walk was confounded by something invisible in the data — one player
+ * checked their phone repeatedly while the other never unlocked theirs, and *that*, not
+ * the handset, explained a 13m vs 38m accuracy split. Screen state alone wouldn't have
+ * caught it either: the checked phone's "background" fixes were still good, because it
+ * never settled into deep idle. Doze depth is a function of how long the device has been
+ * left alone, so record the duration, not just the state.
+ */
+let lastForegroundAt: number = Date.now();
+AppState.addEventListener('change', (s) => {
+  if (s === 'active') lastForegroundAt = Date.now();
+});
+
+/** Per-fix capture context (#82) — recorded, never acted on. */
+async function captureContext(): Promise<{
+  appState: string;
+  msSinceForeground: number;
+  batteryOptimized?: boolean;
+  wakeLock: boolean;
+}> {
+  const state = AppState.currentState ?? 'unknown';
+  return {
+    appState: String(state),
+    // When the app is active *right now*, age is zero by definition — the listener above
+    // only fires on transitions, so a long-foregrounded session would otherwise report a
+    // stale age.
+    msSinceForeground: state === 'active' ? 0 : Date.now() - lastForegroundAt,
+    batteryOptimized: await isBatteryOptimized().catch(() => undefined),
+    wakeLock: wakeLockHeld(),
+  };
+}
 
 export const LOCATION_TASK_NAME = 'hgl-background-location';
 export const GEOFENCE_TASK_NAME = 'hgl-checkpoint-geofence';
@@ -49,6 +85,12 @@ export interface TrackingDiagnostics {
    * (permission not yet granted on a fresh install) was invisible.
    */
   geofenceError: string | null;
+  /**
+   * #82: is the partial CPU wake lock currently held? Android only (always false
+   * elsewhere). Surfaced so a field test can confirm the A/B arm a player is actually in,
+   * rather than assuming the config flag took effect.
+   */
+  wakeLock: boolean;
   updatedAt: number;
 }
 
@@ -63,6 +105,7 @@ let _diag: TrackingDiagnostics = {
   lastGeofenceWakeAt: null,
   geofencedRegions: 0,
   geofenceError: null,
+  wakeLock: false,
   updatedAt: Date.now(),
 };
 
@@ -123,11 +166,11 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
       accuracy: location.coords.accuracy ?? undefined,
       heading: location.coords.heading ?? undefined,
       battery: await readBattery(),
-      // #82 diagnostics — recorded, never acted on. `speed` is the network-fallback
-      // tell: it's Doppler-derived, so a Wi-Fi/cell fix usually reports none.
+      // #82 diagnostics — recorded, never acted on.
       speed: location.coords.speed ?? undefined,
       mocked: location.mocked ?? undefined,
-      steps: getSteps(),
+      steps: await getSteps(),
+      ...(await captureContext()),
     });
     setDiag({ lastUploadAt: Date.now(), lastError: null });
   } catch (err) {
@@ -182,7 +225,8 @@ TaskManager.defineTask(GEOFENCE_TASK_NAME, async ({ data, error }) => {
       battery: await readBattery(),
       speed: pos.coords.speed ?? undefined,   // #82
       mocked: pos.mocked ?? undefined,        // #82
-      steps: getSteps(),                      // #82
+      steps: await getSteps(),                // #82
+      ...(await captureContext()),            // #82
     });
     setDiag({ lastUploadAt: Date.now(), lastGeofenceWakeAt: Date.now(), lastError: null });
   } catch (err) {
@@ -289,6 +333,13 @@ export interface TrackingOptions {
   /** Coarser cadence + balanced accuracy to conserve battery over a long game
    * (Rule 21). Falls back to high-accuracy 5s/10m when false. */
   batterySaver?: boolean;
+  /**
+   * #82: hold a partial CPU wake lock for the duration of tracking (Android only).
+   * Gated by `GameConfig.wakeLockEnabled` so it can be A/B'd across players in a single
+   * walk — the one capture-layer variable in this build, deliberately isolated so the
+   * measurement isn't confounded. Costs battery; that's the trade being measured.
+   */
+  wakeLock?: boolean;
 }
 
 /** Reject if `p` hasn't settled within `ms` — so a wedged native call (e.g. a
@@ -342,6 +393,16 @@ export async function startLocationTracking(
   // front of the critical one is how a player ends up declining both. Tracking must never
   // wait on it, and a decline must never be an error.
   startStepCounting().catch(() => {});
+
+  // #82: hold the CPU awake for the duration of tracking when the game opts in. Must come
+  // before the location request below so the very first fixes are already covered.
+  if (options.wakeLock) {
+    const held = startWakeLock();
+    setDiag({ wakeLock: held });
+  } else {
+    stopWakeLock();
+    setDiag({ wakeLock: false });
+  }
 
   // Tracking cadence: tighter when accuracy matters, looser to save battery.
   //
@@ -484,7 +545,8 @@ export async function startLocationTracking(
               battery: await readBattery(),
               speed: pos.coords.speed ?? undefined,   // #82
               mocked: pos.mocked ?? undefined,        // #82
-              steps: getSteps(),                      // #82
+              steps: await getSteps(),                // #82
+              ...(await captureContext()),            // #82
             });
             setDiag({ lastUploadAt: Date.now(), lastError: null });
           } catch (err) {
@@ -503,6 +565,7 @@ export async function startLocationTracking(
 export async function stopLocationTracking(): Promise<void> {
   if (foregroundSub) { foregroundSub.remove(); foregroundSub = null; }
   await stopStepCounting().catch(() => {}); // #82 — best effort, never blocks teardown
+  stopWakeLock();                           // #82 — never leave the CPU pinned after a game
   await AsyncStorage.multiRemove([ACTIVE_GAME_KEY, DISPLAY_NAME_KEY]);
   const isRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME).catch(() => false);
   if (isRunning) {

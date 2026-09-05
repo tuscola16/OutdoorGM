@@ -134,11 +134,89 @@ unconditionally and `minFixAccuracyMeters` gates only *checkpoint evaluation*, n
   5–10 min of sleep; `foregroundServiceType="location"` on Android 14+; and OEM battery allowlists
   (which Strava benefits from and we never will) — which is what the #77 exemption flow compensates
   for. **Verifying that #77 grant on every player's phone is worth more than any of this code.**
-- **A motion gate** (Δsteps ≈ 0 ⇒ they didn't move ⇒ hold) is the only reason the step counter
-  exists. Build it only if the trail proves the display fix isn't enough. Any dead-reckoned position
-  must never trigger a checkpoint — arrivals stay server-authoritative or players gain a way to trip
-  sites they never reached.
-- **`locationTrail` retention.** It's excluded from the end-of-game cleanup by design; delete the
+> **Built (2026-09-05b) — the motion gate, plus the iOS crash that blocked it:**
+> - **`NSMotionUsageDescription` was missing from `app.json`.** `expo-sensors` is not in `plugins`
+>   and the key was never declared, so `Pedometer.requestPermissionsAsync()` hit
+>   `EXMotionPermissionRequester.m:28` → `RCTFatal` → **process abort**. A native abort, so the
+>   fail-soft `try/catch` in `stepCounter.ts` could not catch it. It fires from
+>   `startLocationTracking()` *and* from the background task's re-arm, i.e. **every iPhone would
+>   have crashed on entering play, and again on each background process recycle**. Android was
+>   unaffected — `expo-sensors` ships its own manifest declaring `ACTIVITY_RECOGNITION`, which is
+>   why the APK never showed it. The step counter therefore has **never** run on iOS; no shipped
+>   build has collected an iPhone step.
+> - **Motion gate** (`contradictsSteps` in `common/locationStabilizer.ts`). Holds a fix when the
+>   displacement exceeds what the player's own steps could produce
+>   (`Δsteps × MAX_STRIDE_M 1.5 + STEP_GATE_SLACK_M 25`). A *bound*, never a dead-reckoned
+>   position — it refuses coordinates, it never invents them — and it sits in the read path beside
+>   the speed gate, so arrivals stay server-authoritative and no player can trip a site they
+>   didn't reach. Fails open on every unknown: no pedometer, declined permission, pre-#82 client,
+>   or a negative delta (a counter reset, not backwards walking). A fix carrying Doppler `speed`
+>   is exempt, so a vehicle ride doesn't freeze anyone.
+> - **Why it earns its place:** the speed gate cannot catch the reported failure. Its quality
+>   clause requires the incoming fix to look *worse*, and the field-observed Pixel 8 sat 64 m off
+>   while claiming 22 m accuracy. A pedometer reading zero doesn't care what the fix claims.
+> - **`StabilizedLocation.heldReason`** (`'steps' | 'speed' | null`) records which gate fired, so
+>   the constants can be re-derived from a capture rather than argued about.
+
+> **Built (2026-09-05c) — the first field trail, and what it overturned.** `locationTrail`
+> captured 126 fixes over 17 minutes with two players. The results **retired the motion gate before
+> it ever shipped** and redirected the whole item:
+> - **The confound was screen state, not the handset.** One tester checked their phone repeatedly;
+>   the other never unlocked theirs. Median accuracy **12.9 m vs 38.4 m**, on the same walk in the
+>   same woods. Doze depth tracks how long a device sits untouched — the checked phone's background
+>   fixes were still good because it never settled. This was invisible in the data and only surfaced
+>   in conversation, which is why `appState` / `msSinceForeground` are now recorded per fix.
+> - **The motion gate would have been actively harmful.** Replayed against the trail it holds
+>   **556 m** of one player's real movement and **980 m** of the other's (69% of their total).
+>   Android batches step delivery, so `stepsSincePrev` reads 0 on ~70% of fixes mid-walk; on the
+>   locked phone the listener never fired at all. Its fail-open guard checks for *missing* steps and
+>   cannot distinguish "sensor reporting a stale 0" from "stood still". **Deleted, not tuned.**
+> - **The jump is the correction.** Of 13 fixes implying >7 m/s, **11 arrived with accuracy
+>   improving** (one was 133 m away with accuracy going 102 m → 6 m). The dot leaps because GPS
+>   reacquires and snaps back to truth, so holding the incoming fix keeps the player *wrong* for
+>   longer. The speed gate fired on only 2 of the 13 — it is a backstop, not the mechanism.
+> - **The step counter was never broken — it was unread.** The hardware counted correctly
+>   throughout; the locked phone's backlogs flushed as **367 / 211 / 319 / 147** steps on each wake.
+>   `watchStepCount` simply doesn't deliver in the background. Rewritten to **poll** the cumulative
+>   counter (native `TYPE_STEP_COUNTER` shim on Android, CMPedometer's historical query on iOS).
+> - **`speed` absence is not the network-fallback tell.** Android reports `0`, never null — zero
+>   missing values across 126 fixes. The value is still useful; the earlier schema note was wrong.
+> - **Cadence is unchanged and still the binding constraint.** A 3 s request delivered at a
+>   **14–18 s median** with ~90 s maxima. At walking pace that is a sample every 20–25 m — you
+>   cannot reconstruct a path you never sampled.
+
+> **Built (2026-09-05d) — the six changes under test in the next build:**
+> - **Accuracy gate replaces the motion gate** (`tooInaccurate`, `GameConfig.maxDisplayAccuracyMeters`,
+>   default 80 m). Rejects the *bad* fix rather than the correction after it — the move the data
+>   supports. Chosen from the trail: p90s were 89 m and 116 m, so 80 m keeps ordinary pocketed fixes
+>   and drops the 89–203 m outliers that caused the visible teleporting.
+> - **Partial CPU wake lock** (`modules/outdoor-native`, `GameConfig.wakeLockEnabled`, default off).
+>   A foreground service does **not** keep the CPU awake and `expo-location` holds no lock (verified:
+>   zero `PowerManager` references in its Android source). **The one capture-layer variable** — leave
+>   the rest of the location request alone while measuring it. Config-gated so both A/B arms come out
+>   of a single walk.
+> - **Step counter polls instead of listening**, per the finding above.
+> - **Capture context per fix**: `appState`, `msSinceForeground`, `batteryOptimized`, `wakeLock`.
+>   These exist so the next walk is never again confounded by something only a conversation revealed.
+> - **Motion gate deleted**; `heldReason` is now `'accuracy' | 'speed'`.
+
+**Outstanding under #82 (continued):**
+
+- **The uncertainty-circle rendering is cancelled** — a product decision, 2026-09-05. `confidenceM`
+  and `stale` still reach both maps and remain useful for tuning, but nothing will draw them.
+- **Off-trail woods bounds what is achievable.** The game is played wandering through unmapped
+  forest, so map matching is out (no path network to snap to) and canopy multipath is a physical
+  floor on accuracy. The realistic ceiling for "where did they go" is post-hoc: pedestrian-motion
+  smoothing weighted by 1/accuracy², run forwards *and* backwards, anchored to step-derived total
+  distance. Not built.
+- **Fix the clock-skew in staleness.** `ageMs` subtracts a Firestore *server* timestamp from the GM
+  device's `Date.now()`, so a skewed GM clock marks everyone permanently stale or never stale.
+  Lower priority now the circles are cancelled, but `stale` is still exported.
+- **Verify the #77 battery grant per phone.** Now quantified: letting a device settle roughly
+  triples median error, and suppresses step delivery at the same time — one root cause, two
+  symptoms. Note `isBatteryOptimized()` fails *open*, so "all set" in the lobby can mean "unreadable"
+  rather than "exempt".
+- **`locationTrail` retention.** Excluded from end-of-game cleanup by design; delete the
   subcollection after each analysis.
 
 **83. GM push fired on every checkpoint crossing.** Reported 2026-09-05: the GM's phone buzzed for
