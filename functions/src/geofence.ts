@@ -335,6 +335,9 @@ export const onLocationUpdate = functions
       displayName: string;
       accuracy?: number;
       battery?: number;
+      speed?: number;   // #82 — recorded only, never gated on
+      mocked?: boolean; // #82
+      steps?: number;   // #82
       updatedAt?: FirebaseFirestore.Timestamp;
     };
 
@@ -344,8 +347,10 @@ export const onLocationUpdate = functions
     // entirely through a checkpoint radius between two fixes that both fall outside it. We
     // test the path segment prev→curr against each checkpoint, not just the current point.
     const prevData = change.before.exists
-      ? (change.before.data() as { latitude?: number; longitude?: number })
+      ? (change.before.data() as { latitude?: number; longitude?: number; steps?: number })
       : undefined;
+    /** Previous cumulative step count (#82), for the trail's `stepsSincePrev`. */
+    const prevSteps = typeof prevData?.steps === 'number' ? prevData.steps : null;
     const prevLoc =
       prevData && typeof prevData.latitude === 'number' && typeof prevData.longitude === 'number'
         ? { latitude: prevData.latitude, longitude: prevData.longitude }
@@ -365,7 +370,6 @@ export const onLocationUpdate = functions
     const rawConfig = (gameData.config ?? {}) as {
       minFixAccuracyMeters?: number;
       geofenceConfirmFixes?: number;
-      reNotifyAwayCooldownMinutes?: number;
       tripIntervalMinutes?: number;
       locationTrail?: boolean;
     };
@@ -380,7 +384,6 @@ export const onLocationUpdate = functions
     // checkpoint's own radius; this default is the stopgap until then.
     const minFixAccuracy = rawConfig.minFixAccuracyMeters ?? 100;
     const confirmFixes = rawConfig.geofenceConfirmFixes ?? 2;
-    const reNotifyAwayCooldownMs = (rawConfig.reNotifyAwayCooldownMinutes ?? 5) * 60_000;
     // #67: re-evaluate a lingering player's runbook entries at most this often (default 2 min).
     const tripIntervalMs = Math.max(0, rawConfig.tripIntervalMinutes ?? 2) * 60_000;
 
@@ -443,6 +446,24 @@ export const onLocationUpdate = functions
           longitude: location.longitude,
           accuracy: location.accuracy ?? null,
           battery: location.battery ?? null,
+          // #82: the fields that let a post-game read tell a real GNSS fix from a
+          // network fallback, and a genuine jump from a stationary one. `speed: null`
+          // is itself informative (no Doppler → probably Wi-Fi/cell), and `steps`
+          // bounds how far the player could actually have moved since the last fix.
+          speed: location.speed ?? null,
+          mocked: location.mocked ?? null,
+          steps: location.steps ?? null,
+          // Steps taken since the previous fix — pair with `metersSincePrev` to separate
+          // "they walked" from "the fix moved but they didn't".
+          // A negative delta means the counter reset between fixes (the player left and
+          // rejoined, or the app process was recycled), not that they walked backwards —
+          // record null rather than a number that would silently corrupt the analysis.
+          stepsSincePrev:
+            typeof location.steps === 'number' &&
+            typeof prevSteps === 'number' &&
+            location.steps >= prevSteps
+              ? location.steps - prevSteps
+              : null,
           // Movement since the previous fix — the signal that separates "the phone stopped
           // reporting" from "the phone reported a position that didn't move".
           metersSincePrev: prevLoc
@@ -513,8 +534,9 @@ export const onLocationUpdate = functions
 
     const nowMs = Date.now();
 
-    // Effects to deliver from this location update (one entry per fired runbook entry, plus
-    // GM-only arrival pings / suppression notes).
+    // Effects to *push* from this location update: one entry per fired runbook entry, plus
+    // district-suppression notes. A crossing that fires nothing is recorded as an arrival doc
+    // but never lands here — bare arrivals don't push (#83).
     const newArrivals: Array<{
       checkpointName: string;
       playerName: string;
@@ -528,8 +550,7 @@ export const onLocationUpdate = functions
      * tick: a lingering player is re-evaluated every `tripIntervalMinutes`, so a stack of events
      * on one checkpoint is doled out over time (the "2-minute rule") rather than all at once.
      * Each entry is latched once in `entryTrips/{userId}_{entryId}` via an atomic create, so it
-     * never fires twice. Returns 1 if an entry fired, else 0 (so the caller can fall back to a
-     * bare GM arrival ping).
+     * never fires twice. Returns 1 if an entry fired, else 0.
      */
     async function fireEligibleEntries(
       entries: RunbookEntry[],
@@ -683,15 +704,9 @@ export const onLocationUpdate = functions
       }
 
       // --- Confirmed crossing (lingering entry or pass-through) ---
-      // A normal entry latches inside=true; a pass-through latches as already-exited so the
-      // away-cooldown (#55) is measured from now and a later return can re-fire.
+      // A normal entry latches inside=true; a pass-through latches as already-exited (the
+      // player is already gone), so a later return is seen as a fresh crossing.
       const enteredInside = !passThrough;
-
-      // GM re-notification gate (#55): re-alert on return after cooldown.
-      const lastExitMs = trip?.lastExitAt
-        ? (trip.lastExitAt as admin.firestore.Timestamp).toMillis()
-        : null;
-      const gmShouldNotify = lastExitMs === null || (nowMs - lastExitMs >= reNotifyAwayCooldownMs);
 
       // One transaction: count the arrival ordinal, apply district suppression (#5), then
       // atomically latch presence + record the arrival. The per-entry effect firing (#67)
@@ -755,19 +770,19 @@ export const onLocationUpdate = functions
       // Fire each eligible, not-yet-tripped runbook entry (#67) — unless this crossing is
       // district-suppressed (#5), in which case effects are withheld (and may fire on a later
       // re-eval tick, once the co-arrival window has passed).
-      const firedCount = result.suppressed
-        ? 0
-        : await fireEligibleEntries(entries, result.ordinal, checkpointId, cp);
-
+      //
+      // #83: a bare crossing — one where nothing in the runbook fired — is *recorded* (the
+      // arrival doc written above) but never pushed. The GM reads plain crossings in the
+      // notification feed's Arrivals rows; push/SMS is reserved for a crossing that actually
+      // tripped something, so walking past scenery doesn't buzz the GM's phone mid-game.
       if (result.suppressed) {
         newArrivals.push({
           checkpointName: cp.name,
           playerName: location.displayName,
           gmNote: `${location.displayName} & a District ${crossingDistrict} partner arrived together at ${cp.name} — trap withheld`,
         });
-      } else if (firedCount === 0 && gmShouldNotify) {
-        // Nothing player-facing fired → still give the GM the bare arrival ping.
-        newArrivals.push({ checkpointName: cp.name, playerName: location.displayName });
+      } else {
+        await fireEligibleEntries(entries, result.ordinal, checkpointId, cp);
       }
 
       // Reveal-on-crossing (#60): the trap this player just sprang becomes a marker

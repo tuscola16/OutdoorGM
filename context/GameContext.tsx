@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { collection, doc, query, where, orderBy, limit, onSnapshot, type QuerySnapshot } from '@react-native-firebase/firestore';
+import { LocationStabilizer, type StabilizedLocation } from '@/common/locationStabilizer';
 import { auth, db } from '@/services/firebase';
 import { Collections } from '@/services/firebase';
 import { gamePhase } from '@/services/gameService';
@@ -25,7 +26,13 @@ interface GameContextValue {
   /** Runbook entries (GM only, #60). The behavior attached to checkpoints. */
   runbookEntries: RunbookEntry[];
   members: GameMember[];
-  playerLocations: PlayerLocation[];
+  /**
+   * Player positions as they should be DRAWN (#82) — jump-suppressed and annotated with
+   * `held`/`stale`/`confidenceM`. A superset of `PlayerLocation`, so existing consumers
+   * are unaffected; maps can opt into the extra fields. Raw fixes are untouched in
+   * Firestore, and checkpoint evaluation is entirely unaffected by this.
+   */
+  playerLocations: StabilizedLocation[];
   arrivals: Arrival[];
   /** GM→player messages. Players see only global + their own targeted messages. */
   broadcasts: Broadcast[];
@@ -49,7 +56,10 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
   const [runbookEntries, setRunbookEntries] = useState<RunbookEntry[]>([]);
   const [members, setMembers] = useState<GameMember[]>([]);
-  const [playerLocations, setPlayerLocations] = useState<PlayerLocation[]>([]);
+  const [playerLocations, setPlayerLocations] = useState<StabilizedLocation[]>([]);
+  /** #82: per-player jump suppression for the map. Held in a ref so it survives
+   *  re-renders and keeps its history across snapshots. */
+  const stabilizer = useRef(new LocationStabilizer());
   const [arrivals, setArrivals] = useState<Arrival[]>([]);
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
   const [rations, setRations] = useState<RationSubmission[]>([]);
@@ -69,6 +79,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     setRunbookEntries([]);
     setMembers([]);
     setPlayerLocations([]);
+    stabilizer.current.reset(); // #82 — don't carry one game's positions into the next
     setArrivals([]);
     setBroadcasts([]);
     setRations([]);
@@ -124,12 +135,26 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   // Subscribe to player locations (GMs only)
   useEffect(() => {
     if (!gameId || myRole !== 'gm') return;
-    return onSnapshot(collection(db, Collections.GAMES, gameId, Collections.LOCATIONS), 
+    return onSnapshot(collection(db, Collections.GAMES, gameId, Collections.LOCATIONS),
         (snap) => {
-          setPlayerLocations(snap.docs.map((d) => ({ ...d.data() } as PlayerLocation)));
+          // #82: raw fixes in, drawable positions out. See common/locationStabilizer.ts.
+          setPlayerLocations(
+            stabilizer.current.stabilize(
+              snap.docs.map((d) => ({ ...d.data() } as PlayerLocation))
+            )
+          );
         },
         (err: Error) => console.error('[GameContext] locations listener error', err)
       );
+  }, [gameId, myRole]);
+
+  // #82: also drop the stabilizer's per-player history whenever the locations listener is
+  // torn down (game switch / role change), not just in clearGame(). A direct
+  // loadGame(otherGame) changes gameId without calling clearGame, and a player who is a
+  // member of both games would otherwise have their first fix in the new game compared
+  // against a position from the old one — and suppressed as an implausible jump.
+  useEffect(() => {
+    return () => { stabilizer.current.reset(); };
   }, [gameId, myRole]);
 
   // Subscribe to arrivals

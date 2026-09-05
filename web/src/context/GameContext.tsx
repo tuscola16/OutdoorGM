@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import {
   doc,
   collection,
@@ -10,6 +10,7 @@ import {
 import { db, Collections } from '@/services/firebase';
 import { gamePhase } from '@/services/gameService';
 import type { Game, Checkpoint, RunbookEntry, GameMember, PlayerLocation, Arrival, GamePhase, RationSubmission, ScheduledEvent, EntryTrip } from '@shared/types';
+import { LocationStabilizer, type StabilizedLocation } from '@shared/common/locationStabilizer';
 
 interface GameContextValue {
   game: Game | null;
@@ -19,7 +20,12 @@ interface GameContextValue {
   /** Runbook entries (GM only, #60) — the behavior attached to checkpoints. */
   runbookEntries: RunbookEntry[];
   members: GameMember[];
-  playerLocations: PlayerLocation[];
+  /**
+   * Player positions as they should be DRAWN (#82) — jump-suppressed and annotated with
+   * `held`/`stale`/`confidenceM`. A superset of `PlayerLocation`, so existing consumers
+   * are unaffected. Raw fixes in Firestore and checkpoint evaluation are untouched.
+   */
+  playerLocations: StabilizedLocation[];
   arrivals: Arrival[];
   /** Ration submissions awaiting/holding GM review (GM only). */
   rations: RationSubmission[];
@@ -40,7 +46,9 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
   const [runbookEntries, setRunbookEntries] = useState<RunbookEntry[]>([]);
   const [members, setMembers] = useState<GameMember[]>([]);
-  const [playerLocations, setPlayerLocations] = useState<PlayerLocation[]>([]);
+  const [playerLocations, setPlayerLocations] = useState<StabilizedLocation[]>([]);
+  /** #82: per-player jump suppression for the map (ref so it survives re-renders). */
+  const stabilizer = useRef(new LocationStabilizer());
   const [arrivals, setArrivals] = useState<Arrival[]>([]);
   const [rations, setRations] = useState<RationSubmission[]>([]);
   const [scheduledEvents, setScheduledEvents] = useState<ScheduledEvent[]>([]);
@@ -113,10 +121,16 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     if (!gameId || myRole !== 'gm') return;
     const unsub = onSnapshot(
       collection(db, Collections.GAMES, gameId, Collections.LOCATIONS),
-      (snap) => setPlayerLocations(snap.docs.map((d) => ({ ...d.data() } as PlayerLocation))),
+      // #82: raw fixes in, drawable positions out. See common/locationStabilizer.ts.
+      (snap) =>
+        setPlayerLocations(
+          stabilizer.current.stabilize(
+            snap.docs.map((d) => ({ ...d.data() } as PlayerLocation))
+          )
+        ),
       (err) => console.error('[GameContext] locations listener error', err)
     );
-    return () => { unsub(); setPlayerLocations([]); };
+    return () => { unsub(); setPlayerLocations([]); stabilizer.current.reset(); };
   }, [gameId, myRole]);
 
   // Arrivals

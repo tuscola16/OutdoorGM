@@ -160,7 +160,13 @@ games/{gameId}/arrivals/{arrivalId}
 - **Runbook resolution (#60)**: on a confirmed crossing, the function gathers the checkpoint's
   matching `runbook` entries (always-on; timed in-window; fixed-order slot for the arrival ordinal —
   `gm-prompted` never fires on a crossing) and delivers the single **highest-`priority`** effect
-  (ties → earliest `createdAt`). The GM-only arrival ping is independent.
+  (ties → earliest `createdAt`).
+- **Push is trip-gated (#83)**: a crossing that fires nothing still writes its `arrivals` doc,
+  but sends **no** push/SMS. Only a crossing that actually trips a runbook entry (`hazard` /
+  `boon` / `notify` / `gm-notify`) — or a district trap-withheld note — notifies the GM. The
+  GM reads plain "reached <checkpoint>" crossings in the notification feed instead: the web
+  sidebar lists alerts only, and the **"See all" modal** (labeled with the arrival count) is
+  where checkpoint arrivals live.
 - **Per-entry player targeting + reveal (#80)**: an entry with `playerIds` only fires for those
   members — anyone else crossing falls through to the next-highest entry. An entry with
   `revealOnFire` also projects its checkpoint into the player-readable `markers` collection when it

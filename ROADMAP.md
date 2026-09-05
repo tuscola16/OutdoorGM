@@ -9,7 +9,8 @@ implementation-ready schema/enforcement detail for the items below is in
 store launch. Items are grouped by tier, roughly in build order. Numbers are **stable and never
 reused**; a shipped item moves to the **Built & removed** callout below (one-line summary; full
 detail in git + the README) rather than being renumbered. The build-out **through Tier 7 plus all
-field-test findings has shipped** (see the callout) — the only outstanding work is P3 polish
+field-test findings has shipped** (see the callout) — the outstanding work is the open half of
+**#82** (location jitter, from the 2026-09-04 game) and **#83** (mobile GM feed), P3 polish
 (Tier 11 — **#57** per-GM teams), plus the deferred public-launch gating (#46/#47).
 
 > **Built & removed** (retired numbers, never reused — one-line summaries; full detail in git
@@ -82,6 +83,90 @@ field-test findings has shipped** (see the callout) — the only outstanding wor
 >   panel un-stuck after submit (Firestore `rations` read allowed when `resource == null`, so the
 >   player's pre-create listener isn't denied); #79 joining a `setup`-phase game now says "not open
 >   yet" vs "already started". Rules + functions deployed; the mobile battery flow rides the 2026-06-18 APK.
+
+---
+
+## Field-test findings
+
+**82. Location jitter — players "all over the map" when the phone locks.** Reported after the
+2026-09-04 game: with a phone pocketed and screen-locked, players teleport around the GM map.
+
+*Cause.* Android's fused provider falls back to Wi-Fi/cell trilateration once the screen locks —
+field-measured ~52 m accuracy while walking, and one stationary Pixel 8 reporting 22 m accuracy
+while sitting ~64 m off. Every such fix moves the dot, because the client writes each fix
+unconditionally and `minFixAccuracyMeters` gates only *checkpoint evaluation*, not the write.
+
+> **Built (2026-09-05), recording + display only — the upload path and geofence are untouched:**
+> - **Diagnostic capture.** `PlayerLocation.speed` / `.mocked` / `.steps` ride every fix through all
+>   three upload paths; `locationTrail` also records `stepsSincePrev` to pair against
+>   `metersSincePrev`. `speed` is the network-fallback tell (Doppler-derived, so a trilaterated fix
+>   usually reports none) and is a better "is this fix real?" discriminator than `accuracy`.
+> - **Step counting** (`services/stepCounter.ts`, `expo-sensors`). **Recording only — nothing reads
+>   it for any decision.** Hardware step counter, not the accelerometer: both platforms count on a
+>   low-power coprocessor that survives Doze and app suspension for <1%/day, whereas sampling accel
+>   ourselves needs the CPU awake, which is exactly what we lack when pocketed. Fail-soft
+>   throughout; started fire-and-forget *after* the location grant so the optional
+>   `ACTIVITY_RECOGNITION` prompt never precedes the critical one, and re-armed inside the
+>   background task because that task can run in a fresh JS context after a process recycle.
+> - **Display-side jump suppression** (`common/locationStabilizer.ts`, wired into both GM contexts).
+>   Holds a fix only when it is **both** implausibly fast (>7 m/s) **and** lower-quality than what's
+>   displayed, hard-capped at 60 s. Deliberately in the read path, not the write path: suppressing
+>   writes would change `change.before` for #49 pass-through detection (altering **checkpoint
+>   firing**) and would blind `locationTrail`. `StabilizedLocation` extends `PlayerLocation`, so
+>   existing consumers are unaffected.
+
+**Outstanding under #82:**
+
+- **Render the confidence data.** `confidenceM` / `stale` / `held` reach both maps but nothing draws
+  them yet — no accuracy circle, no stale dimming. This is the half that makes the map *honest*
+  rather than merely calmer, and it's where we should deliberately **not** copy Strava: their live
+  Beacon view shows last-known-position and says so, but their recorded track is smoothed post-hoc
+  with future data, which a live GM map can never do.
+- **Tune the gate from real data.** The 7 m/s and 60 s constants are guesses — loose on purpose,
+  since a teleport detector that never false-fires beats a smoother we can't calibrate. Re-derive
+  them from a `locationTrail` capture (walk a known route pocketed + locked, with a control
+  recording in Strava on the same handset, plus a stationary segment where all movement is error).
+- **Fix the clock-skew in staleness.** `ageMs` subtracts a Firestore *server* timestamp from the
+  GM device's `Date.now()`, so a skewed GM clock marks everyone permanently stale or never stale.
+  Harmless until the staleness UI ships; must be fixed before it does.
+- **Capture-layer suspects, if the trail shows gaps rather than scatter.** A foreground service does
+  *not* keep the CPU awake; `expo-location` has a known issue where updates batch to minutes after
+  5–10 min of sleep; `foregroundServiceType="location"` on Android 14+; and OEM battery allowlists
+  (which Strava benefits from and we never will) — which is what the #77 exemption flow compensates
+  for. **Verifying that #77 grant on every player's phone is worth more than any of this code.**
+- **A motion gate** (Δsteps ≈ 0 ⇒ they didn't move ⇒ hold) is the only reason the step counter
+  exists. Build it only if the trail proves the display fix isn't enough. Any dead-reckoned position
+  must never trigger a checkpoint — arrivals stay server-authoritative or players gain a way to trip
+  sites they never reached.
+- **`locationTrail` retention.** It's excluded from the end-of-game cleanup by design; delete the
+  subcollection after each analysis.
+
+**83. GM push fired on every checkpoint crossing.** Reported 2026-09-05: the GM's phone buzzed for
+plain "reached <checkpoint>" arrivals, burying the pushes that actually needed a response.
+
+> **Built (2026-09-05):**
+> - **Push is trip-gated.** A confirmed crossing still writes its `arrivals` doc, but only enters
+>   the push/SMS path when a runbook entry actually fires (`hazard` / `boon` / `notify` /
+>   `gm-notify`) — or when a district co-arrival withholds a trap (#5), which stays notified because
+>   it's an exception, not routine traffic. A crossing that fires nothing is recorded and silent, and
+>   the function now short-circuits before reading GM member docs, so it costs fewer reads too.
+> - **The web feed splits alerts from history.** The compact Play-view sidebar drops `arrival` rows,
+>   so it mirrors exactly what reached the GM's phone; every crossing stays in the "See all" modal
+>   under its **Arrivals** filter, and the button carries the arrival count so the GM has a cue that
+>   crossings are happening at all.
+> - **Retired `reNotifyAwayCooldownMinutes` (#55).** It existed only to throttle the *bare arrival*
+>   push on a re-crossing; with bare arrivals silent it had no effect left. The gate and its config
+>   read are gone; the field is kept `@deprecated` in `types/index.ts` so legacy game docs still
+>   typecheck.
+
+**Outstanding under #83:**
+
+- **Mobile GM feed still lists every arrival.** `app/(app)/gm/[gameId]/index.tsx` renders
+  `<AlertFeed arrivals={arrivals} />` unsplit, and its unseen-alert badge counts `arrivals.length`,
+  so it now increments for crossings that never pushed. Mirror the web split when the mobile feed
+  next gets attention.
+- **Not yet field-verified.** Confirming a bare crossing goes silent while a hazard still pushes
+  needs a device inside a checkpoint radius; it has only been typechecked and reasoned through.
 
 ---
 

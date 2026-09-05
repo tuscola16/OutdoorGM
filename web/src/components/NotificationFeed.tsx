@@ -49,7 +49,9 @@ function formatTime(ms: number): string {
  *    message. This replaces the old "label every arrival by the checkpoint's headline kind"
  *    behavior, which mislabeled plain arrivals as hazards and showed a row per arrival doc.
  *  - 📍 **Arrivals** — a neutral "reached <checkpoint>" ping, deduped to the latest per
- *    player×checkpoint so re-crossings don't spam the feed.
+ *    player×checkpoint so re-crossings don't spam the feed. These are **history, not alerts**:
+ *    they're hidden from the compact sidebar (`max`) and from push (#83), and the GM reads them
+ *    by opening "See all". Nothing pushed to the GM's phone is missing from the sidebar.
  *  - 🆘 safety alerts (member.sos) and ☠️ eliminations (member.out + cause).
  */
 export function NotificationFeed({
@@ -61,6 +63,9 @@ export function NotificationFeed({
   /**
    * #75: cap the feed to the latest `max` rows and hide the filter chips — for the compact
    * Play-view sidebar. Omit for the full, filterable view (the "see all" modal).
+   *
+   * #83: the capped view also drops plain `arrival` rows, so the sidebar mirrors what actually
+   * pushed — a trip (hazard/boon/notify/gm-notify), a safety alert, or an elimination.
    */
   max?: number;
 }) {
@@ -124,8 +129,10 @@ export function NotificationFeed({
   const filtered = notifs.filter((n) =>
     filter === 'all' ? true : filter === 'sos' ? (n.category === 'sos' || n.category === 'death') : n.category === filter
   );
-  // Capped sidebar shows only the latest `max` (no filtering — chips are hidden there).
-  const shown = capped ? notifs.slice(0, max) : filtered;
+  // Capped sidebar: alerts only (no plain arrivals), latest `max` (chips are hidden there).
+  const shown = capped
+    ? notifs.filter((n) => n.category !== 'arrival').slice(0, max)
+    : filtered;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minHeight: 0, height: '100%' }}>
@@ -155,7 +162,7 @@ export function NotificationFeed({
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
         {shown.length === 0 ? (
           <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '32px 0' }}>
-            {filter === 'all' ? 'Waiting for activity…' : 'Nothing here yet.'}
+            {capped || filter === 'all' ? 'Waiting for activity…' : 'Nothing here yet.'}
           </div>
         ) : (
           shown.map((n) => (

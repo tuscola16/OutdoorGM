@@ -4,6 +4,7 @@ import * as Battery from 'expo-battery';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { updatePlayerLocation } from './gameService';
 import { isBatteryOptimized } from './batteryOptimization';
+import { getSteps, startStepCounting, stopStepCounting } from './stepCounter';
 import { auth } from './firebase';
 
 export const LOCATION_TASK_NAME = 'hgl-background-location';
@@ -106,6 +107,15 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
   const displayName = await AsyncStorage.getItem(DISPLAY_NAME_KEY);
   if (!gameId) return;
 
+  // #82: this task can run in a FRESH JS context — when Android reclaims the app process
+  // and restarts it headlessly to deliver a location, module state is re-initialised and
+  // the startStepCounting() call in startLocationTracking() never happened here. Without
+  // this, getSteps() would return undefined for every fix from a recycled process, i.e.
+  // the step instrument would silently no-op in exactly the pocketed/locked case it exists
+  // to measure. Idempotent (early-returns once subscribed), so the cost after the first
+  // fix is nil, and it never prompts: permission was already granted in the foreground.
+  await startStepCounting().catch(() => {});
+
   try {
     await updatePlayerLocation(gameId, user.uid, displayName ?? user.email ?? 'Player', {
       latitude: location.coords.latitude,
@@ -113,6 +123,11 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
       accuracy: location.coords.accuracy ?? undefined,
       heading: location.coords.heading ?? undefined,
       battery: await readBattery(),
+      // #82 diagnostics — recorded, never acted on. `speed` is the network-fallback
+      // tell: it's Doppler-derived, so a Wi-Fi/cell fix usually reports none.
+      speed: location.coords.speed ?? undefined,
+      mocked: location.mocked ?? undefined,
+      steps: getSteps(),
     });
     setDiag({ lastUploadAt: Date.now(), lastError: null });
   } catch (err) {
@@ -165,6 +180,9 @@ TaskManager.defineTask(GEOFENCE_TASK_NAME, async ({ data, error }) => {
       accuracy: pos.coords.accuracy ?? undefined,
       heading: pos.coords.heading ?? undefined,
       battery: await readBattery(),
+      speed: pos.coords.speed ?? undefined,   // #82
+      mocked: pos.mocked ?? undefined,        // #82
+      steps: getSteps(),                      // #82
     });
     setDiag({ lastUploadAt: Date.now(), lastGeofenceWakeAt: Date.now(), lastError: null });
   } catch (err) {
@@ -318,6 +336,13 @@ export async function startLocationTracking(
   // only drives diagnostics/warnings, never whether tracking starts.
   isBatteryOptimized().then((opt) => setDiag({ batteryOptimized: opt })).catch(() => {});
 
+  // #82: start the step counter — a recording instrument only (see services/stepCounter.ts).
+  // Deliberately fire-and-forget and deliberately AFTER the foreground-location grant above:
+  // it prompts for ACTIVITY_RECOGNITION on Android 10+, and stacking an optional prompt in
+  // front of the critical one is how a player ends up declining both. Tracking must never
+  // wait on it, and a decline must never be an error.
+  startStepCounting().catch(() => {});
+
   // Tracking cadence: tighter when accuracy matters, looser to save battery.
   //
   // BestForNavigation (not High) in normal mode: field-measured 2026-08-14, a pocketed
@@ -457,6 +482,9 @@ export async function startLocationTracking(
               accuracy: pos.coords.accuracy ?? undefined,
               heading: pos.coords.heading ?? undefined,
               battery: await readBattery(),
+              speed: pos.coords.speed ?? undefined,   // #82
+              mocked: pos.mocked ?? undefined,        // #82
+              steps: getSteps(),                      // #82
             });
             setDiag({ lastUploadAt: Date.now(), lastError: null });
           } catch (err) {
@@ -474,6 +502,7 @@ export async function startLocationTracking(
 
 export async function stopLocationTracking(): Promise<void> {
   if (foregroundSub) { foregroundSub.remove(); foregroundSub = null; }
+  await stopStepCounting().catch(() => {}); // #82 — best effort, never blocks teardown
   await AsyncStorage.multiRemove([ACTIVE_GAME_KEY, DISPLAY_NAME_KEY]);
   const isRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME).catch(() => false);
   if (isRunning) {

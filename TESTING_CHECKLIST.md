@@ -92,8 +92,9 @@ holds the behavior). Cover every **trigger** and every **effect kind**:
 - [ ] **trap (reveal = player)**: the crossing player sees its marker appear; others don't.
 - [ ] **always-on**: fires on each crossing.
 - [ ] **gm-notify**: only the GM is notified; the player sees nothing.
-- [ ] **Re-notify cooldown (#55)**: leave and re-enter a checkpoint; the GM is re-alerted only
-      after `reNotifyAwayCooldownMinutes`.
+- [ ] **Bare arrival is silent (#83)**: cross a checkpoint with **no** eligible runbook entry —
+      no GM push and no SMS, but the arrival **is** recorded: it shows under "See all" →
+      **Arrivals** on web (and is absent from the compact sidebar feed).
 - [ ] **Debounce (#50)**: a single jumpy fix near a radius does **not** create an arrival.
 
 ## 6. Safety, boundary, district, battery

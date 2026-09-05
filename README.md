@@ -98,7 +98,9 @@ optionally fires a GM-authored event, and pushes/SMSes the GMs.
   can tell "stopped moving" from "stopped reporting."
 
 ### Notifications
-- **Push (FCM)** to all GMs on checkpoint arrivals, SOS, and deaths.
+- **Push (FCM)** to all GMs when a crossing *trips* a runbook entry (hazard / boon / notify /
+  gm-notify), plus SOS and deaths. A plain "reached a checkpoint" crossing is recorded but
+  never pushed — GMs read those in the notification feed's "See all" view.
 - **SMS (Twilio, optional)** alongside push when configured; the app works push-only without
   it.
 

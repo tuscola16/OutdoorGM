@@ -340,6 +340,7 @@ export function GameScreen() {
           <ResultsView
             totalDuration={elapsed}
             players={players}
+            winnerId={game?.winnerId ?? null}
             startedAtMs={game?.startedAt?.toMillis?.() ?? null}
             endedAtMs={game?.endedAt?.toMillis?.() ?? null}
             media={game?.media}
@@ -368,6 +369,7 @@ export function GameScreen() {
           batteryByUser={batteryByUser}
           now={now}
           phase={phase}
+          winnerId={game?.winnerId ?? null}
           onClose={() => setShowPlayers(false)}
         />
       )}
@@ -1490,10 +1492,14 @@ function PlayView({
             margin: '4px 0 0', padding: 0, background: 'none', border: 'none', cursor: 'pointer',
             color: 'inherit', width: '100%', textAlign: 'left',
           }}
-          title="See all notifications"
+          title="See all notifications, including every checkpoint arrival"
         >
           <h3 style={{ margin: 0 }}>Notifications</h3>
-          <span style={{ fontSize: 12, color: 'var(--primary)', fontWeight: 600 }}>See all →</span>
+          {/* #83: the sidebar lists alerts only. Plain crossings live behind "See all", so
+              surface the count here — otherwise the GM has no cue that any happened. */}
+          <span style={{ fontSize: 12, color: 'var(--primary)', fontWeight: 600 }}>
+            See all{arrivals.length > 0 ? ` · ${arrivals.length} arrival${arrivals.length === 1 ? '' : 's'}` : ''} →
+          </span>
         </button>
         <div style={{ flex: 1, minHeight: 0 }}>
           <NotificationFeed arrivals={arrivals} entryTrips={entryTrips} members={members} max={4} />
@@ -1580,10 +1586,12 @@ function ResultsMapView({
 }
 
 function ResultsView({
-  totalDuration, players, startedAtMs, endedAtMs, media, gameId, gmUid, busy, onArchive, onDone, onViewMap,
+  totalDuration, players, winnerId, startedAtMs, endedAtMs, media, gameId, gmUid, busy, onArchive, onDone, onViewMap,
 }: {
   totalDuration: number | null;
   players: GameMember[];
+  /** The crown stamped server-side on the game doc (#81), when the game produced one. */
+  winnerId: string | null;
   startedAtMs: number | null;
   endedAtMs: number | null;
   media: Game['media'] | null | undefined;
@@ -1595,7 +1603,16 @@ function ResultsView({
   onViewMap: () => void;
 }) {
   const alive = players.filter((p) => !p.out);
-  const winner = alive.length === 1 ? alive[0] : null;
+  // Prefer the stamped winner; fall back to "the only one still standing" for games that
+  // ended before #81 wrote the field.
+  const winner = (winnerId ? players.find((p) => p.userId === winnerId) : null)
+    ?? (alive.length === 1 ? alive[0] : null);
+  // The crown leads the roster, then everyone who made it out alive, then the fallen.
+  const ordered = [
+    ...(winner ? [winner] : []),
+    ...players.filter((p) => p.userId !== winner?.userId && !p.out),
+    ...players.filter((p) => p.userId !== winner?.userId && p.out),
+  ];
   function playerTime(p: GameMember): string {
     if (startedAtMs == null) return '—';
     const outMs = p.outAt?.toMillis?.() ?? null;
@@ -1620,7 +1637,7 @@ function ResultsView({
       <h3>Players</h3>
       {players.length === 0 && <p style={{ color: 'var(--text-secondary)' }}>No players took part.</p>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {players.map((p) => (
+        {ordered.map((p) => (
           <div key={p.userId} className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ fontWeight: 600 }}>{winner?.userId === p.userId ? '🏆 ' : ''}{p.displayName}</span>
             <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1753,7 +1770,7 @@ function CopyableCode({ code, big }: { code: string; big?: boolean }) {
 }
 
 function PlayersModal({
-  gameId, members, lastFixByUser, batteryByUser, now, phase, onClose,
+  gameId, members, lastFixByUser, batteryByUser, now, phase, winnerId, onClose,
 }: {
   gameId: string;
   members: GameMember[];
@@ -1761,8 +1778,12 @@ function PlayersModal({
   batteryByUser: Map<string, number>;
   now: number;
   phase: string;
+  /** The crown stamped on the game doc (#81) — floats to the top of the roster. */
+  winnerId: string | null;
   onClose: () => void;
 }) {
+  // Players and GMs are different jobs, so they get their own tab rather than one mixed list.
+  const [tab, setTab] = useState<'players' | 'gms'>('players');
   // A game must always keep ≥ 1 GM (#50): true when m is the only GM.
   const isLastGM = (m: GameMember) =>
     m.role === 'gm' && members.filter((x) => x.role === 'gm').length <= 1;
@@ -1825,10 +1846,20 @@ function PlayersModal({
   // collation keeps "2" before "10".
   const districtKey = (m: GameMember) =>
     m.district != null && String(m.district).trim() !== '' ? String(m.district).trim() : '~';
-  const gms = members.filter((m) => m.role === 'gm');
+  const gms = members
+    .filter((m) => m.role === 'gm')
+    .sort((a, b) => a.displayName.localeCompare(b.displayName));
+  // Roster order: the winner (once crowned) leads, then everyone still alive, then the
+  // dead — the GM's attention belongs on the tributes still in play. District pairing and
+  // name break ties inside each band.
   const players = members
     .filter((m) => m.role === 'player')
     .sort((a, b) => {
+      if (winnerId && a.userId !== b.userId) {
+        if (a.userId === winnerId) return -1;
+        if (b.userId === winnerId) return 1;
+      }
+      if (!!a.out !== !!b.out) return a.out ? 1 : -1;
       const ka = districtKey(a);
       const kb = districtKey(b);
       if (ka !== kb) return ka.localeCompare(kb, undefined, { numeric: true });
@@ -1837,17 +1868,34 @@ function PlayersModal({
   const alive = players.filter((m) => !m.out).length;
   const districtCount = new Set(players.map(districtKey).filter((k) => k !== '~')).size;
   return (
-    <Modal title={`Players (${players.length})`} onClose={onClose}>
-      <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-        {players.length} player{players.length !== 1 ? 's' : ''} · {alive} alive{districtCount > 0 ? ` · ${districtCount} district${districtCount !== 1 ? 's' : ''}` : ''}
+    <Modal title="Members" onClose={onClose}>
+      <div role="tablist" style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--border)', marginBottom: -8 }}>
+        {([['players', `Players (${players.length})`], ['gms', `Game Masters (${gms.length})`]] as const).map(([key, label]) => (
+          <button
+            key={key}
+            role="tab"
+            aria-selected={tab === key}
+            onClick={() => setTab(key)}
+            style={{
+              appearance: 'none', background: 'none', cursor: 'pointer', padding: '8px 12px',
+              fontSize: 13, fontWeight: 700, marginBottom: -1,
+              color: tab === key ? 'var(--primary)' : 'var(--text-secondary)',
+              border: 'none', borderBottom: `2px solid ${tab === key ? 'var(--primary)' : 'transparent'}`,
+            }}
+          >
+            {label}
+          </button>
+        ))}
       </div>
-      {/* GM count kept on its own line, separate from the player counts (GM-only dashboard). */}
-      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted, var(--text-secondary))' }}>
-        Staff: {gms.length} GM{gms.length !== 1 ? 's' : ''}
+      <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+        {tab === 'players'
+          ? `${players.length} player${players.length !== 1 ? 's' : ''} · ${alive} alive${districtCount > 0 ? ` · ${districtCount} district${districtCount !== 1 ? 's' : ''}` : ''}`
+          : `${gms.length} GM${gms.length !== 1 ? 's' : ''} running this game`}
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 380, overflowY: 'auto' }}>
-        {members.length === 0 && <p style={{ color: 'var(--text-secondary)' }}>No members yet.</p>}
-        {[...gms, ...players].map((m) => {
+        {tab === 'players' && players.length === 0 && <p style={{ color: 'var(--text-secondary)' }}>No players have joined yet.</p>}
+        {tab === 'gms' && gms.length === 0 && <p style={{ color: 'var(--text-secondary)' }}>No GMs yet.</p>}
+        {(tab === 'players' ? players : gms).map((m) => {
           const isGM = m.role === 'gm';
           const isOut = !!m.out;
           const hasDistrict = m.district != null && String(m.district).trim() !== '';
@@ -1860,7 +1908,9 @@ function PlayersModal({
             <div key={m.userId} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderColor: m.sos ? (m.sosAckAt ? 'var(--warning, #D4893F)' : 'var(--danger)') : undefined, background: m.sos ? (m.sosAckAt ? 'rgba(212,137,63,0.08)' : 'rgba(232,64,42,0.08)') : undefined }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <span style={{ fontWeight: 700, textDecoration: isOut ? 'line-through' : undefined, color: isOut ? 'var(--text-secondary)' : undefined }}>{m.displayName}</span>
+                  <span style={{ fontWeight: 700, textDecoration: isOut ? 'line-through' : undefined, color: isOut ? 'var(--text-secondary)' : undefined }}>
+                    {m.userId === winnerId ? '🏆 ' : ''}{m.displayName}
+                  </span>
                   {!isGM && (
                     <button
                       onClick={() => setDistrict(m)}

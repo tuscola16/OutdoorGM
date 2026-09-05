@@ -212,8 +212,8 @@ export interface GameConfig {
    */
   geofenceConfirmFixes?: number;
   /**
-   * GM re-notification cooldown: the GM is re-alerted when a player returns to a
-   * checkpoint they previously visited and was away at least this many minutes. Default 5.
+   * @deprecated #83 — inert. This throttled the GM's *bare arrival* push on a re-crossing,
+   * and bare arrivals no longer push at all. Kept so legacy game docs still typecheck.
    */
   reNotifyAwayCooldownMinutes?: number;
   /**
@@ -568,6 +568,35 @@ export interface PlayerLocation {
    * before they vanish. Absent on legacy fixes / when the level is unavailable.
    */
   battery?: number;
+  /**
+   * Ground speed in m/s as reported by the OS (#82), or absent when unavailable.
+   *
+   * The single most useful signal for telling a real GNSS fix from a Wi-Fi/cell
+   * fallback: speed is Doppler-derived, so a trilaterated network fix generally has
+   * none and reports null. That makes it a better "is this fix real?" discriminator
+   * than `accuracy`, which a network fix can understate badly — field-measured
+   * 2026-08-15, a stationary Pixel 8 claimed 22 m while sitting ~64 m off.
+   *
+   * Recorded only; nothing gates on it yet. See `minFixAccuracyMeters`.
+   */
+  speed?: number;
+  /**
+   * Android only (#82): the OS flagged this fix as coming from a mock provider.
+   * Recorded so a developer-options mock can be told apart from a genuine bad fix
+   * when reading a `locationTrail` back after a game.
+   */
+  mocked?: boolean;
+  /**
+   * Cumulative steps counted since this player's tracking session started (#82), or
+   * absent when the pedometer is unavailable or the permission was declined.
+   *
+   * **Recording only — nothing reads this for any gameplay decision.** It exists so a
+   * post-game `locationTrail` can answer the one question the trail otherwise can't:
+   * when a player's dot jumped, were they actually walking? Δsteps between two fixes
+   * bounds the displacement that was physically possible, which is what a future
+   * motion gate would be built on.
+   */
+  steps?: number;
   updatedAt: FsTimestamp;
 }
 

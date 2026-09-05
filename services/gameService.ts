@@ -920,6 +920,12 @@ export async function updatePlayerLocation(
     heading?: number;
     /** Device battery 0–1 (#35); omitted when unavailable. */
     battery?: number;
+    /** Doppler ground speed m/s (#82); omitted when the OS doesn't report one. */
+    speed?: number;
+    /** Android mock-provider flag (#82); omitted on iOS / when unknown. */
+    mocked?: boolean;
+    /** Steps since tracking started (#82); omitted without pedometer access. */
+    steps?: number;
   }
 ): Promise<void> {
   await setDoc(doc(db, Collections.GAMES, gameId, Collections.LOCATIONS, userId), {
@@ -929,9 +935,22 @@ export async function updatePlayerLocation(
       longitude: coords.longitude,
       accuracy: coords.accuracy ?? null,
       heading: coords.heading ?? null,
-      // #35: only write battery when we have a real reading, so a fix never clobbers a
-      // prior good level with null on a device that can't report it.
+      // These fields are written only when we have a real reading, so a reading-less fix
+      // never publishes a fake 0/false.
+      //
+      // CAVEAT (#82): this does NOT preserve the previous value. `setDoc` without
+      // `{merge:true}` replaces the whole document, so an omitted key is *deleted* just as
+      // surely as writing null would clear it — the older #35 comment here claimed
+      // otherwise and was wrong. Readers must treat "absent" as unknown, never as "still
+      // the last known value". Left as a replace-write deliberately: switching to a merge
+      // would change the semantics of the core location path, and every consumer already
+      // tolerates an absent field.
       ...(typeof coords.battery === 'number' ? { battery: coords.battery } : {}),
+      // `speed` is the network-fallback tell (no Doppler → no speed), so its *absence* is
+      // itself the signal we're recording.
+      ...(typeof coords.speed === 'number' ? { speed: coords.speed } : {}),
+      ...(typeof coords.mocked === 'boolean' ? { mocked: coords.mocked } : {}),
+      ...(typeof coords.steps === 'number' ? { steps: coords.steps } : {}),
       updatedAt: serverTimestamp(),
     });
 }

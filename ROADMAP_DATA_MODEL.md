@@ -55,6 +55,43 @@ GMs assign players to themselves; the geofence/arrival push routes only to the o
 GM map/roster views filter to `teamGmId === me`. Unassigned/legacy players fall back to all-GMs
 (today's behavior). Deferred per the 2026-06-07 field test.
 
+## 82. Location jitter — diagnostics & display stabilization
+
+Shipped 2026-09-05. Additive and optional; legacy fixes without these fields read as "unknown".
+
+**`PlayerLocation`** (`types/index.ts`) — written by all three upload paths in
+`services/locationTask.ts`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `speed` | `number?` | Doppler ground speed m/s. **Absence is the signal** — a Wi-Fi/cell fix has no Doppler, so a missing `speed` marks a probable network fallback. Better discriminator than `accuracy`, which a network fix understates. |
+| `mocked` | `boolean?` | Android mock-provider flag; separates a developer-options mock from a genuine bad fix. |
+| `steps` | `number?` | Cumulative steps for the tracking session. **Recording only** — no gameplay decision reads it. |
+
+> **Write semantics.** `updatePlayerLocation` uses `setDoc` **without** `{merge:true}`, so an omitted
+> key is *deleted*, not preserved — the conditional-spread pattern does **not** carry a prior value
+> forward (the older #35 `battery` comment claimed it did and was wrong). Readers must treat absent
+> as *unknown*, never as *last known*.
+
+**`locationTrail/{id}`** (server-written, `functions/src/geofence.ts`) gains `speed`, `mocked`,
+`steps`, and `stepsSincePrev`. The last is `null` when either count is missing **or when the delta
+would be negative** — a negative means the counter reset (rejoin / process recycle), not backwards
+walking. Pair `stepsSincePrev` with the existing `metersSincePrev` to separate "they walked" from
+"the fix moved but they didn't".
+
+**No Firestore rules change.** The `locations/{userId}` write rule validates `userId` and the
+lat/lng ranges but uses no `hasOnly()` key allowlist, so the new fields pass as-is.
+
+**`StabilizedLocation`** (`common/locationStabilizer.ts`) is a *view* type, never persisted:
+`PlayerLocation` plus `held` / `ageMs` / `confidenceM` / `stale`. Both GM contexts expose
+`playerLocations` as this type; because it's a superset, existing consumers are unaffected.
+
+**`GameConfig.locationTrail`** (existing, #50) is the capture switch — no new config knob. Constants
+(`MAX_PLAUSIBLE_SPEED_MS` 7, `MAX_HOLD_MS` 60 s, `STALE_AFTER_MS` 45 s) are module-level in
+`locationStabilizer.ts`, deliberately not GM-tunable until field data justifies values.
+
+---
+
 ## No schema change — enforcement / logic only
 
 These **outstanding** items are pure logic, rules, client architecture, or ops — no new fields or
