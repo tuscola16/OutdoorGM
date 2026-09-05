@@ -165,7 +165,9 @@ games/{gameId}/arrivals/{arrivalId}
   members — anyone else crossing falls through to the next-highest entry. An entry with
   `revealOnFire` also projects its checkpoint into the player-readable `markers` collection when it
   fires (`triggerer` / `targeted` / `all`), so those players keep seeing the site for the rest of the
-  game. Same plumbing as the checkpoint-level reveal — the marker carries name + location only.
+  game. Same plumbing as the checkpoint-level reveal — the marker carries name, the GM-chosen
+  `icon` key, and location only (never the runbook behavior), so a revealed site shows the player
+  the same glyph the GM sees on their map.
 - Deduplication: prevents duplicate arrivals for the same player-checkpoint pair within a time window
 - GMs only: non-players (GMs) don't trigger checkpoint arrivals even if their location is updated
 - **GM-prompted entries** are fired on demand via the `fireRunbookEntry` callable (GM picks targets)

@@ -19,6 +19,7 @@ interface CheckpointReveal {
 }
 export interface CheckpointDoc {
   name?: string;
+  icon?: string;
   latitude?: number;
   longitude?: number;
   visibility?: CheckpointVisibility;
@@ -46,7 +47,8 @@ export function resolveRevealAudience(
  * ("see it, but not what it does") holds. `audiencePlayerIds === null` makes it visible
  * to all; an array restricts it. Per-player reveals merge (arrayUnion) so a later
  * triggerer/recipient is added without dropping earlier ones. Doc id = checkpointId, so
- * re-revealing is idempotent.
+ * re-revealing is idempotent. The checkpoint's `icon` rides along with the label so the
+ * player map draws the glyph the GM placed (still no behavior — icon is cosmetic).
  */
 export async function projectMarker(
   db: admin.firestore.Firestore,
@@ -60,6 +62,7 @@ export async function projectMarker(
   const base = {
     checkpointId,
     name: cp.name ?? 'Marker',
+    icon: cp.icon ?? null,
     latitude: cp.latitude,
     longitude: cp.longitude,
     revealedAt: admin.firestore.FieldValue.serverTimestamp(),

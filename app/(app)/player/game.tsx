@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, Alert, TouchableOpacity, Linking, AppState, ScrollView, Keyboard,
 } from 'react-native';
@@ -27,7 +27,9 @@ import {
   isCheckpointGeofencingArmed,
 } from '@/services/locationTask';
 import { requestBatteryOptimizationExemption } from '@/services/batteryOptimization';
-import { eliminatePlayer, raiseSos, setDeathLocation, gamePhase, gameConfig } from '@/services/gameService';
+import {
+  eliminatePlayer, raiseSos, setDeathLocation, gamePhase, gameConfig, ENDGAME_RALLY_ID,
+} from '@/services/gameService';
 import { friendlyError } from '@/services/errorUtils';
 import { useElapsed, useRemaining, formatDuration } from '@/hooks/useElapsed';
 import { useRationReminders } from '@/hooks/useRationReminders';
@@ -211,6 +213,19 @@ export default function PlayerGameScreen() {
       .onSnapshot(handle, (err: Error) => console.error('[PlayerGame] my markers error', err));
     return () => { unsubGlobal(); unsubMine(); };
   }, [gameId, user]);
+
+  // #41: the end-game rally point rides the same `markers` plumbing as every other
+  // revealed site, so on the map it was just one more pin in a field of pins — players
+  // couldn't find where to converge. Split it out so it draws as the distinct flame
+  // badge the GM sees (works for games whose rally marker predates marker icons).
+  const rallyPoint = useMemo(() => {
+    const m = markers.find((x) => x.checkpointId === ENDGAME_RALLY_ID);
+    return m ? { latitude: m.latitude, longitude: m.longitude } : null;
+  }, [markers]);
+  const siteMarkers = useMemo(
+    () => markers.filter((m) => m.checkpointId !== ENDGAME_RALLY_ID),
+    [markers]
+  );
 
   // Show the intro tutorial once per game, while waiting in the lobby.
   useEffect(() => {
@@ -562,7 +577,15 @@ export default function PlayerGameScreen() {
               {boundary ? (
                 // Players see the play area, their own blue dot, and any checkpoint
                 // markers revealed to them (#48) — never other players or hidden sites.
-                <GameMap checkpoints={[]} playerLocations={[]} markers={markers} boundary={boundary} mapOverlay={mapOverlay} showsUserLocation />
+                <GameMap
+                  checkpoints={[]}
+                  playerLocations={[]}
+                  markers={siteMarkers}
+                  rallyPoint={rallyPoint}
+                  boundary={boundary}
+                  mapOverlay={mapOverlay}
+                  showsUserLocation
+                />
               ) : (
                 <View style={[styles.map, styles.mapPlaceholder]}>
                   <Ionicons name="map-outline" size={40} color={Colors.textMuted} />

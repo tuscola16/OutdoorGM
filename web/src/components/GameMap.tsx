@@ -3,7 +3,7 @@ import mapboxgl from 'mapbox-gl';
 import MapboxDraw from '@mapbox/mapbox-gl-draw';
 import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
 import type { Checkpoint, PlayerLocation, MapBoundary, RunbookEntry, Game } from '@shared/types';
-import { KIND_META, checkpointKind } from '@/services/checkpointKinds';
+import { KIND_META, checkpointKind, checkpointIconEmoji } from '@/services/checkpointKinds';
 import { isLowBattery, formatBattery } from '@/services/locationStatus';
 
 mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN ?? '';
@@ -540,7 +540,7 @@ export function GameMap({
     const entriesByCp = groupEntries(runbookEntries);
     checkpointMarkers.current = checkpoints.map((cp) => {
       const el = document.createElement('div');
-      // The element box is just the dot (16×16) so Mapbox's default `center` anchor
+      // The element box is just the dot (22×22) so Mapbox's default `center` anchor
       // lands the dot exactly on the checkpoint coordinate. The name label is absolutely
       // positioned below and doesn't affect the layout box (otherwise it would push the
       // dot up toward the top of the radius).
@@ -551,11 +551,14 @@ export function GameMap({
       // win over that rule, drop the element back into normal flow, and offset
       // the dot from its true coordinate. The element is still a positioned
       // ancestor (absolute, via Mapbox), so the label's `left:50%` resolves fine.
-      el.style.cssText = `width:16px;height:16px;cursor:pointer;`;
+      el.style.cssText = `width:22px;height:22px;cursor:pointer;`;
       const cpColor = KIND_META[checkpointKind(entriesByCp.get(cp.id) ?? [])].color;
+      // The GM-chosen icon (#53) rides in the disc — the same glyph players now see on
+      // their revealed markers, so both roles describe a site the same way. The disc
+      // color still carries the runbook kind, which stays GM-only.
       el.innerHTML = `
-        <div style="width:16px;height:16px;border-radius:50%;background:${cpColor};border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.5)"></div>
-        <div style="position:absolute;top:20px;left:50%;transform:translateX(-50%);font-size:11px;font-weight:700;color:#fff;text-shadow:0 1px 2px #000;white-space:nowrap">${escapeHtml(cp.name)}</div>`;
+        <div style="width:22px;height:22px;border-radius:50%;background:${cpColor};border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;font-size:12px;line-height:1">${checkpointIconEmoji(cp.icon)}</div>
+        <div style="position:absolute;top:26px;left:50%;transform:translateX(-50%);font-size:11px;font-weight:700;color:#fff;text-shadow:0 1px 2px #000;white-space:nowrap">${escapeHtml(cp.name)}</div>`;
       el.addEventListener('click', (ev) => {
         ev.stopPropagation();
         onCheckpointClickRef.current?.(cp);

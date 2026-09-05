@@ -483,6 +483,13 @@ export interface RevealedMarker {
   checkpointId: string;
   /** Marker label only — never the secret event payload (case C). */
   name: string;
+  /**
+   * The checkpoint's map icon key (`constants/checkpointIcons.ts`), projected alongside
+   * the label so a player sees the *same* glyph the GM placed — a rally point, a water
+   * cache and a medic station have to be tellable apart on the player map, not all one
+   * green pin. Absent on markers revealed before this shipped → generic pin fallback.
+   */
+  icon?: string;
   latitude: number;
   longitude: number;
   /** Null/absent = visible to all players; set = only these uids may read/see it (A/D). */

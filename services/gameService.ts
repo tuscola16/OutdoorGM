@@ -586,6 +586,30 @@ export async function updateCheckpoint(
   updates: Partial<Omit<Checkpoint, 'id'>>
 ): Promise<void> {
   await updateDoc(doc(db, Collections.GAMES, gameId, Collections.CHECKPOINTS, checkpointId), updates);
+  await syncRevealedMarker(gameId, checkpointId, updates);
+}
+
+/**
+ * Keep an already-revealed marker's label/icon/location in step with its checkpoint, so a
+ * GM who renames a site or swaps its icon mid-game doesn't leave players staring at the old
+ * pin. Deliberately `updateDoc` (not `setDoc`): it fails on a missing doc, which is exactly
+ * the guard we want — an unrevealed checkpoint must never be projected into `markers` here.
+ */
+async function syncRevealedMarker(
+  gameId: string,
+  checkpointId: string,
+  updates: Partial<Omit<Checkpoint, 'id'>>
+): Promise<void> {
+  const patch: Record<string, unknown> = {};
+  if (updates.name !== undefined) patch.name = updates.name;
+  if (updates.icon !== undefined) patch.icon = updates.icon ?? null;
+  if (updates.latitude !== undefined) patch.latitude = updates.latitude;
+  if (updates.longitude !== undefined) patch.longitude = updates.longitude;
+  if (Object.keys(patch).length === 0) return;
+  await updateDoc(
+    doc(db, Collections.GAMES, gameId, Collections.MARKERS, checkpointId),
+    patch
+  ).catch(() => {}); // not revealed (or already gone) — nothing to keep in sync
 }
 
 export async function deleteCheckpoint(gameId: string, checkpointId: string): Promise<void> {
@@ -699,6 +723,7 @@ export async function revealCheckpointNow(gameId: string, cp: Checkpoint): Promi
     {
       checkpointId: cp.id,
       name: cp.name,
+      icon: cp.icon ?? null,
       latitude: cp.latitude,
       longitude: cp.longitude,
       audiencePlayerIds:

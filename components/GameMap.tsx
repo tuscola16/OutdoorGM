@@ -1,7 +1,9 @@
-import React, { useRef, useEffect, useMemo } from 'react';
+import React, { useRef, useEffect, useMemo, useState } from 'react';
 import { View, StyleSheet, Text, Platform } from 'react-native';
 import MapView, { Marker, Circle, Polygon, Overlay, UrlTile, PROVIDER_GOOGLE, Region } from 'react-native-maps';
+import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/colors';
+import { checkpointIcon } from '@/constants/checkpointIcons';
 import { TOPO_TILE_URL, TOPO_TILE_SIZE, TOPO_MAX_ZOOM, TOPO_MAX_NATIVE_ZOOM } from '@/constants/map';
 import type { Checkpoint, PlayerLocation, MapBoundary, RevealedMarker, Game } from '@/types';
 import { isLowBattery, formatBattery } from '@/services/locationStatus';
@@ -117,6 +119,36 @@ function PlayerMarker({ player }: { player: PlayerLocation }) {
   );
 }
 
+/**
+ * A custom marker view is a bitmap the map snapshots. Snapshotting once with
+ * `tracksViewChanges={false}` from the first frame can capture the view *before* the
+ * Ionicons font has painted, leaving a blank badge on Android. So track changes briefly,
+ * then freeze — live location updates must never keep regenerating marker bitmaps
+ * (see PlayerMarker).
+ */
+function useSettledTracking(): boolean {
+  const [tracks, setTracks] = useState(true);
+  useEffect(() => {
+    const t = setTimeout(() => setTracks(false), 1500);
+    return () => clearTimeout(t);
+  }, []);
+  return tracks;
+}
+
+/**
+ * The map badge for a checkpoint/marker: the GM-chosen glyph (#53) in a colored disc.
+ * Shared by the GM's `checkpoints` and the player's revealed `markers` so the same site
+ * reads identically to both roles — a player hunting the final rally point can pick it
+ * out of a field of ordinary sites instead of seeing a row of identical pins.
+ */
+function IconPin({ icon, color }: { icon?: string; color: string }) {
+  return (
+    <View style={[styles.iconPin, { borderColor: color }]}>
+      <Ionicons name={checkpointIcon(icon)} size={16} color={color} />
+    </View>
+  );
+}
+
 function CheckpointMarker({
   checkpoint,
   onPress,
@@ -126,6 +158,8 @@ function CheckpointMarker({
   onPress?: () => void;
   editMode?: boolean;
 }) {
+  const tracks = useSettledTracking();
+  const color = editMode ? Colors.secondary : Colors.checkpointPin;
   return (
     <>
       <Circle
@@ -140,9 +174,28 @@ function CheckpointMarker({
         title={checkpoint.name}
         description={`Radius: ${checkpoint.radius}m`}
         onPress={onPress}
-        pinColor={editMode ? Colors.secondary : Colors.checkpointPin}
-      />
+        anchor={{ x: 0.5, y: 0.5 }}
+        tracksViewChanges={tracks}
+      >
+        <IconPin icon={checkpoint.icon} color={color} />
+      </Marker>
     </>
+  );
+}
+
+/** A checkpoint revealed to this player (#48) — same glyph as the GM's, label + location only. */
+function RevealedMarkerPin({ marker }: { marker: RevealedMarker }) {
+  const tracks = useSettledTracking();
+  return (
+    <Marker
+      coordinate={{ latitude: marker.latitude, longitude: marker.longitude }}
+      title={marker.name}
+      description="Revealed location"
+      anchor={{ x: 0.5, y: 0.5 }}
+      tracksViewChanges={tracks}
+    >
+      <IconPin icon={marker.icon} color={Colors.secondary} />
+    </Marker>
   );
 }
 
@@ -177,12 +230,13 @@ export function GameMap({
       ...(boundary ? boundaryCorners(boundary) : []),
       ...checkpoints.map((c) => ({ latitude: c.latitude, longitude: c.longitude })),
       ...markers.map((m) => ({ latitude: m.latitude, longitude: m.longitude })),
+      ...(rallyPoint ? [rallyPoint] : []),
       ...playerLocations.map((p) => ({ latitude: p.latitude, longitude: p.longitude })),
     ];
     return regionFromCoords(coords) ?? (boundary ? regionFromBoundary(boundary) : DEFAULT_REGION);
     // Intentionally computed once for the initial mount; MapView ignores later
     // initialRegion changes.
-  }, [initialRegion, boundary, checkpoints, markers, playerLocations]);
+  }, [initialRegion, boundary, checkpoints, markers, rallyPoint, playerLocations]);
 
   // Best-effort dynamic re-fit as live data changes (e.g. players spreading out).
   // Harmless if it no-ops; initialRegion already gives a correct starting frame.
@@ -252,14 +306,7 @@ export function GameMap({
         />
       ))}
       {markers.map((m) => (
-        <Marker
-          key={`marker-${m.checkpointId}`}
-          coordinate={{ latitude: m.latitude, longitude: m.longitude }}
-          title={m.name}
-          description="Revealed location"
-          pinColor={Colors.secondary}
-          tracksViewChanges={false}
-        />
+        <RevealedMarkerPin key={`marker-${m.checkpointId}`} marker={m} />
       ))}
       {rallyPoint && (
         <Marker
@@ -319,6 +366,20 @@ const styles = StyleSheet.create({
     color: Colors.black,
     fontWeight: '800',
     fontSize: 12,
+  },
+  iconPin: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: 'rgba(13,13,13,0.85)',
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 3,
+    elevation: 5,
   },
   deathMarker: {
     width: 30,
