@@ -5,6 +5,9 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
@@ -53,6 +56,28 @@ class OutdoorNativeModule : Module() {
     }
 
     /**
+     * A single fix from `LocationManager.GPS_PROVIDER` — satellites only, bypassing the
+     * fused provider entirely. Resolves `null` on timeout or when GPS is off.
+     *
+     * This exists because of the 2026-09-05 field trail. `expo-location` uses
+     * `FusedLocationProviderClient` with `PRIORITY_HIGH_ACCURACY`, which is the right
+     * priority — but fused is a *policy layer*, free to answer with a Wi-Fi/cell
+     * trilateration when it judges that adequate, and that judgement changes once the app
+     * is backgrounded. Measured consequence: a player walked past a 20 m checkpoint and
+     * her backgrounded fixes never came closer than **65 m**, while claiming 27–36 m
+     * accuracy; three minutes later, foregrounded on the same phone in the same woods,
+     * she was at 4–10 m. Canopy doesn't change in three minutes and a wake lock didn't
+     * help, so the provider's own policy is the remaining explanation.
+     *
+     * GPS_PROVIDER has no such policy: it either has satellites or it doesn't. The costs
+     * are real — more battery, and a cold fix can take 30 s+ under canopy — which is why
+     * the caller only asks for one when a player is near a checkpoint.
+     */
+    AsyncFunction("getGpsFix") { timeoutMs: Double, promise: Promise ->
+      requestGpsFix(timeoutMs.toLong(), promise)
+    }
+
+    /**
      * Hold a partial wake lock so the CPU keeps servicing location callbacks with the
      * screen off. Idempotent. `timeoutMs` is a safety valve: the OS releases the lock
      * even if we somehow never do, so a bug here can't strand a player's battery.
@@ -80,6 +105,79 @@ class OutdoorNativeModule : Module() {
     OnDestroy {
       releaseInternal()
     }
+  }
+
+  /**
+   * One-shot GPS_PROVIDER fix. Registers for updates, takes the first, unregisters.
+   *
+   * The timeout is doing real work: under canopy a cold GPS fix can take longer than a
+   * background task's execution window, and a hung promise inside the location upload
+   * path would stall the fix that the caller already has in hand. On timeout we resolve
+   * `null` and the caller falls back to the fused fix rather than losing the upload.
+   */
+  @Suppress("MissingPermission") // ACCESS_FINE_LOCATION is declared and granted before tracking starts.
+  private fun requestGpsFix(timeoutMs: Long, promise: Promise) {
+    val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+    if (lm == null || !lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+      promise.resolve(null)
+      return
+    }
+
+    val settled = AtomicBoolean(false)
+    val handler = Handler(Looper.getMainLooper())
+    var listener: LocationListener? = null
+
+    val finish = { loc: Location? ->
+      if (settled.compareAndSet(false, true)) {
+        listener?.let { runCatching { lm.removeUpdates(it) } }
+        if (loc == null) {
+          promise.resolve(null)
+        } else {
+          promise.resolve(
+            mapOf(
+              "latitude" to loc.latitude,
+              "longitude" to loc.longitude,
+              "accuracy" to if (loc.hasAccuracy()) loc.accuracy.toDouble() else null,
+              "speed" to if (loc.hasSpeed()) loc.speed.toDouble() else null,
+              "heading" to if (loc.hasBearing()) loc.bearing.toDouble() else null,
+              "timestamp" to loc.time.toDouble(),
+              "provider" to (loc.provider ?: "gps"),
+              // Legacy extra that GPS_PROVIDER fixes usually carry; absent on some OEMs.
+              // A low count is the direct signal that canopy is starving the receiver.
+              "satellites" to loc.extras?.getInt("satellites")
+            )
+          )
+        }
+      }
+    }
+
+    listener = object : LocationListener {
+      override fun onLocationChanged(location: Location) {
+        handler.post { finish(location) }
+      }
+
+      // Required on older API levels; no-ops on modern ones.
+      override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) = Unit
+      override fun onProviderEnabled(provider: String) = Unit
+      override fun onProviderDisabled(provider: String) {
+        handler.post { finish(null) }
+      }
+    }
+
+    try {
+      lm.requestLocationUpdates(
+        LocationManager.GPS_PROVIDER,
+        0L,
+        0f,
+        listener,
+        Looper.getMainLooper()
+      )
+    } catch (e: Throwable) {
+      finish(null)
+      return
+    }
+
+    handler.postDelayed({ finish(null) }, timeoutMs)
   }
 
   private fun releaseInternal() {

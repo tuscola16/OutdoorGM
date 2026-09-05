@@ -342,6 +342,13 @@ export const onLocationUpdate = functions
       msSinceForeground?: number; // #82
       batteryOptimized?: boolean; // #82
       wakeLock?: boolean;         // #82
+      provider?: string;          // #82 'gps' | 'fused'
+      samplingMode?: string;      // #82
+      satellites?: number;        // #82
+      gpsFixAttempted?: boolean;  // #82
+      buildVersion?: string;      // #82
+      geofenceArmed?: boolean;    // #82 (asked of the OS, not module state)
+      geofenceEnter?: string;     // #82 shadow mode
       updatedAt?: FirebaseFirestore.Timestamp;
     };
 
@@ -464,6 +471,18 @@ export const onLocationUpdate = functions
           msSinceForeground: location.msSinceForeground ?? null,
           batteryOptimized: location.batteryOptimized ?? null,
           wakeLock: location.wakeLock ?? null,
+          // #82: fix provenance. `provider` is the signal that replaces the disproven
+          // speed-absence heuristic — 'fused' means the coordinates may be a Wi-Fi
+          // trilateration rather than a satellite fix.
+          provider: location.provider ?? null,
+          samplingMode: location.samplingMode ?? null,
+          satellites: location.satellites ?? null,
+          gpsFixAttempted: location.gpsFixAttempted ?? null,
+          buildVersion: location.buildVersion ?? null,
+          geofenceArmed: location.geofenceArmed ?? null,
+          // Shadow mode: what Android's own geofence claimed, recorded beside what our
+          // distance maths concluded, so the two can be compared after the fact.
+          geofenceEnter: location.geofenceEnter ?? null,
           // Steps taken since the previous fix — pair with `metersSincePrev` to separate
           // "they walked" from "the fix moved but they didn't".
           // A negative delta means the counter reset between fixes (the player left and

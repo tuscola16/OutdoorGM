@@ -652,6 +652,55 @@ export interface PlayerLocation {
   batteryOptimized?: boolean;
   /** #82: was the partial CPU wake lock held at fix time? Identifies the A/B arm. */
   wakeLock?: boolean;
+  /**
+   * #82: which location source produced this fix — `'gps'` (satellite-only, via the
+   * native shim) or `'fused'` (Google Play's fused provider, i.e. possibly a Wi-Fi/cell
+   * trilateration).
+   *
+   * This is the signal that replaces the disproven `speed`-absence heuristic. Fused is a
+   * *policy layer* and demonstrably serves coarse fixes to backgrounded apps: on
+   * 2026-09-05 a player's backgrounded fixes never came within 65 m of a checkpoint she
+   * walked through, while claiming 27–36 m accuracy.
+   */
+  provider?: string;
+  /**
+   * #82: `'near-checkpoint'` when the client spent battery on a satellite fix because the
+   * player was within ~250 m of a checkpoint, `'normal'` otherwise. Recorded so the two
+   * arms are separable within one walk instead of needing a second field test.
+   */
+  samplingMode?: string;
+  /** #82: satellites used, when the OEM reports it. Low counts mean canopy starvation. */
+  satellites?: number;
+  /** #82: did we ask for a satellite fix for this upload? Distinguishes "didn't try"
+   *  from "tried and timed out" when `provider` reads `'fused'` near a checkpoint. */
+  gpsFixAttempted?: boolean;
+  /**
+   * #82: native build number (`versionCode`) that produced this fix.
+   *
+   * Exists because the 2026-09-05 A/B was wasted: one phone ran an older JS bundle and
+   * nothing in the data said so. Both builds carry `versionName` "1.0.0", so the device's
+   * own app-info screen couldn't distinguish them either.
+   */
+  buildVersion?: string;
+  /**
+   * #82: was the OS geofence armed at fix time?
+   *
+   * Asked of the OS (`hasStartedGeofencingAsync`) rather than read from module state,
+   * which resets in a restarted headless task while the system still holds the regions —
+   * and would therefore report "never armed" in exactly the locked-phone case where the
+   * answer matters.
+   */
+  geofenceArmed?: boolean;
+  /**
+   * #82 **shadow mode**: the checkpoint id the OS geofence reported entering, when this
+   * upload was triggered by a geofence wake.
+   *
+   * Recorded only — arrivals are still decided server-side from the position, exactly as
+   * before. The point is to compare, on real data, what Android's own geofencing would
+   * have caught against what the fused-fix path actually caught. If it wins, promote it
+   * in a later build; if it produces phantom entries, we learned that for free.
+   */
+  geofenceEnter?: string;
   updatedAt: FsTimestamp;
 }
 

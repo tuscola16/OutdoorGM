@@ -20,6 +20,13 @@ public class OutdoorNativeModule: Module {
       return nil
     }
 
+    // iOS has no equivalent of Android's provider split — CoreLocation gives you one
+    // fused stream and no way to demand satellites only. Callers fall back to the
+    // expo-location fix, which is what iOS would return here anyway.
+    AsyncFunction("getGpsFix") { (_: Double) -> [String: Any]? in
+      return nil
+    }
+
     Function("acquireWakeLock") { (_: Double) -> Bool in
       return false
     }

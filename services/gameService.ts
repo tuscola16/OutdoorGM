@@ -931,6 +931,14 @@ export async function updatePlayerLocation(
     msSinceForeground?: number;
     batteryOptimized?: boolean;
     wakeLock?: boolean;
+    /** #82 fix provenance + experiment arms — see the PlayerLocation docs. */
+    provider?: string;
+    samplingMode?: string;
+    satellites?: number;
+    gpsFixAttempted?: boolean;
+    buildVersion?: string;
+    geofenceArmed?: boolean;
+    geofenceEnter?: string;
   }
 ): Promise<void> {
   await setDoc(doc(db, Collections.GAMES, gameId, Collections.LOCATIONS, userId), {
@@ -967,6 +975,13 @@ export async function updatePlayerLocation(
         ? { batteryOptimized: coords.batteryOptimized }
         : {}),
       ...(typeof coords.wakeLock === 'boolean' ? { wakeLock: coords.wakeLock } : {}),
+      ...(typeof coords.provider === 'string' ? { provider: coords.provider } : {}),
+      ...(typeof coords.samplingMode === 'string' ? { samplingMode: coords.samplingMode } : {}),
+      ...(typeof coords.satellites === 'number' ? { satellites: coords.satellites } : {}),
+      ...(typeof coords.gpsFixAttempted === 'boolean' ? { gpsFixAttempted: coords.gpsFixAttempted } : {}),
+      ...(typeof coords.buildVersion === 'string' ? { buildVersion: coords.buildVersion } : {}),
+      ...(typeof coords.geofenceArmed === 'boolean' ? { geofenceArmed: coords.geofenceArmed } : {}),
+      ...(typeof coords.geofenceEnter === 'string' ? { geofenceEnter: coords.geofenceEnter } : {}),
       updatedAt: serverTimestamp(),
     });
 }

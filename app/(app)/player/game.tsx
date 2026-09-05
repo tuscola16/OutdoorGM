@@ -18,6 +18,7 @@ import { PostGameMedia } from '@/components/PostGameMedia';
 import { Tutorial } from '@/components/Tutorial';
 import { BroadcastsProvider } from '@/context/BroadcastsContext';
 import * as Location from 'expo-location';
+import * as Application from 'expo-application';
 import {
   startLocationTracking,
   stopLocationTracking,
@@ -680,6 +681,16 @@ export default function PlayerGameScreen() {
                             : 'never'}
                         </Text>
                       </Text>
+                      {/* #82: the two rows that would have saved the 2026-09-05 A/B.
+                          Both builds ship versionName "1.0.0", so Android's own app-info
+                          screen cannot tell them apart — this is the only place a tester
+                          can confirm which build (and which experiment arm) is running. */}
+                      <Text style={styles.diagRow}>Build: <Text style={styles.diagVal}>
+                        {Application.nativeBuildVersion ?? 'unknown'}
+                      </Text></Text>
+                      <Text style={styles.diagRow}>Wake lock: <Text style={styles.diagVal}>
+                        {diag.wakeLock ? 'held' : 'not held'}
+                      </Text></Text>
                       <Text style={styles.diagRow}>Last error: <Text style={styles.diagVal}>{diag.lastError ?? 'none'}</Text></Text>
                     </View>
                   )}

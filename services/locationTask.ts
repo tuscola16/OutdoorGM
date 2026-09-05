@@ -6,6 +6,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { updatePlayerLocation } from './gameService';
 import { isBatteryOptimized } from './batteryOptimization';
 import { getSteps, startStepCounting, stopStepCounting } from './stepCounter';
+import * as Application from 'expo-application';
+import { getNativeGpsFix } from '@/modules/outdoor-native';
 import { startWakeLock, stopWakeLock, wakeLockHeld } from './wakeLock';
 import { auth } from './firebase';
 
@@ -24,12 +26,73 @@ AppState.addEventListener('change', (s) => {
   if (s === 'active') lastForegroundAt = Date.now();
 });
 
+/**
+ * Checkpoint regions the OS geofence is currently watching, cached here so the upload
+ * path can compute proximity (#82 adaptive sampling). Populated by
+ * `startCheckpointGeofencing`, which already receives the full set.
+ */
+let watchedRegions: { id: string; latitude: number; longitude: number; radius: number }[] = [];
+
+/**
+ * Persisted copy of the above.
+ *
+ * `startCheckpointGeofencing` runs only from the player screen's React effects, so the
+ * in-memory copy is empty in a headless task — and the headless task is exactly where
+ * adaptive sampling has to work. Without this the whole GPS_PROVIDER path would silently
+ * no-op on a locked, recycled process: the same failure that left the step counter unread
+ * for two field tests.
+ */
+const WATCHED_REGIONS_KEY = 'hgl_watched_regions';
+
+/** Load the cached regions into memory if this JS context hasn't got them yet. */
+async function hydrateRegions(): Promise<void> {
+  if (watchedRegions.length > 0) return;
+  try {
+    const raw = await AsyncStorage.getItem(WATCHED_REGIONS_KEY);
+    if (raw) watchedRegions = JSON.parse(raw);
+  } catch {
+    /* best effort — proximity just stays off */
+  }
+}
+
+/**
+ * Distance (m) from a checkpoint within which a player is "approaching" and we spend the
+ * battery on a satellite-only fix.
+ *
+ * Sized from the 2026-09-05 failure: a player's backgrounded fixes sat 65–119 m from a
+ * checkpoint she walked through. The trigger therefore has to fire on fixes that are
+ * themselves badly wrong — 250 m is loose enough that a 100 m error still lands inside
+ * it, which is the whole point. Being wrong about *where* someone is doesn't stop you
+ * knowing they're *near something*.
+ */
+const NEAR_CHECKPOINT_M = 250;
+
+/** How long to wait for a satellite fix before giving up and using the fused one. */
+const GPS_FIX_TIMEOUT_MS = 8000;
+
+/** Straight-line metres between two coordinates (local equirectangular; fine at this scale). */
+function roughDistanceM(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const mPerDegLat = 111_320;
+  const dLat = (lat2 - lat1) * mPerDegLat;
+  const dLng = (lng2 - lng1) * mPerDegLat * Math.cos((lat1 * Math.PI) / 180);
+  return Math.sqrt(dLat * dLat + dLng * dLng);
+}
+
+/** Is this position within `NEAR_CHECKPOINT_M` of any watched checkpoint? */
+function nearAnyCheckpoint(lat: number, lng: number): boolean {
+  return watchedRegions.some(
+    (r) => roughDistanceM(lat, lng, r.latitude, r.longitude) <= NEAR_CHECKPOINT_M + r.radius
+  );
+}
+
 /** Per-fix capture context (#82) — recorded, never acted on. */
 async function captureContext(): Promise<{
   appState: string;
   msSinceForeground: number;
   batteryOptimized?: boolean;
   wakeLock: boolean;
+  buildVersion?: string;
+  geofenceArmed: boolean;
 }> {
   const state = AppState.currentState ?? 'unknown';
   return {
@@ -40,7 +103,94 @@ async function captureContext(): Promise<{
     msSinceForeground: state === 'active' ? 0 : Date.now() - lastForegroundAt,
     batteryOptimized: await isBatteryOptimized().catch(() => undefined),
     wakeLock: wakeLockHeld(),
+    // Ask the OS, not our own module state: `_diag.geofencedRegions` is reset to 0 in a
+    // freshly restarted headless task even while the system still has our regions armed,
+    // which would report "never armed" precisely when we most need the truth.
+    geofenceArmed: await Location.hasStartedGeofencingAsync(GEOFENCE_TASK_NAME).catch(
+      () => false
+    ),
+    // #82: which build produced this fix. The 2026-09-05 A/B was wasted because one
+    // phone ran an older JS bundle and nothing in the data said so — both builds carry
+    // versionName "1.0.0", so the device screen couldn't tell them apart either.
+    buildVersion: Application.nativeBuildVersion ?? undefined,
   };
+}
+
+/**
+ * The position to upload, preferring a satellite-only fix when the player is near a
+ * checkpoint (#82 adaptive sampling).
+ *
+ * Returns the fused coordinates unchanged everywhere else — a full game at 1 Hz on
+ * GPS_PROVIDER would flatten the battery, and away from checkpoints the extra precision
+ * buys nothing that matters. Near a checkpoint it buys the only thing that matters.
+ *
+ * `samplingMode` and `provider` are recorded on every fix so the two arms are separable
+ * within a single walk, rather than needing another night to attribute.
+ */
+async function uploadFix(
+  gameId: string,
+  userId: string,
+  displayName: string,
+  fused: {
+    latitude: number;
+    longitude: number;
+    accuracy?: number;
+    heading?: number;
+    speed?: number;
+  },
+  extra: { mocked?: boolean; geofenceEnter?: string } = {}
+): Promise<void> {
+  await hydrateRegions();
+  const near = nearAnyCheckpoint(fused.latitude, fused.longitude);
+
+  const common = {
+    battery: await readBattery(),
+    steps: await getSteps(),
+    ...(await captureContext()),
+    ...extra,
+  };
+
+  // 1. ALWAYS write the fused fix first, before any satellite wait.
+  //
+  // The obvious shape — wait for GPS, then upload the better of the two — risks losing
+  // the fix entirely: a cold satellite lock under canopy can take longer than a Doze
+  // background task's execution window, so the task can be killed before the write ever
+  // lands. That would make adaptive sampling *reduce* the number of fixes near
+  // checkpoints, the exact opposite of its purpose, and it would show up in the trail as
+  // an unexplained gap rather than as a failed GPS attempt.
+  await updatePlayerLocation(gameId, userId, displayName, {
+    ...fused,
+    ...common,
+    provider: 'fused',
+    samplingMode: near ? 'near-checkpoint' : 'normal',
+    gpsFixAttempted: false,
+  });
+
+  if (!near) return;
+
+  // 2. Near a checkpoint, follow up with a satellite-only fix. A second write is cheap
+  //    (the doc is overwritten, the latches are idempotent) and it gives the trail a
+  //    *paired* fused/GPS observation seconds apart at the same spot — the cleanest
+  //    possible comparison of the two providers, from a single walk.
+  const gps = await getNativeGpsFix(GPS_FIX_TIMEOUT_MS);
+  // No fix, or one that can't state its own accuracy: keep the fused write above. A null
+  // accuracy would sail through the server's quality gate (`accuracyRejected` treats null
+  // as passing), leaving the fix we know least about as the only one exempt from checking
+  // — while still being able to trigger a checkpoint.
+  if (!gps || gps.accuracy == null) return;
+
+  await updatePlayerLocation(gameId, userId, displayName, {
+    latitude: gps.latitude,
+    longitude: gps.longitude,
+    accuracy: gps.accuracy,
+    heading: gps.heading ?? undefined,
+    speed: gps.speed ?? undefined,
+    ...common,
+    provider: gps.provider || 'gps',
+    samplingMode: 'near-checkpoint',
+    satellites: gps.satellites ?? undefined,
+    gpsFixAttempted: true,
+  });
 }
 
 export const LOCATION_TASK_NAME = 'hgl-background-location';
@@ -160,18 +310,21 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
   await startStepCounting().catch(() => {});
 
   try {
-    await updatePlayerLocation(gameId, user.uid, displayName ?? user.email ?? 'Player', {
-      latitude: location.coords.latitude,
-      longitude: location.coords.longitude,
-      accuracy: location.coords.accuracy ?? undefined,
-      heading: location.coords.heading ?? undefined,
-      battery: await readBattery(),
-      // #82 diagnostics — recorded, never acted on.
-      speed: location.coords.speed ?? undefined,
-      mocked: location.mocked ?? undefined,
-      steps: await getSteps(),
-      ...(await captureContext()),
-    });
+    // #82: writes the fused fix immediately, then follows up with a satellite fix when
+    // the player is near a checkpoint.
+    await uploadFix(
+      gameId,
+      user.uid,
+      displayName ?? user.email ?? 'Player',
+      {
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+        accuracy: location.coords.accuracy ?? undefined,
+        heading: location.coords.heading ?? undefined,
+        speed: location.coords.speed ?? undefined,
+      },
+      { mocked: location.mocked ?? undefined }
+    );
     setDiag({ lastUploadAt: Date.now(), lastError: null });
   } catch (err) {
     // A single failed upload (transient network/permission) shouldn't crash the
@@ -202,8 +355,14 @@ TaskManager.defineTask(GEOFENCE_TASK_NAME, async ({ data, error }) => {
     console.error('[Geofence] task error:', error.message);
     return;
   }
-  const { eventType } = (data ?? {}) as { eventType?: Location.LocationGeofencingEventType };
+  const { eventType, region } = (data ?? {}) as {
+    eventType?: Location.LocationGeofencingEventType;
+    region?: { identifier?: string };
+  };
   if (eventType !== Location.LocationGeofencingEventType.Enter) return;
+  // #82 shadow mode: which checkpoint the OS thinks was entered. Recorded on the upload
+  // below; nothing acts on it yet.
+  const enteredRegionId = region?.identifier ?? null;
 
   const user = auth.currentUser;
   if (!user) return;
@@ -217,17 +376,29 @@ TaskManager.defineTask(GEOFENCE_TASK_NAME, async ({ data, error }) => {
     const pos = await Location.getCurrentPositionAsync({
       accuracy: Location.Accuracy.BestForNavigation,
     });
-    await updatePlayerLocation(gameId, user.uid, displayName ?? user.email ?? 'Player', {
-      latitude: pos.coords.latitude,
-      longitude: pos.coords.longitude,
-      accuracy: pos.coords.accuracy ?? undefined,
-      heading: pos.coords.heading ?? undefined,
-      battery: await readBattery(),
-      speed: pos.coords.speed ?? undefined,   // #82
-      mocked: pos.mocked ?? undefined,        // #82
-      steps: await getSteps(),                // #82
-      ...(await captureContext()),            // #82
-    });
+    // #82: the fix a crossing hinges on. `uploadFix` writes the fused position first so
+    // it can never be lost to a satellite wait, then follows up with a GPS fix. Note the
+    // proximity test inside runs on the *fused* coordinates, which were 65–119 m off in
+    // the field — the 250 m window is what lets that test survive its own input being
+    // badly wrong.
+    //
+    // SHADOW MODE: `geofenceEnter` records which region the OS believes was entered.
+    // Recorded only — the server still decides arrivals from the position, exactly as
+    // before — so we can compare what Android's own geofencing would have caught against
+    // what the fused-fix path actually caught, at zero gameplay risk.
+    await uploadFix(
+      gameId,
+      user.uid,
+      displayName ?? user.email ?? 'Player',
+      {
+        latitude: pos.coords.latitude,
+        longitude: pos.coords.longitude,
+        accuracy: pos.coords.accuracy ?? undefined,
+        heading: pos.coords.heading ?? undefined,
+        speed: pos.coords.speed ?? undefined,
+      },
+      { mocked: pos.mocked ?? undefined, geofenceEnter: enteredRegionId ?? undefined }
+    );
     setDiag({ lastUploadAt: Date.now(), lastGeofenceWakeAt: Date.now(), lastError: null });
   } catch (err) {
     console.error('[Geofence] wake-up upload failed:', err);
@@ -246,6 +417,9 @@ export async function startCheckpointGeofencing(
   regions: { id: string; latitude: number; longitude: number; radius: number }[]
 ): Promise<boolean> {
   try {
+    watchedRegions = regions;
+    // Persist for the headless task, which never runs startCheckpointGeofencing itself.
+    AsyncStorage.setItem(WATCHED_REGIONS_KEY, JSON.stringify(regions)).catch(() => {});
     if (regions.length === 0) {
       await stopCheckpointGeofencing();
       setDiag({ geofenceError: 'no checkpoints to watch' });
@@ -537,17 +711,19 @@ export async function startLocationTracking(
           const user = auth.currentUser;
           if (!user) return;
           try {
-            await updatePlayerLocation(gameId, user.uid, displayName, {
-              latitude: pos.coords.latitude,
-              longitude: pos.coords.longitude,
-              accuracy: pos.coords.accuracy ?? undefined,
-              heading: pos.coords.heading ?? undefined,
-              battery: await readBattery(),
-              speed: pos.coords.speed ?? undefined,   // #82
-              mocked: pos.mocked ?? undefined,        // #82
-              steps: await getSteps(),                // #82
-              ...(await captureContext()),            // #82
-            });
+            await uploadFix(   // #82
+              gameId,
+              user.uid,
+              displayName,
+              {
+                latitude: pos.coords.latitude,
+                longitude: pos.coords.longitude,
+                accuracy: pos.coords.accuracy ?? undefined,
+                heading: pos.coords.heading ?? undefined,
+                speed: pos.coords.speed ?? undefined,
+              },
+              { mocked: pos.mocked ?? undefined }
+            );
             setDiag({ lastUploadAt: Date.now(), lastError: null });
           } catch (err) {
             console.error('[Location] foreground upload failed:', err);
